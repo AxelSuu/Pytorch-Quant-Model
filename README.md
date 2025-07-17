@@ -8,6 +8,7 @@
     <td><img src="results/AAPL_lstm_128h_2l_60s_training_history.png" /></td>
   </tr>
 </table>
+<img src="results/Prediction.png" />
 
 ## 🎯 What This System Does
 
