@@ -1,0 +1,39 @@
+# Stock Price Prediction Configuration
+
+# Data Configuration
+data:
+  symbol: "AAPL"
+  period: "2y"
+  sequence_length: 60
+  batch_size: 32
+  train_ratio: 0.8
+
+# Model Configuration
+model:
+  type: "lstm"  # lstm, gru, transformer
+  hidden_size: 128
+  num_layers: 2
+  dropout: 0.2
+  bidirectional: false
+
+# Training Configuration
+training:
+  epochs: 100
+  learning_rate: 0.001
+  weight_decay: 0.00001
+  patience: 15
+  scheduler_step: 10
+  scheduler_gamma: 0.5
+
+# System Configuration
+system:
+  seed: 42
+  device: "auto"  # auto, cpu, cuda
+  save_dir: "checkpoints"
+  results_dir: "results"
+
+# Evaluation Configuration
+evaluation:
+  predict_steps: 5
+  save_plots: true
+  save_results: true
