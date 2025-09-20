@@ -1,6 +1,6 @@
-# Real-Time Stock Price Prediction with PyTorch
+# Real-Time Stock Price Prediction with PyTorch for any Yahoo Finance ticker.
 
-**Real-time stock forecasting system** powered by PyTorch deep learning models with live market data integration for any Yahoo Finance ticker.
+**Fun side project when I was learning to use pytorch and combining stock price prediction**
 
 <table>
   <tr>
