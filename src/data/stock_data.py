@@ -214,14 +214,54 @@ class StockDataLoader:
         if self.scaled_data is None:
             raise ValueError("Data must be preprocessed first. Call load_and_preprocess_data()")
         
+        # For small datasets, automatically adjust sequence_length if needed
+        # Minimum 1-1.5 months ≈ 25 trading days
+        min_data_points = 25
+        
+        if len(self.scaled_data) < min_data_points:
+            raise ValueError(
+                f"Insufficient data for training. Got {len(self.scaled_data)} data points, "
+                f"but need at least {min_data_points} (approximately 1-1.5 months of trading data). "
+                f"Try using a longer time period."
+            )
+        
+        # Automatically reduce sequence_length if dataset is small
+        adjusted_sequence_length = sequence_length
+        if len(self.scaled_data) < 100:
+            # For small datasets (< 100 points), use a smaller sequence length
+            # Calculate to ensure we can create at least 1-2 sequences in test set
+            max_seq = max(5, len(self.scaled_data) // 5)  # More aggressive reduction
+            adjusted_sequence_length = min(sequence_length, max_seq)
+            if adjusted_sequence_length != sequence_length:
+                print(f"Warning: Reduced sequence_length from {sequence_length} to {adjusted_sequence_length} due to limited data")
+        
         # Split data
         train_size = int(len(self.scaled_data) * train_ratio)
         train_data = self.scaled_data[:train_size]
         test_data = self.scaled_data[train_size:]
         
+        # Validate that both splits have enough data
+        # For very small datasets, be more lenient
+        min_train_size = adjusted_sequence_length + 3
+        min_test_size = adjusted_sequence_length + 1
+        
+        if len(train_data) < min_train_size:
+            raise ValueError(
+                f"Training data too small. Got {len(train_data)} data points, "
+                f"but need at least {min_train_size} for sequence_length={adjusted_sequence_length}. "
+                f"Try using a longer time period or smaller train_ratio."
+            )
+        
+        if len(test_data) < min_test_size:
+            raise ValueError(
+                f"Test data too small. Got {len(test_data)} data points, "
+                f"but need at least {min_test_size} for sequence_length={adjusted_sequence_length}. "
+                f"Try using a longer time period or larger train_ratio."
+            )
+        
         # Create datasets
-        train_dataset = StockDataset(train_data, sequence_length)
-        test_dataset = StockDataset(test_data, sequence_length)
+        train_dataset = StockDataset(train_data, adjusted_sequence_length)
+        test_dataset = StockDataset(test_data, adjusted_sequence_length)
         
         print(f"Training dataset size: {len(train_dataset)}")
         print(f"Testing dataset size: {len(test_dataset)}")
