@@ -103,6 +103,65 @@ class StockTrainer:
                 
         return total_loss / num_batches
     
+    def train_epoch_with_accumulation(self, 
+                                     train_loader: DataLoader,
+                                     optimizer: optim.Optimizer,
+                                     criterion: nn.Module,
+                                     accumulation_steps: int = 1) -> float:
+        """
+        Train the model for one epoch with gradient accumulation.
+        
+        Args:
+            train_loader: Training data loader
+            optimizer: Optimizer
+            criterion: Loss function
+            accumulation_steps: Number of steps to accumulate gradients
+            
+        Returns:
+            Average training loss for the epoch
+        """
+        self.model.train()
+        total_loss = 0.0
+        num_batches = len(train_loader)
+        
+        optimizer.zero_grad()
+        
+        # Disable colored output for Windows compatibility
+        with tqdm(train_loader, desc="Training", leave=False) as pbar:
+            for batch_idx, (data, target) in enumerate(pbar):
+                data, target = data.to(self.device), target.to(self.device)
+                
+                # Forward pass
+                output = self.model(data)
+                loss = criterion(output, target)
+                
+                # Scale loss by accumulation steps
+                loss = loss / accumulation_steps
+                
+                # Backward pass
+                loss.backward()
+                
+                # Update parameters every accumulation_steps
+                if (batch_idx + 1) % accumulation_steps == 0 or (batch_idx + 1) == num_batches:
+                    # Gradient clipping to prevent exploding gradients
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+                    
+                    # Update parameters
+                    optimizer.step()
+                    optimizer.zero_grad()
+                
+                # Update statistics
+                total_loss += loss.item() * accumulation_steps
+                avg_loss = total_loss / (batch_idx + 1)
+                
+                # Update progress bar
+                pbar.set_postfix({
+                    'Loss': f'{avg_loss:.6f}',
+                    'Batch': f'{batch_idx + 1}/{num_batches}'
+                })
+                
+        return total_loss / num_batches
+    
     def validate_epoch(self, 
                       val_loader: DataLoader,
                       criterion: nn.Module) -> Tuple[float, Dict[str, float]]:
@@ -118,8 +177,8 @@ class StockTrainer:
         """
         self.model.eval()
         total_loss = 0.0
-        predictions = []
-        targets = []
+        all_predictions = []
+        all_targets = []
         
         with torch.no_grad():
             with tqdm(val_loader, desc="Validation", leave=False) as pbar:
@@ -132,8 +191,8 @@ class StockTrainer:
                     
                     # Update statistics
                     total_loss += loss.item()
-                    predictions.extend(output.cpu().numpy())
-                    targets.extend(target.cpu().numpy())
+                    all_predictions.extend(output.cpu().numpy())
+                    all_targets.extend(target.cpu().numpy())
                     
                     # Update progress bar
                     pbar.set_postfix({'Val Loss': f'{loss.item():.6f}'})
@@ -141,11 +200,11 @@ class StockTrainer:
         avg_loss = total_loss / len(val_loader)
         
         # Calculate metrics
-        predictions = np.array(predictions)
-        targets = np.array(targets)
-        
+        predictions = np.array(all_predictions)
+        targets = np.array(all_targets)
+
         metrics = self.calculate_metrics(predictions, targets)
-        
+
         return avg_loss, metrics
     
     def calculate_metrics(self, predictions: np.ndarray, targets: np.ndarray) -> Dict[str, float]:
@@ -159,17 +218,39 @@ class StockTrainer:
         Returns:
             Dictionary of metrics including regression, directional, and financial metrics
         """
-        from advanced_metrics import AdvancedMetrics
-        
-        metrics = AdvancedMetrics()
-        
-        # Regression metrics
-        regression_metrics = metrics.calculate_regression_metrics(predictions, targets)
-        
-        # Directional metrics
-        directional_metrics = metrics.calculate_directional_metrics(predictions, targets)
-        
-        # Combine all metrics
+        try:
+            from advanced.advanced_metrics import AdvancedMetrics
+            metrics = AdvancedMetrics()
+            
+            # Regression metrics
+            regression_metrics = metrics.calculate_regression_metrics(predictions, targets)
+            
+            # Directional metrics
+            directional_metrics = metrics.calculate_directional_metrics(predictions, targets)
+            
+            # Combine all metrics
+            return {**regression_metrics, **directional_metrics}
+        except ImportError:
+            # Fall back to basic metrics if advanced_metrics not available
+            from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
+            import numpy as np
+            
+            mse = mean_squared_error(targets, predictions)
+            rmse = np.sqrt(mse)
+            mae = mean_absolute_error(targets, predictions)
+            r2 = r2_score(targets, predictions)
+            
+            # Calculate directional accuracy
+            pred_direction = np.sign(np.diff(predictions, prepend=predictions[0]))
+            true_direction = np.sign(np.diff(targets, prepend=targets[0]))
+            direction_accuracy = np.mean(pred_direction == true_direction) * 100
+            
+            return {
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2,
+                'direction_accuracy': direction_accuracy
+            }
         all_metrics = {**regression_metrics, **directional_metrics}
         
         return all_metrics
@@ -181,10 +262,11 @@ class StockTrainer:
               lr: float = 0.001,
               weight_decay: float = 1e-5,
               patience: int = 15,
-              scheduler_step: int = 10,
-              scheduler_gamma: float = 0.5) -> Dict[str, List[float]]:
+              scheduler_type: str = "cosine",
+              warmup_epochs: int = 5,
+              gradient_accumulation_steps: int = 1) -> Dict[str, List[float]]:
         """
-        Train the model.
+        Train the model with enhanced features.
         
         Args:
             train_loader: Training data loader
@@ -193,22 +275,44 @@ class StockTrainer:
             lr: Learning rate
             weight_decay: Weight decay for regularization
             patience: Early stopping patience
-            scheduler_step: Step size for learning rate scheduler
-            scheduler_gamma: Gamma for learning rate scheduler
+            scheduler_type: Type of scheduler ('cosine', 'step', 'plateau')
+            warmup_epochs: Number of warmup epochs for learning rate
+            gradient_accumulation_steps: Steps for gradient accumulation
             
         Returns:
             Training history
         """
         print(f"Starting training for {epochs} epochs...")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"Scheduler: {scheduler_type}, Warmup: {warmup_epochs} epochs")
+        print(f"Gradient accumulation steps: {gradient_accumulation_steps}")
         
-        # Initialize optimizer and scheduler
-        optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=scheduler_step, gamma=scheduler_gamma)
+        # Initialize optimizer with gradient clipping
+        optimizer = optim.AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        
+        # Initialize scheduler based on type
+        if scheduler_type == "cosine":
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(
+                optimizer, T_0=10, T_mult=2, eta_min=lr * 0.01
+            )
+        elif scheduler_type == "plateau":
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.5, patience=5, verbose=True
+            )
+        else:  # step
+            scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=10, gamma=0.5)
+        
+        # Warmup scheduler
+        if warmup_epochs > 0:
+            warmup_scheduler = optim.lr_scheduler.LinearLR(
+                optimizer, start_factor=0.1, total_iters=warmup_epochs
+            )
+        
         criterion = nn.MSELoss()
         
         # Early stopping
         early_stopping_counter = 0
+        best_metrics = {}
         
         start_time = time.time()
         
@@ -216,8 +320,10 @@ class StockTrainer:
             print(f"\nEpoch {epoch + 1}/{epochs}")
             print("-" * 50)
             
-            # Training phase
-            train_loss = self.train_epoch(train_loader, optimizer, criterion)
+            # Training phase with gradient accumulation
+            train_loss = self.train_epoch_with_accumulation(
+                train_loader, optimizer, criterion, gradient_accumulation_steps
+            )
             self.train_losses.append(train_loss)
             
             # Validation phase
@@ -225,17 +331,25 @@ class StockTrainer:
             self.val_losses.append(val_loss)
             
             # Learning rate scheduling
-            scheduler.step()
+            if epoch < warmup_epochs and warmup_epochs > 0:
+                warmup_scheduler.step()
+            elif scheduler_type == "plateau":
+                scheduler.step(val_loss)
+            else:
+                scheduler.step()
+            
+            # Get current learning rate
+            current_lr = optimizer.param_groups[0]['lr']
             
             # Print epoch results
             print(f"Train Loss: {train_loss:.6f}")
             print(f"Val Loss: {val_loss:.6f}")
-            print(f"Metrics: {metrics}")
-            print(f"Learning Rate: {scheduler.get_last_lr()[0]:.2e}")
+            print(f"Learning Rate: {current_lr:.2e}")
             
             # Save best model
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                best_metrics = metrics.copy()
                 self.save_checkpoint(epoch, val_loss, metrics, is_best=True)
                 early_stopping_counter = 0
                 print("New best model saved!")

@@ -87,6 +87,27 @@ class AdvancedMetrics:
         Returns:
             Dictionary of directional metrics
         """
+        # Ensure predictions and targets are 1D arrays
+        predictions = predictions.flatten()
+        targets = targets.flatten()
+        
+        # Remove any NaN or infinite values
+        valid_mask = np.isfinite(predictions) & np.isfinite(targets)
+        predictions = predictions[valid_mask]
+        targets = targets[valid_mask]
+        
+        # Need at least 2 points to calculate differences
+        if len(predictions) < 2 or len(targets) < 2:
+            return {
+                'Directional_Accuracy': 0.0,
+                'Classification_Accuracy': 0.0,
+                'Precision': 0.0,
+                'Recall': 0.0,
+                'F1_Score': 0.0,
+                'Up_Movement_Accuracy': 0.0,
+                'Down_Movement_Accuracy': 0.0
+            }
+        
         # Calculate price changes
         pred_changes = np.diff(predictions)
         true_changes = np.diff(targets)

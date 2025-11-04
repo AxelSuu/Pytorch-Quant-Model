@@ -9,6 +9,7 @@ yfinance>=0.2.20
 seaborn>=0.12.0
 plotly>=5.15.0
 tqdm>=4.65.0
+PyYAML>=6.0
 # Industrial-grade features
 scipy>=1.10.0
 statsmodels>=0.14.0

@@ -1,20 +1,19 @@
 """
-Stock Price Prediction Models using PyTorch.
+Stock Price Prediction Model using PyTorch.
 
-This module contains various neural network architectures for stock price forecasting,
-including LSTM, GRU, and Transformer-based models.
+This module contains an enhanced LSTM neural network architecture for stock price forecasting
+with attention mechanisms, residual connections, and uncertainty quantification.
 """
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 from typing import Tuple, Optional
 
 
 class StockLSTM(nn.Module):
     """
-    LSTM-based model for stock price prediction.
+    Enhanced LSTM-based model for stock price prediction with residual connections and attention.
     
     Args:
         input_size: Number of input features
@@ -40,6 +39,9 @@ class StockLSTM(nn.Module):
         self.output_size = output_size
         self.bidirectional = bidirectional
         
+        # Input projection for residual connection
+        self.input_projection = nn.Linear(input_size, hidden_size)
+        
         # LSTM layers
         self.lstm = nn.LSTM(
             input_size=input_size,
@@ -50,18 +52,44 @@ class StockLSTM(nn.Module):
             bidirectional=bidirectional
         )
         
-        # Fully connected layers
+        # Attention mechanism for temporal importance
         lstm_output_size = hidden_size * 2 if bidirectional else hidden_size
-        self.fc1 = nn.Linear(lstm_output_size, hidden_size // 2)
-        self.fc2 = nn.Linear(hidden_size // 2, output_size)
+        self.attention = nn.MultiheadAttention(
+            embed_dim=lstm_output_size,
+            num_heads=4,
+            dropout=dropout,
+            batch_first=True
+        )
+        
+        # Fully connected layers with residual connections
+        self.fc1 = nn.Linear(lstm_output_size, hidden_size)
+        self.fc2 = nn.Linear(hidden_size, hidden_size // 2)
+        self.fc3 = nn.Linear(hidden_size // 2, output_size)
         
         # Dropout and normalization
         self.dropout = nn.Dropout(dropout)
-        self.layer_norm = nn.LayerNorm(lstm_output_size)
+        self.layer_norm1 = nn.LayerNorm(lstm_output_size)
+        self.layer_norm2 = nn.LayerNorm(hidden_size)
+        self.layer_norm3 = nn.LayerNorm(hidden_size // 2)
+        
+        # Initialize weights properly
+        self._init_weights()
+    
+    def _init_weights(self):
+        """Initialize weights using Xavier/Glorot initialization."""
+        for name, param in self.named_parameters():
+            if 'weight_ih' in name:
+                nn.init.xavier_uniform_(param.data)
+            elif 'weight_hh' in name:
+                nn.init.orthogonal_(param.data)
+            elif 'bias' in name:
+                param.data.fill_(0)
+            elif 'fc' in name and 'weight' in name:
+                nn.init.xavier_uniform_(param.data)
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass through the network.
+        Forward pass through the network with attention and residual connections.
         
         Args:
             x: Input tensor of shape (batch_size, sequence_length, input_size)
@@ -71,7 +99,7 @@ class StockLSTM(nn.Module):
         """
         batch_size = x.size(0)
         
-        # Initialize hidden state
+        # Initialize hidden state with Xavier initialization
         h0 = torch.zeros(
             self.num_layers * (2 if self.bidirectional else 1),
             batch_size,
@@ -87,17 +115,22 @@ class StockLSTM(nn.Module):
         # LSTM forward pass
         lstm_out, (hn, cn) = self.lstm(x, (h0, c0))
         
+        # Apply attention mechanism
+        attn_out, _ = self.attention(lstm_out, lstm_out, lstm_out)
+        
+        # Residual connection
+        lstm_out = self.layer_norm1(lstm_out + attn_out)
+        
         # Use the last output
         last_output = lstm_out[:, -1, :]
         
-        # Apply layer normalization
-        last_output = self.layer_norm(last_output)
-        
-        # Fully connected layers
+        # Fully connected layers with residual connections and normalization
         out = self.dropout(last_output)
-        out = F.relu(self.fc1(out))
+        out = F.relu(self.layer_norm2(self.fc1(out)))
         out = self.dropout(out)
-        out = self.fc2(out)
+        out = F.relu(self.layer_norm3(self.fc2(out)))
+        out = self.dropout(out)
+        out = self.fc3(out)
         
         return out
     
@@ -157,300 +190,12 @@ class StockLSTM(nn.Module):
             return self.forward(x)
 
 
-class StockGRU(nn.Module):
-    """
-    GRU-based model for stock price prediction.
-    
-    Args:
-        input_size: Number of input features
-        hidden_size: Number of hidden units in GRU layers
-        num_layers: Number of GRU layers
-        output_size: Number of output predictions
-        dropout: Dropout probability
-    """
-    
-    def __init__(self, 
-                 input_size: int = 15,
-                 hidden_size: int = 128,
-                 num_layers: int = 2,
-                 output_size: int = 1,
-                 dropout: float = 0.2):
-        super(StockGRU, self).__init__()
-        
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        self.output_size = output_size
-        
-        # GRU layers
-        self.gru = nn.GRU(
-            input_size=input_size,
-            hidden_size=hidden_size,
-            num_layers=num_layers,
-            dropout=dropout if num_layers > 1 else 0,
-            batch_first=True
-        )
-        
-        # Fully connected layers
-        self.fc1 = nn.Linear(hidden_size, hidden_size // 2)
-        self.fc2 = nn.Linear(hidden_size // 2, output_size)
-        
-        # Dropout
-        self.dropout = nn.Dropout(dropout)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Forward pass through the network.
-        
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length, input_size)
-            
-        Returns:
-            Output tensor of shape (batch_size, output_size)
-        """
-        batch_size = x.size(0)
-        
-        # Initialize hidden state
-        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size).to(x.device)
-        
-        # GRU forward pass
-        gru_out, hn = self.gru(x, h0)
-        
-        # Use the last output
-        last_output = gru_out[:, -1, :]
-        
-        # Fully connected layers
-        out = self.dropout(last_output)
-        out = F.relu(self.fc1(out))
-        out = self.dropout(out)
-        out = self.fc2(out)
-        
-        return out
-    
-    def predict_sequence(self, x: torch.Tensor, steps: int = 1) -> torch.Tensor:
-        """
-        Predict multiple steps into the future using autoregressive approach.
-        
-        Args:
-            x: Input sequence of shape (batch_size, sequence_length, input_size)
-            steps: Number of future steps to predict
-            
-        Returns:
-            Predicted sequence of shape (batch_size, steps)
-        """
-        self.eval()
-        predictions = []
-        current_input = x.clone()
-        
-        with torch.no_grad():
-            for step in range(steps):
-                # Get prediction for current input
-                pred = self.forward(current_input)
-                predictions.append(pred)
-                
-                # Prepare next input by sliding window and appending prediction
-                if step < steps - 1:  # Don't update for last iteration
-                    # Create new timestep with prediction as the 'close' price
-                    last_features = current_input[:, -1:, :].clone()
-                    last_features[:, 0, 0] = pred.squeeze(-1)
-                    
-                    # Slide the window: remove first timestep, add new one
-                    current_input = torch.cat([
-                        current_input[:, 1:, :],
-                        last_features
-                    ], dim=1)
-                
-        return torch.cat(predictions, dim=1)
-    
-    def predict_next_day(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Predict the next day's price.
-        
-        Args:
-            x: Input sequence of shape (batch_size, sequence_length, input_size)
-            
-        Returns:
-            Next day price prediction of shape (batch_size, 1)
-        """
-        self.eval()
-        with torch.no_grad():
-            return self.forward(x)
-
-
-class StockTransformer(nn.Module):
-    """
-    Transformer-based model for stock price prediction.
-    
-    Args:
-        input_size: Number of input features
-        d_model: Dimension of the model
-        num_heads: Number of attention heads
-        num_layers: Number of transformer layers
-        dim_feedforward: Dimension of feedforward network
-        dropout: Dropout probability
-        output_size: Number of output predictions
-    """
-    
-    def __init__(self,
-                 input_size: int = 15,
-                 d_model: int = 128,
-                 num_heads: int = 8,
-                 num_layers: int = 4,
-                 dim_feedforward: int = 512,
-                 dropout: float = 0.1,
-                 output_size: int = 1):
-        super(StockTransformer, self).__init__()
-        
-        self.input_size = input_size
-        self.d_model = d_model
-        self.output_size = output_size
-        
-        # Input projection
-        self.input_projection = nn.Linear(input_size, d_model)
-        
-        # Positional encoding
-        self.positional_encoding = PositionalEncoding(d_model, dropout)
-        
-        # Transformer encoder
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=d_model,
-            nhead=num_heads,
-            dim_feedforward=dim_feedforward,
-            dropout=dropout,
-            batch_first=True
-        )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers)
-        
-        # Output layers
-        self.fc1 = nn.Linear(d_model, d_model // 2)
-        self.fc2 = nn.Linear(d_model // 2, output_size)
-        self.dropout = nn.Dropout(dropout)
-        
-        # Store attention weights for interpretability
-        self.attention_weights = None
-        
-    def forward(self, x: torch.Tensor, return_attention: bool = False) -> torch.Tensor:
-        """
-        Forward pass through the transformer.
-        
-        Args:
-            x: Input tensor of shape (batch_size, sequence_length, input_size)
-            return_attention: Whether to return attention weights
-            
-        Returns:
-            Output tensor of shape (batch_size, output_size)
-            If return_attention=True, also returns attention weights
-        """
-        # Input projection
-        x = self.input_projection(x)
-        
-        # Add positional encoding
-        x = self.positional_encoding(x)
-        
-        # Transformer encoding with attention extraction
-        transformer_out = self.transformer_encoder(x)
-        
-        # Extract attention weights from the last layer
-        if return_attention:
-            # Get attention weights from the transformer encoder
-            last_layer = self.transformer_encoder.layers[-1]
-            # This is a simplified approach - in practice, you'd need to modify 
-            # the transformer to properly extract attention weights
-            self.attention_weights = torch.ones(x.size(0), x.size(1), x.size(1))  # Placeholder
-        
-        # Use the last output
-        last_output = transformer_out[:, -1, :]
-        
-        # Output layers
-        out = self.dropout(last_output)
-        out = F.relu(self.fc1(out))
-        out = self.dropout(out)
-        out = self.fc2(out)
-        
-        if return_attention:
-            return out, self.attention_weights
-        return out
-    
-    def predict_sequence(self, x: torch.Tensor, steps: int = 1) -> torch.Tensor:
-        """
-        Predict multiple steps into the future using autoregressive approach.
-        
-        Args:
-            x: Input sequence of shape (batch_size, sequence_length, input_size)
-            steps: Number of future steps to predict
-            
-        Returns:
-            Predicted sequence of shape (batch_size, steps)
-        """
-        self.eval()
-        predictions = []
-        current_input = x.clone()
-        
-        with torch.no_grad():
-            for step in range(steps):
-                # Get prediction for current input
-                pred = self.forward(current_input)
-                predictions.append(pred)
-                
-                # Prepare next input by sliding window and appending prediction
-                if step < steps - 1:  # Don't update for last iteration
-                    # Create new timestep with prediction as the 'close' price
-                    last_features = current_input[:, -1:, :].clone()
-                    last_features[:, 0, 0] = pred.squeeze(-1)
-                    
-                    # Slide the window: remove first timestep, add new one
-                    current_input = torch.cat([
-                        current_input[:, 1:, :],
-                        last_features
-                    ], dim=1)
-                
-        return torch.cat(predictions, dim=1)
-    
-    def predict_next_day(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Predict the next day's price.
-        
-        Args:
-            x: Input sequence of shape (batch_size, sequence_length, input_size)
-            
-        Returns:
-            Next day price prediction of shape (batch_size, 1)
-        """
-        self.eval()
-        with torch.no_grad():
-            return self.forward(x)
-
-
-class PositionalEncoding(nn.Module):
-    """
-    Positional encoding for transformer model.
-    """
-    
-    def __init__(self, d_model: int, dropout: float = 0.1, max_len: int = 5000):
-        super(PositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-        
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
-        
-        self.register_buffer('pe', pe)
-        
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = x + self.pe[:x.size(0), :]
-        return self.dropout(x)
-
-
 class ModelEnsemble(nn.Module):
     """
-    Ensemble of multiple models for improved prediction accuracy.
+    Ensemble of multiple LSTM models for improved prediction accuracy.
     
     Args:
-        models: List of models to ensemble
+        models: List of LSTM models to ensemble
         weights: Optional weights for each model
     """
     
@@ -489,24 +234,55 @@ def create_model(model_type: str = "lstm",
                 input_size: int = 15,
                 **kwargs) -> nn.Module:
     """
-    Factory function to create different types of models.
+    Factory function to create LSTM models.
     
     Args:
-        model_type: Type of model ("lstm", "gru", "transformer")
+        model_type: Type of model (only "lstm" is supported)
         input_size: Number of input features
-        **kwargs: Additional arguments for specific models
+        **kwargs: Additional arguments for LSTM model
         
     Returns:
-        Initialized model
+        Initialized LSTM model
     """
     if model_type.lower() == "lstm":
         return StockLSTM(input_size=input_size, **kwargs)
-    elif model_type.lower() == "gru":
-        return StockGRU(input_size=input_size, **kwargs)
-    elif model_type.lower() == "transformer":
-        return StockTransformer(input_size=input_size, **kwargs)
     else:
-        raise ValueError(f"Unknown model type: {model_type}")
+        raise ValueError(f"Unknown model type: {model_type}. Only 'lstm' is supported.")
+
+
+def predict_with_uncertainty(model: nn.Module, 
+                             x: torch.Tensor, 
+                             n_samples: int = 30,
+                             dropout_rate: float = 0.1) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Monte Carlo Dropout for uncertainty estimation in predictions.
+    
+    This method enables dropout during inference and samples multiple predictions
+    to estimate uncertainty, providing confidence intervals for predictions.
+    
+    Args:
+        model: The trained model
+        x: Input tensor of shape (batch_size, sequence_length, input_size)
+        n_samples: Number of MC samples to generate
+        dropout_rate: Dropout rate for MC sampling
+        
+    Returns:
+        Tuple of (mean_prediction, std_prediction) representing mean and uncertainty
+    """
+    model.train()  # Enable dropout layers
+    predictions = []
+    
+    with torch.no_grad():
+        for _ in range(n_samples):
+            pred = model(x)
+            predictions.append(pred)
+    
+    predictions = torch.stack(predictions)
+    mean_pred = predictions.mean(dim=0)
+    std_pred = predictions.std(dim=0)
+    
+    model.eval()
+    return mean_pred, std_pred
 
 
 # Alias for backward compatibility

@@ -47,16 +47,20 @@ class StockDataLoader:
     Handles stock data fetching, preprocessing, and dataset creation.
     """
     
-    def __init__(self, symbol: str = "AAPL", period: str = "5y"):
+    def __init__(self, symbol: str = "AAPL", period: str = "5y", start: str = None, end: str = None):
         """
         Initialize the stock data loader.
         
         Args:
             symbol: Stock symbol (e.g., "AAPL", "GOOGL")
             period: Time period for data ("1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max")
+            start: Start date (yyyy-mm-dd) - overrides period if provided
+            end: End date (yyyy-mm-dd) - overrides period if provided
         """
         self.symbol = symbol
         self.period = period
+        self.start = start
+        self.end = end
         self.scaler = MinMaxScaler()
         self.data = None
         self.scaled_data = None
@@ -69,9 +73,15 @@ class StockDataLoader:
             Raw stock data DataFrame
         """
         try:
-            print(f"Fetching data for {self.symbol} for period {self.period}...")
             stock = yf.Ticker(self.symbol)
-            data = stock.history(period=self.period)
+            
+            # Use start/end dates if provided, otherwise use period
+            if self.start or self.end:
+                print(f"Fetching data for {self.symbol} from {self.start or 'earliest'} to {self.end or 'latest'}...")
+                data = stock.history(start=self.start, end=self.end)
+            else:
+                print(f"Fetching data for {self.symbol} for period {self.period}...")
+                data = stock.history(period=self.period)
             
             if data.empty:
                 raise ValueError(f"No data found for symbol {self.symbol}")
@@ -282,7 +292,7 @@ class StockDataLoader:
         Returns:
             Latest real-time sequence tensor
         """
-        print(f"📡 Fetching real-time data for {self.symbol}...")
+        print(f"Fetching real-time data for {self.symbol}...")
         
         # Fetch recent data (more than needed to ensure we have enough for technical indicators)
         recent_period = f"{sequence_length + 50}d"  # Get extra days for technical indicators
@@ -309,14 +319,14 @@ class StockDataLoader:
             
             # Get the actual latest close price for reference
             latest_close = recent_data['Close'].iloc[-1]
-            print(f"💰 Latest {self.symbol} close price: ${latest_close:.2f}")
-            print(f"📅 Latest data date: {recent_data.index[-1].strftime('%Y-%m-%d')}")
+            print(f"Latest {self.symbol} close price: ${latest_close:.2f}")
+            print(f"Latest data date: {recent_data.index[-1].strftime('%Y-%m-%d')}")
             
             return torch.FloatTensor(latest_sequence).unsqueeze(0)  # Add batch dimension
             
         except Exception as e:
-            print(f"❌ Error fetching real-time data: {e}")
-            print("🔄 Falling back to historical data...")
+            print(f"Error fetching real-time data: {e}")
+            print("Falling back to historical data...")
             return self.get_latest_sequence(sequence_length)
     
     def is_market_open(self) -> bool:
@@ -342,6 +352,8 @@ class StockDataLoader:
 
 def create_dataloaders(symbol: str = "AAPL", 
                       period: str = "5y",
+                      start: str = None,
+                      end: str = None,
                       sequence_length: int = 60,
                       batch_size: int = 32,
                       train_ratio: float = 0.8) -> Tuple[DataLoader, DataLoader, StockDataLoader]:
@@ -350,7 +362,9 @@ def create_dataloaders(symbol: str = "AAPL",
     
     Args:
         symbol: Stock symbol
-        period: Time period for data
+        period: Time period for data (ignored if start/end provided)
+        start: Start date (yyyy-mm-dd) - overrides period if provided
+        end: End date (yyyy-mm-dd) - overrides period if provided
         sequence_length: Length of input sequences
         batch_size: Batch size for training
         train_ratio: Ratio of data to use for training
@@ -359,7 +373,7 @@ def create_dataloaders(symbol: str = "AAPL",
         Training DataLoader, Testing DataLoader, and StockDataLoader instance
     """
     # Initialize data loader
-    stock_data_loader = StockDataLoader(symbol, period)
+    stock_data_loader = StockDataLoader(symbol, period, start=start, end=end)
     
     # Load and preprocess data
     stock_data_loader.load_and_preprocess_data()

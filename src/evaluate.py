@@ -15,7 +15,7 @@ import json
 import argparse
 
 from data.stock_data import create_dataloaders, StockDataLoader
-from model import create_model
+from model import create_model, predict_with_uncertainty
 from train import StockTrainer
 from utils import (
     plot_predictions, plot_stock_data, save_results,
@@ -26,17 +26,15 @@ from utils import (
 
 class StockPredictor:
     """
-    Class for making predictions with trained stock models.
+    Class for making predictions with trained LSTM models.
     
     Args:
         model_path: Path to the trained model checkpoint
-        model_type: Type of model (lstm, gru, transformer)
         device: Device to run predictions on
     """
     
-    def __init__(self, model_path: str, model_type: str = "lstm", device: torch.device = None):
+    def __init__(self, model_path: str, device: torch.device = None):
         self.model_path = model_path
-        self.model_type = model_type
         self.device = device or get_device()
         
         # Load model
@@ -45,20 +43,14 @@ class StockPredictor:
         self.load_model()
     
     def load_model(self):
-        """Load the trained model from checkpoint."""
+        """Load the trained LSTM model from checkpoint."""
         try:
             # Load checkpoint with weights_only=False for compatibility
             checkpoint = torch.load(self.model_path, map_location=self.device, weights_only=False)
             
-            # Extract model type from checkpoint if available, otherwise use provided model_type
-            checkpoint_model_type = checkpoint.get('model_type', self.model_type)
-            if checkpoint_model_type != self.model_type:
-                print(f"🔄 Model type from checkpoint: {checkpoint_model_type}, overriding provided: {self.model_type}")
-                self.model_type = checkpoint_model_type
-            
-            # Create model (assuming standard parameters for now)
+            # Create LSTM model (assuming standard parameters for now)
             self.model = create_model(
-                model_type=self.model_type,
+                model_type='lstm',
                 input_size=15,  # Standard number of features
                 hidden_size=128,
                 num_layers=2,
@@ -70,12 +62,12 @@ class StockPredictor:
             self.model.to(self.device)
             self.model.eval()
             
-            print(f"✅ Model loaded from {self.model_path}")
+            print(f"Model loaded from {self.model_path}")
             print(f"   Validation loss: {checkpoint['val_loss']:.6f}")
             print(f"   Epoch: {checkpoint['epoch']}")
             
         except Exception as e:
-            print(f"❌ Error loading model: {e}")
+            print(f"Error loading model: {e}")
             raise
     
     def setup_data(self, symbol: str, period: str = "2y", sequence_length: int = 60):
@@ -84,45 +76,97 @@ class StockPredictor:
         self.data_loader.load_and_preprocess_data()
         self.sequence_length = sequence_length
         
-    def predict_next_price(self, symbol: str, period: str = "2y", sequence_length: int = 60, use_realtime: bool = True) -> float:
+    def predict_next_price(self, symbol: str, period: str = "2y", sequence_length: int = 60, 
+                          use_realtime: bool = True, return_confidence: bool = False) -> float:
         """
-        Predict the next day's closing price.
+        Predict the next day's closing price with optional confidence intervals.
         
         Args:
             symbol: Stock symbol
             period: Data period for training scaler (not used for real-time prediction)
             sequence_length: Length of input sequence
             use_realtime: Whether to fetch real-time data or use historical data
+            return_confidence: Whether to return confidence intervals
             
         Returns:
-            Predicted price
+            Predicted price (and confidence intervals if return_confidence=True)
         """
         # Setup data loader to fit the scaler (needed for real-time data processing)
         self.setup_data(symbol, period, sequence_length)
         
+        # Validate data quality
+        if not self._validate_data_quality():
+            print("Warning: Data quality check failed. Predictions may be unreliable.")
+        
         # Get latest sequence (real-time or historical)
         if use_realtime:
-            print("🔄 Using real-time data for prediction...")
+            print("Using real-time data for prediction...")
             latest_sequence = self.data_loader.get_realtime_sequence(sequence_length)
         else:
-            print("🔄 Using historical data for prediction...")
+            print("Using historical data for prediction...")
             latest_sequence = self.data_loader.get_latest_sequence(sequence_length)
         
-        # Make prediction
-        with torch.no_grad():
-            prediction = self.model(latest_sequence.to(self.device))
+        # Make prediction with uncertainty quantification
+        if return_confidence:
+            mean_pred, std_pred = predict_with_uncertainty(
+                self.model, latest_sequence.to(self.device), n_samples=30
+            )
+            prediction = mean_pred.cpu().numpy()
+            std = std_pred.cpu().numpy()
+        else:
+            with torch.no_grad():
+                prediction = self.model(latest_sequence.to(self.device))
+            prediction = prediction.cpu().numpy()
         
         # Convert to original scale
-        prediction_original = self.data_loader.inverse_transform_predictions(
-            prediction.cpu().numpy()
-        )
+        prediction_original = self.data_loader.inverse_transform_predictions(prediction)
+        
+        if return_confidence:
+            std_original = std * self.data_loader.scaler.scale_[0]
+            confidence_interval = 1.96 * std_original  # 95% confidence interval
+            return prediction_original[0], confidence_interval[0]
         
         return prediction_original[0]
     
-    def predict_sequence(self, symbol: str, steps: int = 5, 
-                        period: str = "2y", sequence_length: int = 60, use_realtime: bool = True) -> List[float]:
+    def _validate_data_quality(self) -> bool:
         """
-        Predict multiple future prices.
+        Validate the quality of loaded data.
+        
+        Returns:
+            True if data passes quality checks, False otherwise
+        """
+        if self.data_loader is None or self.data_loader.data is None:
+            return False
+        
+        data = self.data_loader.data
+        
+        # Check for sufficient data points
+        if len(data) < self.sequence_length + 10:
+            print(f"Warning: Insufficient data: {len(data)} points (need at least {self.sequence_length + 10})")
+            return False
+        
+        # Check for NaN or infinite values
+        if data.isnull().any().any():
+            print("Warning: Data contains NaN values")
+            return False
+        
+        if np.isinf(data.select_dtypes(include=[np.number])).any().any():
+            print("Warning: Data contains infinite values")
+            return False
+        
+        # Check for data staleness (if using real-time)
+        last_date = pd.to_datetime(data.index[-1])
+        days_old = (pd.Timestamp.now() - last_date).days
+        if days_old > 7:
+            print(f"Warning: Data is {days_old} days old")
+        
+        return True
+    
+    def predict_sequence(self, symbol: str, steps: int = 5, 
+                        period: str = "2y", sequence_length: int = 60, 
+                        use_realtime: bool = True, return_confidence: bool = False) -> List[float]:
+        """
+        Predict multiple future prices with optional confidence intervals.
         
         Args:
             symbol: Stock symbol
@@ -130,21 +174,60 @@ class StockPredictor:
             period: Data period for training scaler
             sequence_length: Length of input sequence
             use_realtime: Whether to fetch real-time data or use historical data
+            return_confidence: Whether to return confidence intervals
             
         Returns:
-            List of predicted prices
+            List of predicted prices (and confidence intervals if requested)
         """
         # Setup data loader to fit the scaler
         self.setup_data(symbol, period, sequence_length)
         
+        # Validate data quality
+        if not self._validate_data_quality():
+            print("Warning: Data quality check failed. Predictions may be unreliable.")
+        
         # Get latest sequence (real-time or historical)
         if use_realtime:
-            print("🔄 Using real-time data for sequence prediction...")
+            print("Using real-time data for sequence prediction...")
             latest_sequence = self.data_loader.get_realtime_sequence(sequence_length)
         else:
-            print("🔄 Using historical data for sequence prediction...")
+            print("Using historical data for sequence prediction...")
             latest_sequence = self.data_loader.get_latest_sequence(sequence_length)
         
+        # Make predictions with uncertainty if requested
+        if return_confidence:
+            all_predictions = []
+            all_stds = []
+            
+            for _ in range(steps):
+                mean_pred, std_pred = predict_with_uncertainty(
+                    self.model, latest_sequence.to(self.device), n_samples=30
+                )
+                all_predictions.append(mean_pred)
+                all_stds.append(std_pred)
+                
+                # Update sequence for next prediction (simplified)
+                if _ < steps - 1:
+                    last_features = latest_sequence[:, -1:, :].clone()
+                    last_features[:, 0, 0] = mean_pred.squeeze(-1)
+                    latest_sequence = torch.cat([
+                        latest_sequence[:, 1:, :],
+                        last_features
+                    ], dim=1)
+            
+            predictions = torch.cat(all_predictions, dim=1)
+            stds = torch.cat(all_stds, dim=1)
+            
+            # Convert to original scale
+            predictions_original = self.data_loader.inverse_transform_predictions(
+                predictions.cpu().numpy().flatten()
+            )
+            stds_original = stds.cpu().numpy().flatten() * self.data_loader.scaler.scale_[0]
+            confidence_intervals = 1.96 * stds_original
+            
+            return list(zip(predictions_original.tolist(), confidence_intervals.tolist()))
+        
+        # Standard prediction without uncertainty
         # Make predictions
         if hasattr(self.model, 'predict_sequence'):
             # Use model's built-in sequence prediction
@@ -247,9 +330,6 @@ def main():
     
     parser.add_argument('--model_path', type=str, required=True,
                        help='Path to the trained model checkpoint')
-    parser.add_argument('--model_type', type=str, default='lstm',
-                       choices=['lstm', 'gru', 'transformer'],
-                       help='Type of model')
     parser.add_argument('--symbol', type=str, default='AAPL',
                        help='Stock symbol to evaluate')
     parser.add_argument('--period', type=str, default='2y',
@@ -272,13 +352,13 @@ def main():
     
     # Set up predictor
     set_seed(42)
-    predictor = StockPredictor(args.model_path, args.model_type)
+    predictor = StockPredictor(args.model_path)
     
-    print("🔍 STOCK PRICE PREDICTION EVALUATION")
+    print("STOCK PRICE PREDICTION EVALUATION")
     print("=" * 50)
-    print(f"📊 Symbol: {args.symbol}")
-    print(f"🤖 Model: {args.model_type.upper()}")
-    print(f"📡 Data Mode: {'Real-time' if use_realtime else 'Historical'}")
+    print(f"Symbol: {args.symbol}")
+    print(f"Model: LSTM")
+    print(f"Data Mode: {'Real-time' if use_realtime else 'Historical'}")
     print("=" * 50)
     
     # Predict next price
@@ -286,33 +366,33 @@ def main():
         next_price = predictor.predict_next_price(
             args.symbol, args.period, args.sequence_length, use_realtime
         )
-        print(f"\n📈 Next trading day prediction for {args.symbol}: ${next_price:.2f}")
+        print(f"\nNext trading day prediction for {args.symbol}: ${next_price:.2f}")
     except Exception as e:
-        print(f"❌ Error predicting next price: {e}")
+        print(f"Error predicting next price: {e}")
     
     # Predict sequence
     try:
         future_prices = predictor.predict_sequence(
             args.symbol, args.predict_steps, args.period, args.sequence_length, use_realtime
         )
-        print(f"\n📊 Future {args.predict_steps} trading days predictions:")
+        print(f"\nFuture {args.predict_steps} trading days predictions:")
         for i, price in enumerate(future_prices, 1):
             print(f"   Day {i}: ${price:.2f}")
     except Exception as e:
-        print(f"❌ Error predicting sequence: {e}")
+        print(f"Error predicting sequence: {e}")
     
     # Evaluate on test data
     try:
-        print(f"\n🧪 Evaluating on test data for {args.symbol}...")
+        print(f"\nEvaluating on test data for {args.symbol}...")
         results = predictor.evaluate_on_test_data(
             args.symbol, args.period, args.sequence_length
         )
         
-        print("📊 Test Metrics:")
+        print("Test Metrics:")
         for metric, value in results['metrics'].items():
             print(f"   {metric}: {value:.4f}")
         
-        print(f"\n💰 Backtest Results:")
+        print(f"\nBacktest Results:")
         backtest = results['backtest']
         print(f"   Total Return: {backtest['Total_Return']:.2%}")
         print(f"   Final Portfolio Value: ${backtest['Final_Value']:.2f}")
@@ -322,17 +402,17 @@ def main():
         plot_predictions(
             actual=results['targets'],
             predicted=results['predictions'],
-            title=f"{args.symbol} Model Evaluation - {args.model_type.upper()}",
-            save_path=f"evaluation_{args.symbol}_{args.model_type}.png"
+            title=f"{args.symbol} Model Evaluation - LSTM",
+            save_path=f"evaluation_{args.symbol}_lstm.png"
         )
         
         # Save results
         if args.save_results:
-            save_results(results, f"evaluation_{args.symbol}_{args.model_type}")
-            print(f"💾 Results saved to evaluation_{args.symbol}_{args.model_type}.json")
+            save_results(results, f"evaluation_{args.symbol}_lstm.json")
+            print(f"Results saved to evaluation_{args.symbol}_lstm.json")
             
     except Exception as e:
-        print(f"❌ Error evaluating model: {e}")
+        print(f"Error evaluating model: {e}")
         import traceback
         traceback.print_exc()
 
