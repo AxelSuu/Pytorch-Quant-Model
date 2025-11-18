@@ -42,28 +42,3 @@ python pystock.py train --symbol AAPL
 source .venv/bin/activate
 python pystock.py train --symbol AAPL
 ```
-
-
-
-**Note:** All model hyperparameters (hidden size, layers, dropout, etc.) are configured in `config.yaml`.
-
-## Python API
-
-You can also use PyStock API:
-
-```python
-from src.evaluate import StockPredictor
-
-# Initialize predictor with your trained model
-predictor = StockPredictor("checkpoints/AAPL_lstm_128h_2l_60s_best.pth")
-
-# Get next-day prediction with confidence interval
-result = predictor.predict_next_price("AAPL", return_confidence=True)
-print(f"Predicted: ${result['predicted_price']:.2f}")
-print(f"Current: ${result['current_price']:.2f}")
-
-# Get multi-day forecast
-prices = predictor.predict_sequence("AAPL", steps=5)
-```
-
-
