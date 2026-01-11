@@ -1,0 +1,1 @@
+"""PyStock test suite."""

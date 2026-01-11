@@ -12,5 +12,11 @@ training:
   learning_rate: 0.001
   train_split: 0.8
 
+data:
+  use_indicators: false  # Set to true to use technical indicators (RSI, MACD, etc.)
+
 predict:
   forecast_days: 5
+
+validation:
+  walk_forward_splits: 5  # Number of splits for walk-forward validation

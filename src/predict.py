@@ -5,7 +5,7 @@ import glob
 import torch
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
-from src.model import load_model
+from src.model import load_model, load_checkpoint, reconstruct_scaler
 from src.data import prepare_prediction_data, fetch_stock_data, create_sequences
 
 
@@ -23,15 +23,26 @@ def evaluate(symbol: str, config: dict):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     seq_length = config["training"]["sequence_length"]
     
-    # Load model
+    # Load model with saved scaler
     checkpoint_path = find_checkpoint(symbol)
-    model = load_model(checkpoint_path, device)
+    model, scaler_min, scaler_max, input_size, use_indicators = load_checkpoint(checkpoint_path, device)
     print(f"Loaded model from {checkpoint_path}")
+    print(f"Model uses {input_size} features" + (" (with technical indicators)" if use_indicators else ""))
     
-    # Get data
-    data, last_date = fetch_stock_data(symbol)
-    scaler = MinMaxScaler()
-    scaled = scaler.fit_transform(data)
+    # Reconstruct scaler from checkpoint (ensures consistency with training)
+    if scaler_min is not None and scaler_max is not None:
+        scaler = reconstruct_scaler(scaler_min, scaler_max)
+        print("Using saved scaler from training checkpoint")
+    else:
+        # Fallback for old checkpoints without scaler data
+        print("Warning: No scaler data in checkpoint, re-fitting scaler")
+        scaler = MinMaxScaler()
+        data, _ = fetch_stock_data(symbol, use_indicators=use_indicators)
+        scaler.fit(data)
+    
+    # Get data and scale with saved scaler (use same indicators setting as training)
+    data, last_date = fetch_stock_data(symbol, use_indicators=use_indicators)
+    scaled = scaler.transform(data)
     
     X, y_true = create_sequences(scaled, seq_length)
     X = torch.FloatTensor(X).to(device)
@@ -64,12 +75,23 @@ def predict(symbol: str, config: dict):
     seq_length = config["training"]["sequence_length"]
     forecast_days = config["predict"]["forecast_days"]
     
-    # Load model
+    # Load model with saved scaler
     checkpoint_path = find_checkpoint(symbol)
-    model = load_model(checkpoint_path, device)
+    model, scaler_min, scaler_max, input_size, use_indicators = load_checkpoint(checkpoint_path, device)
     
-    # Get data
-    sequence, scaler, current_price, last_date = prepare_prediction_data(symbol, seq_length)
+    # Reconstruct scaler from checkpoint
+    if scaler_min is not None and scaler_max is not None:
+        scaler = reconstruct_scaler(scaler_min, scaler_max)
+    else:
+        # Fallback for old checkpoints
+        data, _ = fetch_stock_data(symbol, use_indicators=use_indicators)
+        scaler = MinMaxScaler()
+        scaler.fit(data)
+    
+    # Get data and prepare sequence with saved scaler
+    sequence, _, current_price, last_date = prepare_prediction_data(
+        symbol, seq_length, scaler, use_indicators
+    )
     sequence = sequence.to(device)
     
     print(f"\n=== {symbol} Price Prediction ===")
@@ -103,7 +125,8 @@ def predict(symbol: str, config: dict):
 
 def inverse_transform_close(scaled_values: np.ndarray, scaler: MinMaxScaler) -> np.ndarray:
     """Inverse transform scaled Close prices."""
-    # Close is at index 3
-    dummy = np.zeros((len(scaled_values), 5))
+    # Close is at index 3, handle dynamic number of features
+    n_features = scaler.n_features_in_
+    dummy = np.zeros((len(scaled_values), n_features))
     dummy[:, 3] = scaled_values
     return scaler.inverse_transform(dummy)[:, 3]
