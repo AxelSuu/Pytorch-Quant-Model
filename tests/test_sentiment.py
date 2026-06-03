@@ -1,0 +1,45 @@
+"""Tests for news sentiment (graceful degradation + scoring logic)."""
+
+import datetime as dt
+
+from pyquant.data import sentiment
+
+
+def test_signed_score_positive_minus_negative():
+    result = [
+        {"label": "positive", "score": 0.8},
+        {"label": "negative", "score": 0.1},
+        {"label": "neutral", "score": 0.1},
+    ]
+    assert abs(sentiment._signed_score(result) - 0.7) < 1e-9
+
+
+def test_fetch_sentiment_without_key_is_empty():
+    assert sentiment.fetch_sentiment(api_key=None, symbol="AAPL").empty
+
+
+def test_fetch_sentiment_aggregates_daily(monkeypatch):
+    # Pretend FinBERT + Finnhub are available and return deterministic data.
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+
+    ts = int(dt.datetime(2024, 1, 2, 12, 0).timestamp())
+    articles = [
+        {"headline": "great earnings", "datetime": ts},
+        {"headline": "lawsuit filed", "datetime": ts},
+    ]
+    monkeypatch.setattr(sentiment, "fetch_news", lambda *a, **k: articles)
+    monkeypatch.setattr(sentiment, "score_headlines", lambda h: [0.9, -0.5])
+
+    out = sentiment.fetch_sentiment(api_key="dummy", symbol="AAPL")
+    assert "Sentiment" in out.columns
+    assert "HeadlineCount" in out.columns
+    # Two articles on the same day -> one row, count 2, mean of the two scores.
+    assert len(out) == 1
+    assert out["HeadlineCount"].iloc[0] == 2
+    assert abs(out["Sentiment"].iloc[0] - 0.2) < 1e-9
+
+
+def test_fetch_sentiment_empty_news(monkeypatch):
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    monkeypatch.setattr(sentiment, "fetch_news", lambda *a, **k: [])
+    assert sentiment.fetch_sentiment(api_key="dummy", symbol="AAPL").empty
