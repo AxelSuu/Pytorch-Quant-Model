@@ -3,11 +3,22 @@ __pycache__/
 *.py[cod]
 *.so
 
-# PyTorch checkpoints
+# PyTorch / Lightning checkpoints & logs
 *.pth
 *.pt
-!checkpoints/*_best.pth
+*.ckpt
+lightning_logs/
 !checkpoints/*.json
+
+# Secrets
+.env
+
+# Tooling caches
+.ruff_cache/
+.pytest_cache/
+
+# Generated chart exports
+exports/
 
 # Virtual environments
 .venv/
