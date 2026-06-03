@@ -149,6 +149,44 @@ def train(
     )
 
 
+def _prediction_dataset(bundle: ModelBundle, df) -> TimeSeriesDataSet:
+    """Rebuild a prediction TimeSeriesDataSet from saved params + fresh data."""
+    return TimeSeriesDataSet.from_parameters(
+        bundle.dataset_params, df, predict=True, stop_randomization=True
+    )
+
+
+def predict_quantiles(bundle: ModelBundle, df):
+    """Return a (horizon, n_quantiles) array of quantile forecasts."""
+    ds = _prediction_dataset(bundle, df)
+    dl = ds.to_dataloader(train=False, batch_size=1, num_workers=0)
+    out = bundle.model.predict(dl, mode="quantiles")
+    return out[0].cpu().numpy()
+
+
+def interpret(bundle: ModelBundle, df) -> dict:
+    """Return labelled feature importances + temporal attention for one forecast.
+
+    Keys:
+        encoder_importance: {feature: weight} over the lookback window
+        attention:          1-D array of attention weight per past time step
+    """
+    ds = _prediction_dataset(bundle, df)
+    dl = ds.to_dataloader(train=False, batch_size=1, num_workers=0)
+    raw = bundle.model.predict(dl, mode="raw", return_x=True)
+    interpretation = bundle.model.interpret_output(raw.output, reduction="sum")
+
+    enc_names = bundle.model.encoder_variables
+    enc_weights = interpretation["encoder_variables"].detach().cpu().numpy().reshape(-1)
+    importance = dict(zip(enc_names, enc_weights.tolist(), strict=False))
+    # Normalise to fractions for readability.
+    total = sum(importance.values()) or 1.0
+    importance = {k: v / total for k, v in importance.items()}
+
+    attention = interpretation["attention"].detach().cpu().numpy().reshape(-1)
+    return {"encoder_importance": importance, "attention": attention}
+
+
 def load(symbol: str, settings: Settings) -> ModelBundle:
     """Load a trained bundle for ``symbol``."""
     bundle_dir = _bundle_dir(settings, symbol)
