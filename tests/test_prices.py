@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from pyquant.data import prices
 
@@ -64,8 +65,5 @@ def test_fetch_prices_raises_on_empty(monkeypatch):
             return pd.DataFrame()
 
     monkeypatch.setattr(prices.yf, "Ticker", EmptyTicker)
-    try:
+    with pytest.raises(ValueError):
         prices.fetch_prices("BADSYM")
-        assert False, "expected ValueError"
-    except ValueError:
-        pass

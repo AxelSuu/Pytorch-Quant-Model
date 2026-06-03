@@ -8,7 +8,9 @@ __pycache__/
 *.pt
 *.ckpt
 lightning_logs/
-!checkpoints/*.json
+# Trained model bundles are local artifacts; keep the dir, ignore its contents.
+checkpoints/*
+!checkpoints/.gitkeep
 
 # Secrets
 .env
