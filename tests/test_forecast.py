@@ -2,6 +2,7 @@
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from pyquant.analysis import forecast as fc_mod
 from pyquant.analysis.forecast import Forecast
@@ -44,6 +45,21 @@ def test_expected_return_pct():
     assert abs(fc.expected_return_pct() - (-2.7272)) < 1e-3
 
 
+def test_median_raises_clear_error_when_0_5_not_configured():
+    """0.5 // 2 would silently pick p75 for [0.05,0.25,0.75,0.95] -- must not."""
+    dates = pd.bdate_range("2024-01-01", periods=3)
+    fc = Forecast(
+        symbol="TEST",
+        last_date=dates[-1],
+        current_price=100.0,
+        quantiles=[0.05, 0.25, 0.75, 0.95],
+        predictions=np.array([[90, 95, 105, 110]] * 3),
+        history=pd.Series([100.0] * 3, index=dates),
+    )
+    with pytest.raises(ValueError, match="0.5"):
+        _ = fc.median
+
+
 def test_generate_forecast_orchestration(monkeypatch, sample_ohlcv_df):
     from pyquant.data.prices import add_technical_indicators
 
@@ -63,3 +79,26 @@ def test_generate_forecast_orchestration(monkeypatch, sample_ohlcv_df):
     assert fc.symbol == "TEST"
     assert fc.horizon == 5
     assert fc.current_price == float(panel["Close"].iloc[-1])
+
+
+def test_generate_forecast_forwards_pin_to_build_panel(monkeypatch, sample_ohlcv_df):
+    from pyquant.data.prices import add_technical_indicators
+
+    panel = add_technical_indicators(sample_ohlcv_df)
+    received = {}
+
+    def fake_build_panel(symbol, settings, pin=None):
+        received["pin"] = pin
+        return panel
+
+    monkeypatch.setattr(fc_mod, "build_panel", fake_build_panel)
+    monkeypatch.setattr(fc_mod, "panel_to_long", lambda p, s: p)
+
+    class FakeBundle:
+        meta = {"quantiles": [0.1, 0.5, 0.9]}
+
+    monkeypatch.setattr(fc_mod.tft, "load", lambda *a, **k: FakeBundle())
+    monkeypatch.setattr(fc_mod.tft, "predict_quantiles", lambda b, df: np.ones((5, 3)) * 100.0)
+
+    fc_mod.generate_forecast("test", object(), pin="exp-1")
+    assert received["pin"] == "exp-1"

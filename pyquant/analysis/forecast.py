@@ -34,7 +34,12 @@ class Forecast:
 
     @property
     def median(self) -> np.ndarray:
-        return self.quantile_series(0.5) if 0.5 in self.quantiles else self.predictions[:, len(self.quantiles) // 2]
+        if 0.5 not in self.quantiles:
+            raise ValueError(
+                f"0.5 is not among the configured quantiles {self.quantiles}; "
+                "TFTConfig.quantiles must include 0.5 to compute a median."
+            )
+        return self.quantile_series(0.5)
 
     def expected_return_pct(self) -> float:
         """Percent change from current price to the final-day median forecast."""
@@ -46,11 +51,16 @@ def generate_forecast(
     settings: Settings,
     bundle: tft.ModelBundle | None = None,
     history_days: int = 90,
+    pin: str | None = None,
 ) -> Forecast:
-    """Build a forecast for ``symbol`` using its trained bundle."""
+    """Build a forecast for ``symbol`` using its trained bundle.
+
+    ``pin`` replays a reproducible dataset snapshot instead of live data
+    (see pyquant.data.cache) -- useful for re-running a past experiment.
+    """
     symbol = symbol.upper()
     bundle = bundle or tft.load(symbol, settings)
-    panel = build_panel(symbol, settings)
+    panel = build_panel(symbol, settings, pin=pin)
     df = panel_to_long(panel, symbol)
 
     predictions = tft.predict_quantiles(bundle, df)

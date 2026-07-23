@@ -100,7 +100,10 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # exposes as a current snapshot — see pyquant.data.options).
     df["Realized_Vol_20"] = close.pct_change().rolling(window=20).std() * np.sqrt(252)
 
-    return df.ffill().bfill()
+    # Leading rows are genuinely NaN until each indicator's window is full
+    # (e.g. SMA_50 needs 49 days of history). Leave them as NaN rather than
+    # bfilling a fabricated constant -- build_panel() drops them.
+    return df
 
 
 def _normalize_index(df: pd.DataFrame) -> pd.DataFrame:

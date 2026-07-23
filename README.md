@@ -44,14 +44,40 @@ uv sync --extra sentiment     # + FinBERT news sentiment (downloads the model on
 
 ```bash
 uv run pyquant train AAPL              # train a TFT (saves to checkpoints/AAPL/)
+uv run pyquant train AAPL,MSFT,NVDA    # pool multiple symbols into one model (checkpoints/AAPL_MSFT_NVDA/)
 uv run pyquant forecast AAPL           # quantile forecast + fan chart + options context
 uv run pyquant forecast AAPL --export aapl.png   # also write a PNG fan chart
+uv run pyquant forecast AAPL --bundle AAPL_MSFT_NVDA   # forecast AAPL using a pooled bundle
 uv run pyquant explain AAPL            # feature importance + temporal attention
 uv run pyquant scan AAPL,MSFT,NVDA     # multi-asset comparison table
+uv run pyquant backtest AAPL           # walk-forward backtest across rolling windows
 ```
 
-Useful flags: `train --epochs 50 --period 10y`, and `--no-macro / --no-sentiment /
---no-sectors` to train on a leaner feature set.
+Useful flags: `train --epochs 50 --period 10y`, `train --name my_bundle` to
+override the checkpoint directory name, `backtest --windows 10`, and
+`--no-macro / --no-sentiment / --no-sectors` to train on a leaner feature set.
+
+Training on multiple comma-separated symbols pools them into a single
+TimeSeriesDataSet/model (via `group_ids=["symbol"]`) instead of training a
+separate model per ticker on a few years of daily bars each -- meaningfully
+more data for the same architecture. `forecast`/`explain --bundle <name>` let
+you query an individual symbol's forecast from a pooled bundle.
+
+Fetched data panels are cached locally (`.cache/pyquant/`, 1h TTL by default;
+tune via `DataConfig.cache_ttl_seconds` or disable with `cache_enabled=False`)
+so repeated runs don't re-hit Yahoo/FRED/Finnhub. `train --pin NAME` /
+`forecast --pin NAME` save (or replay) a named, TTL-exempt dataset snapshot,
+so a specific experiment can be re-run later against byte-identical data
+instead of whatever happens to be live that day.
+
+Pass `--verbose`/`--debug` before the subcommand (e.g. `pyquant --debug train
+AAPL`) to re-enable INFO/DEBUG logging and Lightning's own training output --
+useful for diagnosing NaN losses or unexpected feature drift.
+
+`train` and `backtest` both report model quality against a naive persistence
+baseline (predict "no change"), directional hit-rate, and empirical calibration
+(how often the realized price actually falls inside the forecast's p10-p90
+band) -- not just an absolute loss number with nothing to compare it against.
 
 ## API keys (optional)
 

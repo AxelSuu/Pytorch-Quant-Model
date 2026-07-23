@@ -8,20 +8,37 @@ the unavailable columns are simply omitted.
 from __future__ import annotations
 
 import logging
+from typing import NamedTuple
 
 import pandas as pd
 import yfinance as yf
 
 logger = logging.getLogger(__name__)
 
-# FRED series id -> output column name.
-FRED_SERIES = {
-    "DFF": "FedFunds",  # Effective federal funds rate (daily)
-    "T10Y2Y": "YieldSpread",  # 10Y-2Y treasury spread (daily)
-    "CPIAUCSL": "CPI",  # CPI, all urban consumers (monthly)
+
+class _FredSeriesSpec(NamedTuple):
+    """A FRED series' output column and its real-world publication lag.
+
+    fredapi's get_series() indexes values by economic *reference period*
+    (e.g. CPIAUCSL dated 2026-06-01 is June's CPI), not the date it was
+    actually published. publication_lag_days is how long after the reference
+    date the value is realistically known, so it can be shifted forward
+    before joining onto a daily/trading calendar -- otherwise a training row
+    sees data that, in reality, wasn't available yet (look-ahead leakage).
+    """
+
+    column: str
+    publication_lag_days: int
+
+
+# FRED series id -> (output column name, publication lag in days).
+FRED_SERIES: dict[str, _FredSeriesSpec] = {
+    "DFF": _FredSeriesSpec("FedFunds", 1),  # daily rate, published next business day
+    "T10Y2Y": _FredSeriesSpec("YieldSpread", 1),  # same-day market data
+    "CPIAUCSL": _FredSeriesSpec("CPI", 21),  # BLS releases ~3 weeks after month-end
 }
 
-MACRO_COLUMNS = ["VIX", *FRED_SERIES.values()]
+MACRO_COLUMNS = ["VIX", *(spec.column for spec in FRED_SERIES.values())]
 
 
 def _fetch_vix(start: str | None, end: str | None, period: str) -> pd.Series | None:
@@ -54,11 +71,13 @@ def _fetch_fred(api_key: str, start: str | None, end: str | None) -> pd.DataFram
     try:
         fred = Fred(api_key=api_key)
         cols = {}
-        for series_id, name in FRED_SERIES.items():
+        for series_id, spec in FRED_SERIES.items():
             s = fred.get_series(series_id, observation_start=start, observation_end=end)
             if s is not None and len(s):
-                s.index = pd.to_datetime(s.index).normalize()
-                cols[name] = s
+                s.index = pd.to_datetime(s.index).normalize() + pd.Timedelta(
+                    days=spec.publication_lag_days
+                )
+                cols[spec.column] = s
         if not cols:
             return None
         return pd.DataFrame(cols)

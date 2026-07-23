@@ -102,12 +102,20 @@ def fetch_sentiment(
     if not articles:
         return pd.DataFrame()
 
-    headlines = [a.get("headline", "") for a in articles]
-    dates = [
-        pd.Timestamp(dt.datetime.utcfromtimestamp(a["datetime"]).date())
-        for a in articles
-        if a.get("datetime")
-    ]
+    usable = [a for a in articles if a.get("datetime")]
+    n_dropped = len(articles) - len(usable)
+    if n_dropped:
+        logger.warning(
+            "Dropping %d/%d articles for %s with no usable datetime",
+            n_dropped,
+            len(articles),
+            symbol,
+        )
+    if not usable:
+        return pd.DataFrame()
+
+    headlines = [a.get("headline", "") for a in usable]
+    dates = [pd.Timestamp(dt.datetime.utcfromtimestamp(a["datetime"]).date()) for a in usable]
     scores = score_headlines(headlines)
     if not scores or len(scores) != len(dates):
         return pd.DataFrame()

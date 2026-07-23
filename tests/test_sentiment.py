@@ -43,3 +43,24 @@ def test_fetch_sentiment_empty_news(monkeypatch):
     monkeypatch.setattr(sentiment, "_finbert", lambda: object())
     monkeypatch.setattr(sentiment, "fetch_news", lambda *a, **k: [])
     assert sentiment.fetch_sentiment(api_key="dummy", symbol="AAPL").empty
+
+
+def test_fetch_sentiment_ignores_one_malformed_article(monkeypatch, caplog):
+    """One article missing a usable datetime must not zero out the whole batch."""
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+
+    ts = int(dt.datetime(2024, 1, 2, 12, 0).timestamp())
+    articles = [
+        {"headline": "great earnings", "datetime": ts},
+        {"headline": "malformed article", "datetime": None},
+    ]
+    monkeypatch.setattr(sentiment, "fetch_news", lambda *a, **k: articles)
+    monkeypatch.setattr(sentiment, "score_headlines", lambda h: [0.9] * len(h))
+
+    with caplog.at_level("WARNING"):
+        out = sentiment.fetch_sentiment(api_key="dummy", symbol="AAPL")
+
+    assert not out.empty
+    assert out["HeadlineCount"].iloc[0] == 1
+    assert abs(out["Sentiment"].iloc[0] - 0.9) < 1e-9
+    assert any("malformed" in msg.lower() or "datetime" in msg.lower() for msg in caplog.messages)

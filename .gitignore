@@ -19,6 +19,10 @@ checkpoints/*
 .ruff_cache/
 .pytest_cache/
 
+# Local data panel cache (pyquant.data.cache) -- rebuildable, not reproducible
+# storage; pinned datasets live under here too but are meant to be local-only.
+.cache/
+
 # Generated chart exports
 exports/
 

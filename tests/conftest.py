@@ -28,7 +28,7 @@ def sample_ohlcv_df():
 
 
 @pytest.fixture
-def settings():
+def settings(tmp_path):
     """Default settings with all enrichments off (pure-OHLCV baseline)."""
     from pyquant.config import Settings
 
@@ -39,4 +39,9 @@ def settings():
     # Small windows so tests stay fast.
     s.training.max_encoder_length = 20
     s.training.max_prediction_length = 5
+    # Caching is a production concern; keep it off (and isolated to a tmp dir
+    # as a backstop) so tests never read/write the real project directory or
+    # leak state between tests that happen to share a symbol + settings.
+    s.data.cache_enabled = False
+    s.data.cache_dir = tmp_path / "cache"
     return s

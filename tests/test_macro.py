@@ -52,3 +52,33 @@ def test_fetch_macro_with_key_adds_fred(monkeypatch, sample_ohlcv_df):
     assert "VIX" in out.columns
     assert "FedFunds" in out.columns
     assert "YieldSpread" in out.columns
+
+
+def test_fetch_macro_lags_monthly_cpi_by_publication_delay(monkeypatch, sample_ohlcv_df):
+    """CPIAUCSL is indexed by BLS's reference period, not its publish date.
+
+    A row must not reveal the value before it was actually released.
+    """
+    monkeypatch.setattr(macro.yf, "Ticker", _fake_vix_ticker(sample_ohlcv_df.index))
+    reference_date = pd.Timestamp("2022-06-01")  # June's CPI, dated at month start
+
+    class FakeFred:
+        def __init__(self, api_key=None):
+            pass
+
+        def get_series(self, series_id, observation_start=None, observation_end=None):
+            return pd.Series([111.0], index=[reference_date])
+
+    import fredapi
+
+    monkeypatch.setattr(fredapi, "Fred", FakeFred)
+    out = macro.fetch_macro(api_key="dummy", start="2022-01-01", end="2022-12-31")
+
+    lag_days = macro.FRED_SERIES["CPIAUCSL"].publication_lag_days
+    assert lag_days > 14  # sanity: this is meant to model a multi-week real lag
+
+    published_date = reference_date + pd.Timedelta(days=lag_days)
+    # Not yet known on the reference date itself -- the pre-fix bug exposed it here.
+    assert pd.isna(out.loc[reference_date, "CPI"])
+    # Known once its real publication date has passed.
+    assert out.loc[published_date, "CPI"] == 111.0

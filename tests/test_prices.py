@@ -27,8 +27,14 @@ def test_add_technical_indicators_adds_all_columns(sample_ohlcv_df):
     out = prices.add_technical_indicators(sample_ohlcv_df)
     for col in prices.INDICATOR_COLUMNS:
         assert col in out.columns
-    # No NaNs should remain after ffill/bfill.
-    assert not out.isna().any().any()
+
+
+def test_add_technical_indicators_leaves_warmup_rows_genuinely_nan(sample_ohlcv_df):
+    """SMA_50 needs 49 real days of history -- those rows must stay NaN so
+    build_panel() can drop them, instead of being fabricated via bfill."""
+    out = prices.add_technical_indicators(sample_ohlcv_df)
+    assert out["SMA_50"].iloc[:49].isna().all()
+    assert out["SMA_50"].iloc[49:].notna().all()
 
 
 def test_add_technical_indicators_does_not_mutate_input(sample_ohlcv_df):

@@ -4,7 +4,8 @@ All pytorch-forecasting / Lightning calls are isolated here so the rest of the
 codebase stays library-agnostic. If the upstream stack changes, only this file
 needs to adapt.
 
-A trained model is persisted as a bundle directory under ``checkpoints/<symbol>/``:
+A trained model is persisted as a bundle directory under ``checkpoints/<bundle_name>/``
+(``<bundle_name>`` is the symbol, or the joined symbol list for pooled training):
     model.ckpt          Lightning checkpoint (architecture + weights)
     dataset_params.pt   TimeSeriesDataSet parameters (encoders/normalizers)
     meta.json           symbol, feature names, metrics, training timestamp
@@ -18,12 +19,14 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import pandas as pd
 import torch
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.metrics import QuantileLoss
 
+from pyquant.analysis.metrics import EvaluationMetrics, aggregate_metrics, evaluate_predictions
 from pyquant.config import Settings
 from pyquant.data.dataset import build_panel, feature_columns, make_dataset, panel_to_long
 
@@ -32,11 +35,20 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TrainResult:
-    symbol: str
+    symbols: list[str]
     bundle_dir: Path
     val_loss: float
     n_features: int
     epochs_run: int
+    evaluation: EvaluationMetrics
+
+
+@dataclass
+class BacktestResult:
+    symbol: str
+    n_windows: int
+    per_window: list[EvaluationMetrics]
+    aggregated: EvaluationMetrics
 
 
 @dataclass
@@ -63,30 +75,77 @@ def build_model(training_dataset: TimeSeriesDataSet, settings: Settings) -> Temp
     )
 
 
-def _bundle_dir(settings: Settings, symbol: str) -> Path:
-    return settings.checkpoint_dir / symbol.upper()
+def _bundle_dir(settings: Settings, name: str) -> Path:
+    return settings.checkpoint_dir / name.upper()
+
+
+def _build_pooled_long_df(
+    symbols: list[str],
+    settings: Settings,
+    start: str | None,
+    end: str | None,
+    pin: str | None = None,
+) -> pd.DataFrame:
+    """Fetch + join each symbol's panel, then pool into one long df.
+
+    TimeSeriesDataSet is built with group_ids=["symbol"], so a single dataset
+    can span multiple tickers -- each keeps its own zero-based time_idx. A
+    source that's flaky for only some symbols (see PYQ-302) would otherwise
+    inject NaNs into the pooled frame; instead we keep only the columns common
+    to every symbol's panel and log what got dropped.
+    """
+    frames = [
+        panel_to_long(build_panel(symbol, settings, start, end, pin=pin), symbol) for symbol in symbols
+    ]
+    if len(frames) == 1:
+        return frames[0]
+
+    common_cols = set.intersection(*(set(f.columns) for f in frames))
+    all_cols = set.union(*(set(f.columns) for f in frames))
+    dropped = sorted(all_cols - common_cols)
+    if dropped:
+        logger.warning(
+            "Pooling %s: dropping columns not common to every symbol's panel: %s",
+            symbols,
+            dropped,
+        )
+    ordered_cols = [c for c in frames[0].columns if c in common_cols]
+    return pd.concat([f[ordered_cols] for f in frames], ignore_index=True)
 
 
 def train(
-    symbol: str,
+    symbols: str | list[str],
     settings: Settings,
     *,
+    bundle_name: str | None = None,
     start: str | None = None,
     end: str | None = None,
     max_epochs: int | None = None,
     progress: bool = True,
+    pin: str | None = None,
 ) -> TrainResult:
-    """Train a TFT for ``symbol`` and persist the bundle."""
-    symbol = symbol.upper()
-    panel = build_panel(symbol, settings, start, end)
-    df = panel_to_long(panel, symbol)
+    """Train a TFT for ``symbols`` and persist the bundle.
+
+    A single symbol trains a per-ticker model as before. Multiple symbols are
+    pooled into one TimeSeriesDataSet/model (group_ids=["symbol"]), giving the
+    same architecture meaningfully more training data; pass ``bundle_name`` to
+    control the resulting checkpoint directory name (defaults to the symbol,
+    or the joined symbol list when pooling). ``pin`` names a reproducible
+    dataset snapshot (see pyquant.data.cache) so the same experiment can be
+    re-run later against identical data.
+    """
+    symbols = [symbols] if isinstance(symbols, str) else list(symbols)
+    symbols = [s.upper() for s in symbols]
+    bundle_name = (bundle_name or "_".join(symbols)).upper()
+
+    df = _build_pooled_long_df(symbols, settings, start, end, pin=pin)
 
     horizon = settings.training.max_prediction_length
     max_idx = int(df["time_idx"].max())
     cutoff = max_idx - horizon
     if cutoff <= settings.training.max_encoder_length:
         raise ValueError(
-            f"Not enough history for {symbol}: need more than "
+            f"Not enough history for {bundle_name}: need more than "
             f"{settings.training.max_encoder_length + horizon} rows, got {len(df)}."
         )
 
@@ -99,7 +158,7 @@ def train(
 
     model = build_model(training, settings)
 
-    bundle_dir = _bundle_dir(settings, symbol)
+    bundle_dir = _bundle_dir(settings, bundle_name)
     bundle_dir.mkdir(parents=True, exist_ok=True)
 
     epochs = max_epochs if max_epochs is not None else settings.training.max_epochs
@@ -128,8 +187,10 @@ def train(
     torch.save(training.get_parameters(), bundle_dir / "dataset_params.pt")
 
     val_loss = float(ckpt_cb.best_model_score) if ckpt_cb.best_model_score is not None else float("nan")
+    evaluation = _evaluate_validation(model, val_loader, settings.tft.quantiles)
     meta = {
-        "symbol": symbol,
+        "symbol": bundle_name,
+        "symbols": symbols,
         "trained_at": dt.datetime.now().isoformat(timespec="seconds"),
         "features": feature_columns(df),
         "val_loss": val_loss,
@@ -137,16 +198,105 @@ def train(
         "quantiles": settings.tft.quantiles,
         "max_encoder_length": settings.training.max_encoder_length,
         "max_prediction_length": horizon,
+        "evaluation": vars(evaluation),
     }
     (bundle_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+    # meta.json reflects only the deployable (latest) bundle; runs.jsonl is an
+    # append-only history so retraining doesn't silently erase past runs.
+    with (bundle_dir / "runs.jsonl").open("a") as f:
+        f.write(json.dumps(meta) + "\n")
 
     return TrainResult(
-        symbol=symbol,
+        symbols=symbols,
         bundle_dir=bundle_dir,
         val_loss=val_loss,
         n_features=len(meta["features"]),
         epochs_run=trainer.current_epoch,
+        evaluation=evaluation,
     )
+
+
+def walk_forward_backtest(
+    symbol: str,
+    settings: Settings,
+    *,
+    n_windows: int = 5,
+    step: int | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    max_epochs: int | None = None,
+    progress: bool = False,
+) -> BacktestResult:
+    """Train/evaluate across many rolling origins (walk-forward validation).
+
+    Unlike train(), each window's model is discarded after evaluation -- this
+    measures how stable the metrics are across time (see PYQ-303), it does not
+    produce a deployable bundle.
+    """
+    symbol = symbol.upper()
+    panel = build_panel(symbol, settings, start, end)
+    df = panel_to_long(panel, symbol)
+
+    horizon = settings.training.max_prediction_length
+    encoder_len = settings.training.max_encoder_length
+    step = step if step is not None else horizon
+    max_idx = int(df["time_idx"].max())
+
+    latest_cutoff = max_idx - horizon
+    earliest_cutoff = latest_cutoff - (n_windows - 1) * step
+    if earliest_cutoff <= encoder_len:
+        raise ValueError(
+            f"Not enough history for {n_windows} walk-forward window(s) of {symbol}: "
+            f"need more than {encoder_len + horizon + (n_windows - 1) * step} rows, got {len(df)}."
+        )
+
+    cutoffs = sorted(latest_cutoff - i * step for i in range(n_windows))
+    epochs = max_epochs if max_epochs is not None else settings.training.max_epochs
+    batch_size = settings.training.batch_size
+
+    per_window: list[EvaluationMetrics] = []
+    for cutoff in cutoffs:
+        training = make_dataset(df, settings, training_cutoff=cutoff)
+        validation = TimeSeriesDataSet.from_dataset(training, df, predict=True, stop_randomization=True)
+        train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
+        val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
+
+        model = build_model(training, settings)
+        trainer = Trainer(
+            max_epochs=epochs,
+            accelerator="auto",
+            gradient_clip_val=settings.training.gradient_clip_val,
+            callbacks=[EarlyStopping(monitor="val_loss", patience=5, mode="min")],
+            logger=False,
+            enable_progress_bar=progress,
+            enable_model_summary=False,
+        )
+        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+        per_window.append(_evaluate_validation(model, val_loader, settings.tft.quantiles))
+
+    return BacktestResult(
+        symbol=symbol,
+        n_windows=len(cutoffs),
+        per_window=per_window,
+        aggregated=aggregate_metrics(per_window),
+    )
+
+
+def _evaluate_validation(
+    model: TemporalFusionTransformer, val_loader, quantiles: list[float]
+) -> EvaluationMetrics:
+    """Score the held-out validation window vs. a persistence baseline."""
+    result = model.predict(
+        val_loader,
+        mode="quantiles",
+        return_x=True,
+        return_y=True,
+        trainer_kwargs={"enable_progress_bar": False, "logger": False},
+    )
+    predictions = result.output.cpu().numpy()
+    actuals = result.y[0].cpu().numpy()
+    last_observed = result.x["encoder_target"][:, -1].cpu().numpy()
+    return evaluate_predictions(predictions, actuals, last_observed, quantiles)
 
 
 def _prediction_dataset(bundle: ModelBundle, df) -> TimeSeriesDataSet:

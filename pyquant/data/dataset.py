@@ -20,6 +20,7 @@ from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.data import GroupNormalizer
 
 from pyquant.config import Settings
+from pyquant.data import cache
 from pyquant.data.macro import fetch_macro
 from pyquant.data.prices import fetch_prices
 from pyquant.data.sectors import fetch_sector_returns
@@ -28,10 +29,28 @@ from pyquant.data.sentiment import fetch_sentiment
 logger = logging.getLogger(__name__)
 
 TARGET = "Close"
-# Columns that are identifiers/calendar, never model feature reals.
-_NON_FEATURE = {"Date", "time_idx", "symbol", "day_of_week", "month"}
+# Columns that are identifiers, never model feature reals.
+_NON_FEATURE = {"Date", "time_idx", "symbol"}
 # Known-in-future calendar reals.
 KNOWN_REALS = ["time_idx", "dow", "month_num"]
+
+
+def _cache_fingerprint(symbol: str, settings: Settings, start: str | None, end: str | None) -> dict:
+    """What a cached panel's validity depends on -- change any of these, different dataset."""
+    data = settings.data
+    return {
+        "symbol": symbol.upper(),
+        "start": start,
+        "end": end,
+        "period": data.period,
+        "use_macro": data.use_macro,
+        "use_sectors": data.use_sectors,
+        "use_sentiment": data.use_sentiment,
+        "sector_etfs": sorted(data.sector_etfs),
+        # Key *presence*, not the secret value, is part of what changes the data.
+        "has_fred_key": bool(settings.fred_api_key),
+        "has_finnhub_key": bool(settings.finnhub_api_key),
+    }
 
 
 def build_panel(
@@ -39,10 +58,31 @@ def build_panel(
     settings: Settings,
     start: str | None = None,
     end: str | None = None,
+    pin: str | None = None,
 ) -> pd.DataFrame:
-    """Fetch + join all enabled data sources into one date-indexed panel."""
+    """Fetch + join all enabled data sources into one date-indexed panel.
+
+    ``pin``, if given, names a reproducible dataset snapshot: the first call
+    fetches and saves it; every later call with the same pin replays that
+    exact data, ignoring both live changes and the TTL cache below.
+    """
+    cache_dir = settings.data.cache_dir
+    cache_key = cache.fingerprint_key(_cache_fingerprint(symbol, settings, start, end))
+    if pin:
+        cached = cache.read_pin(cache_dir, f"{symbol.upper()}_{pin}")
+        if cached is not None:
+            return cached
+    elif settings.data.cache_enabled:
+        cached = cache.read_cache(cache_dir, cache_key, ttl_seconds=settings.data.cache_ttl_seconds)
+        if cached is not None:
+            return cached
+
     period = settings.data.period
     panel = fetch_prices(symbol, period=period, start=start, end=end, use_indicators=True)
+    # Drop leading rows still NaN from indicator warm-up (e.g. SMA_50 needs
+    # 49 days of history) before joining other sources, so their own
+    # fill/reindex logic never launders these into fabricated values.
+    panel = panel.dropna()
     price_index = panel.index
 
     if settings.data.use_macro:
@@ -54,6 +94,8 @@ def build_panel(
     if settings.data.use_sectors:
         sectors = fetch_sector_returns(settings.data.sector_etfs, start, end, period)
         # Drop the target symbol's own ETF column if present to avoid leakage of itself.
+        if not sectors.empty:
+            sectors = sectors.drop(columns=[f"SEC_{symbol.upper()}"], errors="ignore")
         if not sectors.empty:
             panel = panel.join(sectors.reindex(price_index))
             logger.info("Joined sector features: %s", list(sectors.columns))
@@ -68,10 +110,15 @@ def build_panel(
             ].fillna(0.0)
             logger.info("Joined sentiment features")
 
-    # Forward/back fill any remaining gaps from joined sources, then drop
-    # leading rows still NaN from indicator warm-up.
+    # Forward/back fill any remaining gaps from joined sources (e.g. a
+    # sector ETF's trading calendar not perfectly matching the target's).
     panel = panel.ffill().bfill()
-    panel = panel.dropna()
+
+    if pin:
+        cache.write_pin(cache_dir, f"{symbol.upper()}_{pin}", panel)
+    elif settings.data.cache_enabled:
+        cache.write_cache(cache_dir, cache_key, panel)
+
     return panel
 
 

@@ -54,6 +54,12 @@ class DataConfig(BaseModel):
         default_factory=lambda: ["XLK", "XLF", "XLE", "XLV", "XLY", "SPY"]
     )
 
+    # Local panel cache: avoids re-fetching identical data across repeated
+    # train/forecast/explain runs and eases pressure on informal rate limits.
+    cache_enabled: bool = True
+    cache_ttl_seconds: float = 3600.0  # 1 hour
+    cache_dir: Path = Path(".cache/pyquant")
+
 
 class Settings(BaseSettings):
     """Top-level settings, composed from sub-configs plus secrets/paths."""

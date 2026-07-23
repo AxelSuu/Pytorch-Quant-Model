@@ -17,6 +17,7 @@ class Interpretation:
     symbol: str
     feature_importance: dict[str, float]  # feature -> normalised weight
     attention: np.ndarray  # attention weight per past time step (oldest..newest)
+    panel_index: pd.DatetimeIndex  # dates of the panel this interpretation was computed from
 
     def top_features(self, n: int = 10) -> list[tuple[str, float]]:
         return sorted(self.feature_importance.items(), key=lambda kv: kv[1], reverse=True)[:n]
@@ -41,11 +42,12 @@ def explain_forecast(
         symbol=symbol,
         feature_importance=result["encoder_importance"],
         attention=attention,
+        panel_index=panel.index,
     )
 
 
-def attention_to_series(interp: Interpretation, panel_index: pd.DatetimeIndex) -> pd.Series:
+def attention_to_series(interp: Interpretation) -> pd.Series:
     """Map the attention vector onto the most recent encoder dates for display."""
     n = len(interp.attention)
-    dates = panel_index[-n:]
+    dates = interp.panel_index[-n:]
     return pd.Series(interp.attention, index=dates, name="attention")
