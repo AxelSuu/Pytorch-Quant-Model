@@ -7,10 +7,16 @@ so the tool runs out of the box on pure OHLCV data.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from pydantic import BaseModel, Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import (
+    BaseSettings,
+    PydanticBaseSettingsSource,
+    SettingsConfigDict,
+    YamlConfigSettingsSource,
+)
 
 
 class TFTConfig(BaseModel):
@@ -108,7 +114,43 @@ class Settings(BaseSettings):
     training: TrainingConfig = Field(default_factory=TrainingConfig)
     data: DataConfig = Field(default_factory=DataConfig)
 
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        # Priority (earlier wins): init kwargs > env > .env > YAML config > secrets.
+        # The YAML source sits *below* env vars (PYQ-209), so a checked-in
+        # experiment config is overridable by the environment, and explicit CLI
+        # flags -- applied after load_settings() -- still win over everything.
+        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings, dotenv_settings]
+        if _active_yaml_file is not None:
+            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=_active_yaml_file))
+        sources.append(file_secret_settings)
+        return tuple(sources)
 
-def load_settings() -> Settings:
-    """Load settings from environment + .env file."""
-    return Settings()
+
+# Set transiently by load_settings() so the classmethod above can see the chosen
+# YAML path without it becoming part of the frozen model_config.
+_active_yaml_file: Path | None = None
+
+
+def load_settings(config_path: str | Path | None = None) -> Settings:
+    """Load settings from environment + .env, optionally layering a YAML config.
+
+    ``config_path`` (or the ``PYQUANT_CONFIG`` env var) names a YAML experiment
+    file whose values sit below env vars but above the built-in defaults, so a
+    full experiment (hidden_size, quantiles, epochs, data toggles, ...) can be
+    checked into version control as one file.
+    """
+    global _active_yaml_file
+    chosen = config_path or os.environ.get("PYQUANT_CONFIG")
+    _active_yaml_file = Path(chosen) if chosen else None
+    try:
+        return Settings()
+    finally:
+        _active_yaml_file = None

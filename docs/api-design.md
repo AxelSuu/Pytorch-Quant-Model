@@ -1,0 +1,220 @@
+# PyQuant FastAPI service layer — design note (PYQ-213)
+
+Status: **design** (research ticket — no implementation yet). This note is the
+deliverable for `backlog/features.md#pyq-213`. It decides the shape of a REST
+layer before any of it is built, and flags the decisions that must be made
+before anything stateful is written on top.
+
+## Why this is additive, not a rewrite
+
+The analysis/model/data layers are already fully decoupled from Typer/Rich. The
+CLI in `pyquant/cli/app.py` is a thin caller over plain functions and
+dataclasses:
+
+| CLI command | Underlying call | Returns |
+|---|---|---|
+| `forecast` | `analysis.forecast.generate_forecast(symbol, settings, ...)` | `Forecast` |
+| `explain` | `analysis.interpret.explain_forecast(symbol, settings, ...)` | `Interpretation` |
+| `train` | `models.tft.train(symbols, settings, ...)` | `TrainResult` |
+| `backtest` | `models.tft.walk_forward_backtest(symbol, settings, ...)` | `BacktestResult` |
+| `scan` | N× `generate_forecast` | list of `Forecast` |
+| (load) | `models.tft.load(symbol, settings)` | `ModelBundle` |
+
+A FastAPI app wraps exactly these functions. Nothing in the core needs to move;
+the API is a second front-end beside the CLI.
+
+## Proposed package layout
+
+```
+pyquant/api/
+    __init__.py
+    app.py          # FastAPI() instance, router mounting, exception handlers
+    schemas.py      # pydantic response models (see below)
+    deps.py         # Settings, bundle cache, API-key auth dependencies
+    jobs.py         # in-process training-job registry (v1) + status model
+    routes/
+        forecast.py # GET  /forecast/{symbol}, POST /scan
+        explain.py  # GET  /explain/{symbol}
+        train.py    # POST /train  -> job id;  GET /train/{job_id}
+        health.py   # GET  /healthz
+```
+
+Add an optional dependency group so the base install stays lean:
+
+```toml
+[project.optional-dependencies]
+api = ["fastapi>=0.110", "uvicorn[standard]>=0.29"]
+```
+
+## 1. Response models (dovetails with PYQ-212)
+
+`Forecast`, `Interpretation`, `TrainResult`, `EvaluationMetrics`,
+`BacktestResult` are already plain dataclasses. Two viable paths:
+
+- **Pydantic mirrors in `api/schemas.py`** — an explicit `ForecastResponse`
+  etc. with a `from_domain(obj)` classmethod. Keeps numpy→list conversion and
+  field-shaping (e.g. `predictions` is an `np.ndarray` that must become nested
+  lists; `last_date` a `pd.Timestamp` → ISO string) at the boundary, and keeps
+  the API contract decoupled from internal dataclass changes.
+- **Shared serializers with the CLI's `--format json` (PYQ-212)** — implement
+  the domain→JSON-able-dict functions once (e.g. `forecast_to_dict(fc)`), have
+  the CLI print them and the API return them. Recommended: build PYQ-212 first,
+  then the API reuses those serializers and wraps them in thin pydantic models
+  for OpenAPI schema generation.
+
+Numpy is the sharp edge: every `np.ndarray`/`np.float64` must be converted
+(`.tolist()`, `float(...)`) or JSON encoding fails. Centralize this in the
+serializers so it is done in exactly one place.
+
+Sketch:
+
+```python
+class ForecastResponse(BaseModel):
+    symbol: str
+    last_date: str
+    current_price: float
+    quantiles: list[float]
+    predictions: list[list[float]]   # (horizon, n_quantiles)
+    expected_return_pct: float
+
+    @classmethod
+    def from_domain(cls, fc: Forecast) -> "ForecastResponse":
+        return cls(
+            symbol=fc.symbol,
+            last_date=fc.last_date.date().isoformat(),
+            current_price=fc.current_price,
+            quantiles=list(fc.quantiles),
+            predictions=fc.predictions.tolist(),
+            expected_return_pct=fc.expected_return_pct(),
+        )
+```
+
+## 2. Training is long-running → background jobs
+
+`tft.train()` blocks for a full Lightning fit (seconds on synthetic data,
+minutes-to-longer on real 5y panels). A request thread must not block on it.
+
+**v1 (single node):** FastAPI `BackgroundTasks` + an in-process job registry.
+
+```
+POST /train {"symbols": ["AAPL"], ...}  -> 202 {"job_id": "...", "status": "queued"}
+GET  /train/{job_id}                    -> {"status": "running|succeeded|failed",
+                                            "result": TrainResultResponse | null,
+                                            "error": str | null}
+```
+
+`jobs.py` holds a `dict[str, JobRecord]` guarded by a lock; the background task
+updates the record on completion. Good enough for one instance and a low
+training concurrency.
+
+**Where v1 stops scaling — the trigger to graduate to a real queue
+(arq/RQ/Celery + Redis):**
+- Job state is in process memory → **lost on restart/redeploy**, and invisible
+  to any second instance.
+- No concurrency control → two large fits can oversubscribe CPU/GPU and OOM.
+- No retries, no backpressure, no scheduling, no cancellation.
+- `BackgroundTasks` runs in the same process/event loop context → a CPU-bound
+  fit needs a worker/process pool anyway (`run_in_executor` at minimum) so it
+  doesn't starve request handling.
+
+Move to arq or Celery + Redis the moment you need durable jobs, more than one
+instance, or bounded training concurrency.
+
+## 3. Bundle storage
+
+`tft.load()` / `train()` read and write `checkpoints/<BUNDLE>/` on local disk
+(`model.ckpt`, `dataset_params.pt`, `meta.json`, `runs.jsonl`).
+
+- **One instance:** local disk (or a mounted volume) is fine.
+- **Multi-instance / serverless:** the box that served `POST /train` is not
+  necessarily the one that serves `GET /forecast` later → the second box can't
+  see the bundle. Needs shared/object storage (S3-compatible): write the bundle
+  to a bucket on train, pull-and-cache on load.
+
+**Decide this before building anything stateful.** Two concrete prerequisites
+regardless of backend:
+- **PYQ-220** (`checkpoint_dir`/`cache_dir` resolve against CWD) must be fixed
+  first — a server's working directory is not the repo root, so relative
+  `checkpoints/` silently lands in the wrong place (or a different place per
+  restart). Pin to an absolute, configured location.
+- A storage abstraction (`load_bundle(name) -> local_path`, `save_bundle(...)`)
+  so local-disk vs S3 is one implementation swap, not scattered `Path` joins.
+
+## 4. Inference concurrency
+
+- **Thread-safety of `predict()`:** do **not** assume
+  `TemporalFusionTransformer.predict()` is safe to call concurrently on the
+  same model instance — pytorch-forecasting spins up an internal Lightning
+  `Trainer` per call and mutates model state. Safest v1: a **per-bundle lock**
+  (serialize predictions against a given loaded model); parallelism across
+  *different* bundles is fine. Revisit with a proper load test before removing
+  the lock. Torch intra-op threading already uses multiple cores per call, so
+  serializing per-model is not as costly as it sounds.
+- **Keep bundles loaded vs. reload per request:** reloading per request pays
+  the checkpoint deserialization cost every time and re-triggers the
+  `weights_only=False` unpickle (PYQ-306). Prefer an in-process **LRU cache**
+  of `ModelBundle` keyed by bundle name (bounded size to cap memory), evicting
+  least-recently-used. Invalidate/replace an entry when that bundle is
+  retrained.
+- **FinBERT cache (PYQ-114) matters more here:** the now-fixed sentiment
+  pipeline cache only memoizes on success, so a transient first-request failure
+  no longer permanently disables sentiment for the life of the server process.
+  This design depends on that fix.
+- **Schema drift (PYQ-302):** a long-running server is exactly where "source
+  enabled at train time, rate-limited at predict time" happens. Resolve PYQ-302
+  before relying on the forecast endpoint against live data — otherwise a
+  transient upstream outage yields malformed predictions rather than a clean
+  error.
+
+## 5. Auth / rate-limiting
+
+Nothing in the stack has any today. A public endpoint would spend the
+operator's FRED/Finnhub/Yahoo quota on every caller.
+
+- **Minimum:** an API-key gate as a FastAPI dependency
+  (`Depends(require_api_key)`), keys from config/secret store, constant-time
+  compare. Reject unauthenticated with 401.
+- **Rate-limiting:** per-key limits (e.g. `slowapi`, or the reverse
+  proxy/API-gateway layer) — training especially must be tightly capped since
+  it is expensive and quota-hungry.
+- Never echo upstream API keys in responses or logs.
+
+## 6. Deployment
+
+Pairs with **PYQ-217** (Dockerfile): a CPU-only image is enough for the
+inference/serving path (`forecast`/`explain`/`scan`); training wants the CUDA
+variant. Build via `uv sync --frozen --extra api` (plus `--extra sentiment` if
+sentiment is wanted server-side). `uvicorn pyquant.api.app:app` as the entry
+point.
+
+## Endpoint summary (v1)
+
+| Method | Path | Wraps | Notes |
+|---|---|---|---|
+| GET | `/healthz` | — | liveness |
+| GET | `/forecast/{symbol}` | `generate_forecast` | per-bundle lock + LRU cache |
+| POST | `/scan` | N× `generate_forecast` | body: list of symbols |
+| GET | `/explain/{symbol}` | `explain_forecast` | as forecast |
+| POST | `/train` | `tft.train` (background) | 202 + job id |
+| GET | `/train/{job_id}` | job registry | status/result |
+
+## Recommended build order
+
+1. **PYQ-212** (JSON serializers) — the API reuses them; do not duplicate
+   numpy→JSON logic.
+2. **PYQ-220** (absolute bundle/cache paths) — prerequisite for any server.
+3. Read-only endpoints (`/forecast`, `/explain`, `/scan`) + API-key auth +
+   bundle LRU cache with per-bundle prediction lock.
+4. `/train` background-job endpoints (in-process registry).
+5. **PYQ-217** Dockerfile; deploy single-instance.
+6. Only if/when multi-instance or durability is needed: object-storage bundle
+   backend + Redis-backed job queue (arq/Celery). Note PYQ-302 must be resolved
+   before trusting live-data forecasts under sustained load.
+
+## Open follow-ups this note spawns (not filed yet)
+
+- A storage-abstraction ticket (local ↔ S3) — blocked on PYQ-220.
+- Load-test `predict()` concurrency to decide whether the per-bundle lock can
+  be relaxed.
+- Decide server-side sentiment: ship `--extra sentiment` in the image (heavier)
+  or run inference-only bundles without it.

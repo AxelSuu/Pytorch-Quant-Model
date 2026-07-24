@@ -18,6 +18,8 @@ import logging
 import pandas as pd
 import requests
 
+from pyquant.data.retry import with_retry
+
 logger = logging.getLogger(__name__)
 
 SENTIMENT_COLUMNS = ["Sentiment", "HeadlineCount"]
@@ -62,10 +64,16 @@ def _finbert():
 def fetch_news(api_key: str, symbol: str, start: str, end: str) -> list[dict]:
     """Fetch company news headlines from Finnhub between ``start`` and ``end``."""
     params = {"symbol": symbol, "from": start, "to": end, "token": api_key}
-    resp = requests.get(_FINNHUB_NEWS_URL, params=params, timeout=20)
-    resp.raise_for_status()
-    data = resp.json()
-    return data if isinstance(data, list) else []
+
+    def _get() -> list:
+        resp = requests.get(_FINNHUB_NEWS_URL, params=params, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+    # Retry a transient request failure before surfacing it to the caller, which
+    # otherwise degrades to "no news" -- indistinguishable from no key (PYQ-215).
+    return with_retry(_get, description=f"fetch_news({symbol})")
 
 
 def _signed_score(result: list[dict]) -> float:

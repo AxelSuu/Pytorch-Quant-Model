@@ -81,6 +81,30 @@ def test_fetch_prices_honors_start_without_end(monkeypatch, sample_ohlcv_df):
     assert received["period"] is None  # period path not taken
 
 
+def test_fetch_prices_recovers_from_transient_failure(monkeypatch, sample_ohlcv_df):
+    """A single transient yfinance failure must be retried, not hard-fail the
+    whole panel build (PYQ-215)."""
+    from pyquant.data import retry
+
+    monkeypatch.setattr(retry, "_sleep", lambda _s: None)
+    calls = {"n": 0}
+
+    class FlakyTicker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, period=None, start=None, end=None):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient network error")
+            return sample_ohlcv_df.copy()
+
+    monkeypatch.setattr(prices.yf, "Ticker", FlakyTicker)
+    out = prices.fetch_prices("AAPL", use_indicators=False)
+    assert calls["n"] == 2  # failed once, then succeeded
+    assert not out.empty
+
+
 def test_fetch_prices_raises_on_empty(monkeypatch):
     class EmptyTicker:
         def __init__(self, symbol):

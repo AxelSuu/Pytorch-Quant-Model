@@ -1,5 +1,6 @@
 """CLI smoke tests using Typer's CliRunner (network-free, mocked forecasts)."""
 
+import json
 import logging
 import warnings
 from pathlib import Path
@@ -207,3 +208,68 @@ def test_scan_signal_hold_when_band_straddles_zero(monkeypatch):
     assert "HOLD" in result.stdout
     assert "BUY" not in result.stdout
     assert "SELL" not in result.stdout
+
+
+def test_forecast_json_output_is_clean_parseable_json(monkeypatch):
+    """`--format json` must emit valid JSON with no ANSI escape codes (PYQ-212)."""
+    monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: _fake_forecast())
+
+    class NoOptions:
+        put_call_ratio = None
+
+    monkeypatch.setattr(app_mod, "fetch_options_snapshot", lambda s: NoOptions())
+    result = runner.invoke(app_mod.app, ["--format", "json", "forecast", "AAPL"])
+    assert result.exit_code == 0
+    assert "\x1b[" not in result.stdout  # no ANSI escapes
+    data = json.loads(result.stdout)  # parses cleanly
+    assert data["symbol"] == "AAPL"
+    assert data["median"] == [105.0] * 5  # p50 column of the fake forecast
+
+
+def test_scan_json_output_lists_per_symbol_records(monkeypatch):
+    fc = _fake_forecast(predictions=np.array([[102.0, 105.0, 108.0]] * 5))
+    monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: fc)
+    result = runner.invoke(app_mod.app, ["--format", "json", "scan", "AAPL"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert isinstance(data, list) and data[0]["symbol"] == "AAPL"
+    assert data[0]["signal"] == "BUY"
+
+
+def test_cache_list_and_prune_commands(monkeypatch, tmp_path):
+    """`pyquant cache` list/prune wire the helpers to the CLI (PYQ-221)."""
+    from pyquant.config import Settings
+
+    def fake_load_settings():
+        s = Settings()
+        s.data.cache_dir = tmp_path / "cache"
+        return s
+
+    monkeypatch.setattr(app_mod, "load_settings", fake_load_settings)
+
+    listed = runner.invoke(app_mod.app, ["--format", "json", "cache", "list"])
+    assert listed.exit_code == 0
+    assert json.loads(listed.stdout)["entry_count"] == 0
+
+    pruned = runner.invoke(app_mod.app, ["cache", "prune"])
+    assert pruned.exit_code == 0
+    assert "Pruned 0" in pruned.stdout
+
+
+def test_train_json_output_serializes_result(monkeypatch):
+    fake_result = TrainResult(
+        symbols=["AAPL"],
+        bundle_dir=Path("checkpoints/AAPL"),
+        val_loss=0.123,
+        n_features=10,
+        epochs_run=5,
+        evaluation=EvaluationMetrics(
+            model_mae=1.5, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+        ),
+    )
+    monkeypatch.setattr(app_mod.tft, "train", lambda *a, **k: fake_result)
+    result = runner.invoke(app_mod.app, ["--format", "json", "train", "AAPL"])
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["symbols"] == ["AAPL"]
+    assert data["evaluation"]["directional_accuracy"] == 0.6

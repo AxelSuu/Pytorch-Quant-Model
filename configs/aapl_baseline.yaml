@@ -1,0 +1,28 @@
+# PyQuant experiment config — AAPL baseline (PYQ-209).
+#
+# Values here sit below environment variables but above the built-in defaults;
+# explicit CLI flags still win. Usage:
+#   uv run pyquant train AAPL --config configs/aapl_baseline.yaml
+#
+# API keys are intentionally NOT put here — those come from the environment/.env.
+
+tft:
+  hidden_size: 32
+  attention_head_size: 4
+  dropout: 0.1
+  hidden_continuous_size: 16
+  quantiles: [0.1, 0.5, 0.9]
+
+training:
+  max_encoder_length: 60
+  max_prediction_length: 5
+  batch_size: 64
+  max_epochs: 30
+  learning_rate: 0.01
+  seed: 42
+
+data:
+  period: "5y"
+  use_macro: true
+  use_sentiment: true
+  use_sectors: true

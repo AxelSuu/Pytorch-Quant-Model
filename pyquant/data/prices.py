@@ -13,6 +13,8 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from pyquant.data.retry import with_retry
+
 logger = logging.getLogger(__name__)
 
 # Columns produced by add_technical_indicators (excluding base OHLCV).
@@ -130,13 +132,18 @@ def fetch_prices(
     Open/High/Low/Close/Volume columns.
     """
     ticker = yf.Ticker(symbol)
+
     # Honor an explicit range if *either* bound is given (yfinance accepts start
     # or end alone); only fall back to period when neither is set, so passing
     # just start (e.g. "everything since IPO") isn't silently ignored.
-    if start or end:
-        df = ticker.history(start=start, end=end)
-    else:
-        df = ticker.history(period=period)
+    def _load() -> pd.DataFrame:
+        if start or end:
+            return ticker.history(start=start, end=end)
+        return ticker.history(period=period)
+
+    # A transient yfinance hiccup here otherwise hard-fails the whole panel
+    # build; retry a couple of times before giving up (PYQ-215).
+    df = with_retry(_load, description=f"fetch_prices({symbol})")
 
     if df is None or df.empty:
         raise ValueError(f"No price data found for {symbol!r}")

@@ -55,3 +55,38 @@ def test_write_then_read_pin_round_trips(tmp_path):
 
 def test_read_pin_returns_none_when_missing(tmp_path):
     assert cache.read_pin(tmp_path, "nope") is None
+
+
+def test_prune_expired_removes_only_stale_entries_and_keeps_pins(tmp_path):
+    """`cache prune` must remove expired entries without touching valid ones or
+    any pins (PYQ-221)."""
+    df = _df()
+    cache.write_cache(tmp_path, "stale", df, now=0.0)
+    cache.write_cache(tmp_path, "fresh", df, now=10000.0)
+    cache.write_pin(tmp_path, "keeper", df)
+
+    removed = cache.prune_expired(tmp_path, ttl_seconds=3600, now=10000.0)
+
+    assert removed == ["stale"]
+    assert not (tmp_path / "stale.pkl").exists()
+    assert not (tmp_path / "stale.meta.json").exists()
+    assert cache.read_cache(tmp_path, "fresh", ttl_seconds=3600, now=10000.0) is not None
+    assert cache.read_pin(tmp_path, "keeper") is not None  # pin untouched
+    assert cache.list_pins(tmp_path) == ["keeper"]
+
+
+def test_cache_stats_counts_entries_and_pins(tmp_path):
+    df = _df()
+    cache.write_cache(tmp_path, "e1", df, now=1.0)
+    cache.write_pin(tmp_path, "p1", df)
+    stats = cache.cache_stats(tmp_path)
+    assert stats["entry_count"] == 1  # pin not counted as a TTL entry
+    assert stats["total_bytes"] > 0
+    assert stats["pins"] == ["p1"]
+
+
+def test_remove_pin(tmp_path):
+    df = _df()
+    cache.write_pin(tmp_path, "p1", df)
+    assert cache.remove_pin(tmp_path, "p1") is True
+    assert cache.remove_pin(tmp_path, "p1") is False

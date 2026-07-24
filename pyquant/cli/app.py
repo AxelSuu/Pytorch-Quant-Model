@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
 
 import typer
@@ -11,10 +13,12 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from pyquant.analysis import serialize
 from pyquant.analysis.forecast import Forecast, generate_forecast
 from pyquant.analysis.interpret import attention_to_series, explain_forecast
 from pyquant.cli import charts
 from pyquant.config import Settings, load_settings
+from pyquant.data import cache as data_cache
 from pyquant.data.options import fetch_options_snapshot
 from pyquant.models import tft
 
@@ -27,14 +31,47 @@ console = Console()
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class _Output:
+    """Global output preferences set by the callback (PYQ-212)."""
+
+    fmt: str = "rich"  # "rich" | "json"
+    quiet: bool = False
+
+    @property
+    def json(self) -> bool:
+        return self.fmt == "json"
+
+
+_output = _Output()
+
+
+def _emit_json(data) -> None:
+    """Print plain JSON to stdout -- no Rich, so no ANSI escape codes leak in."""
+    print(json.dumps(data, indent=2, default=str))
+
+
 @app.callback()
 def _configure_logging(
     verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable INFO-level logging"),
     debug: bool = typer.Option(
         False, "--debug", help="Enable DEBUG-level logging and un-silence Lightning's own output"
     ),
+    output_format: str = typer.Option(
+        "rich", "--format", help="Output format: 'rich' (default) or 'json'", metavar="rich|json"
+    ),
+    quiet: bool = typer.Option(
+        False, "--quiet", "-q", help="Suppress banners/progress bars (tables still print)"
+    ),
 ) -> None:
     """PyQuant — multi-modal market research with a Temporal Fusion Transformer."""
+    fmt = output_format.strip().lower()
+    if fmt not in ("rich", "json"):
+        raise typer.BadParameter("--format must be 'rich' or 'json'")
+    _output.fmt = fmt
+    # JSON output implies quiet: only the JSON document should reach stdout.
+    _output.quiet = quiet or fmt == "json"
+
     # Library/runtime chatter is kept out of the pretty CLI output by default;
     # --verbose/--debug turn it back on for troubleshooting (e.g. NaN training
     # loss, unexpected feature drift) without editing source.
@@ -56,8 +93,11 @@ def _build_settings(
     no_macro: bool,
     no_sentiment: bool,
     no_sectors: bool,
+    config: Path | None = None,
 ) -> Settings:
-    s = load_settings()
+    # YAML config (if any) is layered first; the explicit CLI flags below then
+    # win over it (PYQ-209).
+    s = load_settings(config)
     if period:
         s.data.period = period
     if no_macro:
@@ -86,6 +126,9 @@ def train(
     pin: str = typer.Option(
         None, help="Name a reproducible dataset snapshot to save/reuse for this experiment"
     ),
+    config: Path = typer.Option(
+        None, "--config", help="YAML experiment config (see configs/); CLI flags still win"
+    ),
     epochs: int = typer.Option(None, help="Override max training epochs"),
     period: str = typer.Option(None, help="History to pull, e.g. 5y, 10y"),
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
@@ -93,13 +136,20 @@ def train(
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
 ):
     """Train a Temporal Fusion Transformer for SYMBOLS (pooled if more than one)."""
-    settings = _build_settings(period, no_macro, no_sentiment, no_sectors)
+    settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
     tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
-    console.print(f"[bold cyan]Training TFT for {', '.join(tickers)}[/bold cyan]")
+    if not _output.quiet:
+        console.print(f"[bold cyan]Training TFT for {', '.join(tickers)}[/bold cyan]")
     # Lightning renders its own live progress bar during the fit (progress=True);
     # a competing console.status() spinner was only ever masked by it (PYQ-222),
     # so let Lightning's bar be the single live indicator.
-    result = tft.train(tickers, settings, bundle_name=name, max_epochs=epochs, progress=True, pin=pin)
+    result = tft.train(
+        tickers, settings, bundle_name=name, max_epochs=epochs, progress=not _output.quiet, pin=pin
+    )
+
+    if _output.json:
+        _emit_json(serialize.train_result_to_dict(result))
+        return
 
     ev = result.evaluation
     table = Table(title=f"Training complete — {result.bundle_dir.name}", show_header=False)
@@ -114,13 +164,17 @@ def train(
     table.add_row("Directional accuracy", f"{ev.directional_accuracy:.1%}")
     table.add_row("Calibration coverage (p10-p90)", f"{ev.calibration_coverage:.1%}")
     console.print(table)
-    console.print("[dim]Next: pyquant forecast " + result.symbols[0] + "[/dim]")
+    if not _output.quiet:
+        console.print("[dim]Next: pyquant forecast " + result.symbols[0] + "[/dim]")
 
 
 @app.command()
 def backtest(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     windows: int = typer.Option(5, help="Number of rolling walk-forward windows"),
+    config: Path = typer.Option(
+        None, "--config", help="YAML experiment config (see configs/); CLI flags still win"
+    ),
     epochs: int = typer.Option(None, help="Override max training epochs per window"),
     period: str = typer.Option(None, help="History to pull, e.g. 5y, 10y"),
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
@@ -128,12 +182,23 @@ def backtest(
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
 ):
     """Walk-forward backtest SYMBOL across multiple rolling origins."""
-    settings = _build_settings(period, no_macro, no_sentiment, no_sectors)
-    console.print(f"[bold cyan]Walk-forward backtesting {symbol.upper()}[/bold cyan]")
-    with console.status(f"Training and evaluating {windows} rolling windows..."):
-        result = tft.walk_forward_backtest(
+    settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+
+    def _run():
+        return tft.walk_forward_backtest(
             symbol, settings, n_windows=windows, max_epochs=epochs, progress=False
         )
+
+    if _output.quiet:
+        result = _run()
+    else:
+        console.print(f"[bold cyan]Walk-forward backtesting {symbol.upper()}[/bold cyan]")
+        with console.status(f"Training and evaluating {windows} rolling windows..."):
+            result = _run()
+
+    if _output.json:
+        _emit_json(serialize.backtest_to_dict(result))
+        return
 
     ev = result.aggregated
     table = Table(
@@ -180,25 +245,39 @@ def forecast(
     settings = load_settings()
     loaded_bundle = tft.load(bundle, settings) if bundle else None
     fc = generate_forecast(symbol, settings, bundle=loaded_bundle, pin=pin)
+    snap = fetch_options_snapshot(fc.symbol)
 
-    console.print(
-        Panel(
-            f"Current: [bold]${fc.current_price:.2f}[/bold]   "
-            f"As of: {fc.last_date.date()}   "
-            f"Expected ({fc.horizon}d): {_color_pct(fc.expected_return_pct())}",
-            title=f"{fc.symbol}",
+    if _output.json:
+        data = serialize.forecast_to_dict(fc)
+        if snap.put_call_ratio is not None:
+            data["options"] = {
+                "expiry": str(snap.expiry),
+                "put_call_ratio": snap.put_call_ratio,
+                "sentiment_label": snap.sentiment_label,
+                "atm_iv": snap.atm_iv,
+                "iv_skew": snap.iv_skew,
+            }
+        _emit_json(data)
+        return
+
+    if not _output.quiet:
+        console.print(
+            Panel(
+                f"Current: [bold]${fc.current_price:.2f}[/bold]   "
+                f"As of: {fc.last_date.date()}   "
+                f"Expected ({fc.horizon}d): {_color_pct(fc.expected_return_pct())}",
+                title=f"{fc.symbol}",
+            )
         )
-    )
     console.print(_forecast_table(fc))
 
-    snap = fetch_options_snapshot(fc.symbol)
     if snap.put_call_ratio is not None:
         console.print(
             f"[dim]Options ({snap.expiry}): put/call {snap.put_call_ratio:.2f} "
             f"({snap.sentiment_label}), ATM IV {snap.atm_iv:.0%}, skew {snap.iv_skew:+.2%}[/dim]"
         )
 
-    if not no_chart:
+    if not no_chart and not _output.quiet:
         charts.fan_chart(fc)
     if export:
         path = charts.export_fan_chart(fc, export)
@@ -219,6 +298,10 @@ def explain(
     bundle = tft.load(bundle_name or symbol, settings)
     interp = explain_forecast(symbol, settings, bundle=bundle)
 
+    if _output.json:
+        _emit_json(serialize.interpretation_to_dict(interp, top=top))
+        return
+
     table = Table(title=f"{interp.symbol} — top {top} feature importances")
     table.add_column("Feature")
     table.add_column("Importance", justify="right")
@@ -232,7 +315,7 @@ def explain(
         f"[dim]Peak attention on {peak.date()} ({att.max() / att.sum():.0%} of focus)[/dim]"
     )
 
-    if not no_chart:
+    if not no_chart and not _output.quiet:
         charts.importance_chart(interp.top_features(top))
         charts.attention_chart(interp.attention)
 
@@ -245,25 +328,18 @@ def scan(
     settings = load_settings()
     tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
 
-    table = Table(title="Multi-asset forecast comparison")
-    table.add_column("Symbol")
-    table.add_column("Current", justify="right")
-    table.add_column("Median target", justify="right")
-    table.add_column("Expected", justify="right")
-    table.add_column("Band width", justify="right")
-    table.add_column("Signal")
-
+    rows: list[dict] = []
     for ticker in tickers:
         try:
             fc = generate_forecast(ticker, settings)
         except FileNotFoundError:
-            table.add_row(ticker, "—", "—", "—", "—", "[dim]not trained[/dim]")
+            rows.append({"symbol": ticker, "status": "not_trained"})
             continue
         except Exception as exc:
             # One flaky symbol (a transient data-source error, a bad config,
             # etc.) must not sink the whole multi-symbol comparison (PYQ-113).
             logger.warning("Could not forecast %s: %s", ticker, exc)
-            table.add_row(ticker, "—", "—", "—", "—", "[red]error[/red]")
+            rows.append({"symbol": ticker, "status": "error", "error": str(exc)})
             continue
         pct = fc.expected_return_pct()
         lo = fc.quantile_series(fc.quantiles[0])[-1]
@@ -275,20 +351,112 @@ def scan(
         # on one side of 0% -- a wide, zero-straddling band isn't a real BUY
         # or SELL signal even if the median alone looks confident.
         if pct > 2 and lo_pct > 0:
-            signal = "[green]BUY[/green]"
+            signal = "BUY"
         elif pct < -2 and hi_pct < 0:
-            signal = "[red]SELL[/red]"
+            signal = "SELL"
         else:
             signal = "HOLD"
-        table.add_row(
-            ticker,
-            f"${fc.current_price:.2f}",
-            f"${fc.median[-1]:.2f}",
-            _color_pct(pct),
-            f"{band:.1f}%",
-            signal,
+        rows.append(
+            {
+                "symbol": ticker,
+                "status": "ok",
+                "current_price": fc.current_price,
+                "median_target": float(fc.median[-1]),
+                "expected_return_pct": pct,
+                "band_width_pct": band,
+                "signal": signal,
+            }
         )
+
+    if _output.json:
+        _emit_json(rows)
+        return
+
+    table = Table(title="Multi-asset forecast comparison")
+    table.add_column("Symbol")
+    table.add_column("Current", justify="right")
+    table.add_column("Median target", justify="right")
+    table.add_column("Expected", justify="right")
+    table.add_column("Band width", justify="right")
+    table.add_column("Signal")
+
+    _signal_markup = {"BUY": "[green]BUY[/green]", "SELL": "[red]SELL[/red]", "HOLD": "HOLD"}
+    for r in rows:
+        if r["status"] == "not_trained":
+            table.add_row(r["symbol"], "—", "—", "—", "—", "[dim]not trained[/dim]")
+        elif r["status"] == "error":
+            table.add_row(r["symbol"], "—", "—", "—", "—", "[red]error[/red]")
+        else:
+            table.add_row(
+                r["symbol"],
+                f"${r['current_price']:.2f}",
+                f"${r['median_target']:.2f}",
+                _color_pct(r["expected_return_pct"]),
+                f"{r['band_width_pct']:.1f}%",
+                _signal_markup[r["signal"]],
+            )
     console.print(table)
+
+
+cache_app = typer.Typer(
+    help="Inspect and prune the local data-panel cache.", no_args_is_help=True
+)
+app.add_typer(cache_app, name="cache")
+
+
+def _fmt_bytes(n: int) -> str:
+    size = float(n)
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+@cache_app.command("list")
+def cache_list():
+    """Show cache size, entry count, and saved pins."""
+    settings = load_settings()
+    stats = data_cache.cache_stats(settings.data.cache_dir)
+    if _output.json:
+        _emit_json(stats)
+        return
+    console.print(
+        f"Cache dir: {settings.data.cache_dir}\n"
+        f"Entries: {stats['entry_count']}  "
+        f"Size: {_fmt_bytes(stats['total_bytes'])}"
+    )
+    if stats["pins"]:
+        console.print("Pins: " + ", ".join(stats["pins"]))
+    else:
+        console.print("[dim]No pins.[/dim]")
+
+
+@cache_app.command("prune")
+def cache_prune():
+    """Delete TTL-expired cache entries (pins are never touched)."""
+    settings = load_settings()
+    removed = data_cache.prune_expired(
+        settings.data.cache_dir, settings.data.cache_ttl_seconds
+    )
+    if _output.json:
+        _emit_json({"removed": removed, "count": len(removed)})
+        return
+    console.print(f"Pruned {len(removed)} expired cache entr{'y' if len(removed) == 1 else 'ies'}.")
+
+
+@cache_app.command("rm-pin")
+def cache_rm_pin(name: str = typer.Argument(..., help="Pin name to remove")):
+    """Remove a named dataset pin."""
+    settings = load_settings()
+    removed = data_cache.remove_pin(settings.data.cache_dir, name)
+    if _output.json:
+        _emit_json({"removed": removed, "name": name})
+        return
+    if removed:
+        console.print(f"[green]Removed pin '{name}'.[/green]")
+    else:
+        console.print(f"[yellow]No pin named '{name}'.[/yellow]")
 
 
 if __name__ == "__main__":

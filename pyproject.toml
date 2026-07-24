@@ -25,6 +25,7 @@ dependencies = [
     "matplotlib>=3.8",
     # Config
     "pydantic-settings>=2.2",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]
@@ -57,6 +58,15 @@ target-version = "py310"
 select = ["E", "F", "I", "UP", "B"]
 # B008: typer.Option/Argument in defaults is the intended Typer pattern.
 ignore = ["E501", "B008"]
+
+# Type-checking is available for local use but intentionally NOT gated in CI
+# (PYQ-310): a one-off survey found zero real issues at this setting — the only
+# findings were missing third-party stubs (handled below) and, under
+# --disallow-untyped-defs, annotation-completeness nits, no correctness bugs.
+# Run locally with: uvx mypy pyquant
+[tool.mypy]
+python_version = "3.12"
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
