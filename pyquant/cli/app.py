@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from pathlib import Path
 
 import typer
@@ -39,6 +40,14 @@ def _configure_logging(
     level = logging.DEBUG if debug else logging.INFO if verbose else logging.WARNING
     logging.basicConfig(level=level, format="%(message)s", force=True)
     logging.getLogger("lightning.pytorch").setLevel(logging.INFO if debug else logging.ERROR)
+    # Lightning/PyTorch emit most of their startup/deprecation chatter via
+    # warnings.warn(...), a channel the logging config above never touches.
+    if debug:
+        warnings.resetwarnings()
+    else:
+        warnings.filterwarnings("ignore", category=UserWarning)
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        warnings.filterwarnings("ignore", category=FutureWarning)
 
 
 def _build_settings(

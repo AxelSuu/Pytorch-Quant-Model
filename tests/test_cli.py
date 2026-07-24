@@ -1,6 +1,7 @@
 """CLI smoke tests using Typer's CliRunner (network-free, mocked forecasts)."""
 
 import logging
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -134,6 +135,33 @@ def test_debug_flag_enables_debug_logging_and_lightning_chatter(monkeypatch):
     assert result.exit_code == 0
     assert logging.getLogger().level == logging.DEBUG
     assert logging.getLogger("lightning.pytorch").level <= logging.INFO
+
+
+def _has_ignore_filter(category: type) -> bool:
+    # warnings.filters entries are plain tuples: (action, message, category, module, lineno).
+    return any(f[0] == "ignore" and f[2] is category for f in warnings.filters)
+
+
+def test_default_run_suppresses_user_and_deprecation_warnings(monkeypatch):
+    monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: _fake_forecast())
+    with warnings.catch_warnings():
+        warnings.resetwarnings()
+        runner.invoke(app_mod.app, ["forecast", "AAPL", "--no-chart"])
+        assert _has_ignore_filter(UserWarning)
+        assert _has_ignore_filter(DeprecationWarning)
+        assert _has_ignore_filter(FutureWarning)  # e.g. torch's LeafSpec deprecation
+
+
+def test_debug_flag_restores_default_warning_filters(monkeypatch):
+    monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: _fake_forecast())
+    with warnings.catch_warnings():
+        warnings.resetwarnings()
+        # Simulate a prior non-debug invocation having already suppressed warnings
+        # in this process; --debug must actively restore them, not just "happen"
+        # to leave them alone.
+        warnings.filterwarnings("ignore", category=UserWarning)
+        runner.invoke(app_mod.app, ["--debug", "forecast", "AAPL", "--no-chart"])
+        assert not _has_ignore_filter(UserWarning)
 
 
 def test_scan_signal_buy_when_whole_band_is_positive(monkeypatch):

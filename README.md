@@ -1,5 +1,7 @@
 # PyQuant
 
+[![CI](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml/badge.svg)](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml)
+
 > Multi-modal market research with a **Temporal Fusion Transformer** — probabilistic
 > forecasts you can interrogate, not just a single guessed price.
 
@@ -117,6 +119,23 @@ on is `Realized_Vol_20` (annualised 20-day realized volatility).
 uv run pytest          # full suite (network-free; external APIs are mocked)
 uv run ruff check .    # lint
 ```
+
+## Known limitations
+
+- `train`'s/`backtest`'s reported metrics (skill vs. baseline, calibration
+  coverage) currently reflect the model's state at its *final* training
+  epoch, not the best checkpoint that actually gets saved and used for
+  forecasting — so the numbers you see can look meaningfully worse than the
+  model you're actually running (PYQ-109). A single 5-day validation window
+  per training run also makes any one run's metrics a small, high-variance
+  sample — prefer `pyquant backtest` over `pyquant train`'s own summary for
+  a more reliable read.
+- Single-node only today: checkpoints and the data cache are local files;
+  there's no hosted API yet (design in progress, PYQ-213).
+
+See [`backlog/`](backlog/README.md) for the full backlog of open bugs,
+planned features, and investigations (`uv run python scripts/backlog.py
+list` for a quick priority-sorted view).
 
 ## Disclaimer
 
