@@ -1,8 +1,31 @@
 """Tests for news sentiment (graceful degradation + scoring logic)."""
 
 import datetime as dt
+import sys
+import types
 
 from pyquant.data import sentiment
+
+
+def test_finbert_retries_after_transient_load_failure(monkeypatch):
+    """A transient pipeline-construction failure must not permanently poison the
+    cache (PYQ-114): a later call in the same process should retry and succeed."""
+    calls = {"n": 0}
+
+    def flaky_pipeline(*a, **k):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("HuggingFace Hub download hiccup")
+        return object()  # a working pipeline the second time
+
+    fake_transformers = types.ModuleType("transformers")
+    fake_transformers.pipeline = flaky_pipeline
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+    monkeypatch.setattr(sentiment, "_FINBERT_PIPELINE", None)
+
+    assert sentiment._finbert() is None  # first call: transient failure
+    assert sentiment._finbert() is not None  # retry: not the cached None
+    assert calls["n"] == 2
 
 
 def test_signed_score_positive_minus_negative():

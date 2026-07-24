@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -23,6 +23,22 @@ class TFTConfig(BaseModel):
     # Quantiles for the prediction intervals (p10 / p50 / p90).
     quantiles: list[float] = Field(default_factory=lambda: [0.1, 0.5, 0.9])
 
+    @field_validator("quantiles")
+    @classmethod
+    def _quantiles_sorted_ascending(cls, v: list[float]) -> list[float]:
+        """Reject an unsorted quantile list.
+
+        evaluate_predictions() treats the first configured quantile as the
+        lower calibration bound and the last as the upper -- an unsorted list
+        (e.g. [0.9, 0.1, 0.5]) would silently invert the band with no error.
+        """
+        if list(v) != sorted(v):
+            raise ValueError(
+                f"quantiles must be sorted ascending, got {v}; the first/last "
+                "entries are used as the lower/upper calibration bounds."
+            )
+        return v
+
 
 class TrainingConfig(BaseModel):
     """Training and windowing settings."""
@@ -34,6 +50,15 @@ class TrainingConfig(BaseModel):
     learning_rate: float = 0.01
     train_split: float = 0.85
     gradient_clip_val: float = 0.1
+    # Reproducibility: seed_everything() is called with this before each fit and
+    # the value is recorded in meta.json so a run can be reproduced.
+    seed: int = 42
+    # DataLoader worker processes. 0 = single-process loading (safe default);
+    # a non-zero value parallelises data loading during training.
+    num_workers: int = 0
+    # Lightning precision string (e.g. "32-true", "bf16-mixed", "16-mixed").
+    # Defaults to full fp32 so nothing changes unless explicitly opted in.
+    precision: str = "32-true"
 
 
 class DataConfig(BaseModel):

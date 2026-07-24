@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
-from functools import lru_cache
 
 import pandas as pd
 import requests
@@ -25,10 +24,19 @@ SENTIMENT_COLUMNS = ["Sentiment", "HeadlineCount"]
 _FINNHUB_NEWS_URL = "https://finnhub.io/api/v1/company-news"
 _MAX_HISTORY_DAYS = 365  # free-tier news horizon
 
+# Cache only a *successfully* constructed pipeline (PYQ-114). lru_cache would
+# also memoise a None returned after a transient failure (e.g. a HuggingFace
+# Hub download blip on first use), permanently disabling sentiment for the rest
+# of the process -- fatal for a long-running server. A manual cache set only on
+# success lets a later call retry.
+_FINBERT_PIPELINE = None
 
-@lru_cache(maxsize=1)
+
 def _finbert():
-    """Lazily build (and cache) the FinBERT classification pipeline."""
+    """Lazily build (and cache on success) the FinBERT classification pipeline."""
+    global _FINBERT_PIPELINE
+    if _FINBERT_PIPELINE is not None:
+        return _FINBERT_PIPELINE
     try:
         from transformers import pipeline
     except ImportError:
@@ -38,7 +46,7 @@ def _finbert():
         )
         return None
     try:
-        return pipeline(
+        clf = pipeline(
             "text-classification",
             model="ProsusAI/finbert",
             truncation=True,
@@ -47,6 +55,8 @@ def _finbert():
     except Exception as exc:
         logger.warning("Could not load FinBERT model: %s", exc)
         return None
+    _FINBERT_PIPELINE = clf
+    return clf
 
 
 def fetch_news(api_key: str, symbol: str, start: str, end: str) -> list[dict]:

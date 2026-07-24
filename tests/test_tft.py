@@ -145,3 +145,121 @@ def test_walk_forward_backtest_rejects_insufficient_history(monkeypatch, sample_
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: short)
     with pytest.raises(ValueError):
         tft.walk_forward_backtest("TEST", fast_settings, n_windows=3, max_epochs=1, progress=False)
+
+
+def test_train_evaluates_best_checkpoint_not_live_model(monkeypatch, sample_ohlcv_df, fast_settings):
+    """Reported metrics must come from the reloaded best checkpoint (the deployed
+    model), not the live post-fit model EarlyStopping leaves past the best epoch
+    (PYQ-109). The two are distinct objects; assert evaluation used the reload."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    built = {}
+    real_build_model = tft.build_model
+
+    def spy_build_model(ds, settings):
+        model = real_build_model(ds, settings)
+        built["live_model"] = model
+        return model
+
+    monkeypatch.setattr(tft, "build_model", spy_build_model)
+
+    evaluated = {}
+    real_eval = tft._evaluate_validation
+
+    def spy_eval(model, val_loader, quantiles):
+        evaluated["model"] = model
+        return real_eval(model, val_loader, quantiles)
+
+    monkeypatch.setattr(tft, "_evaluate_validation", spy_eval)
+
+    tft.train("TEST", fast_settings, max_epochs=3, progress=False)
+
+    assert "live_model" in built and "model" in evaluated
+    # The evaluated model is a freshly reloaded checkpoint, a different object
+    # from the live model that was fit. On the pre-fix code these were identical.
+    assert evaluated["model"] is not built["live_model"]
+
+
+def test_pooling_preserves_valid_sector_column_for_other_symbols(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """Pooling a sector-ETF symbol must not strip its own SEC_ column from the
+    other pooled symbols that legitimately have it (PYQ-111)."""
+    base = add_technical_indicators(sample_ohlcv_df).dropna()
+    panel_aaa = base.copy()
+    panel_aaa["SEC_SPY"] = 0.01  # AAA legitimately carries SPY as a sector feature
+    panel_spy = base.copy()  # SPY's own SEC_SPY was dropped for self-leakage
+
+    def fake_build_panel(symbol, settings, *a, **k):
+        return panel_aaa if symbol == "AAA" else panel_spy
+
+    monkeypatch.setattr(tft, "build_panel", fake_build_panel)
+    pooled = tft._build_pooled_long_df(["AAA", "SPY"], fast_settings, None, None)
+
+    assert "SEC_SPY" in pooled.columns  # survived the pool-wide intersection
+    aaa_rows = pooled[pooled["symbol"] == "AAA"]
+    spy_rows = pooled[pooled["symbol"] == "SPY"]
+    assert (aaa_rows["SEC_SPY"] == 0.01).all()  # real values kept for AAA
+    assert (spy_rows["SEC_SPY"] == 0.0).all()  # neutralised (not leaked) for SPY
+
+
+def test_train_seeds_everything_and_records_seed(monkeypatch, sample_ohlcv_df, fast_settings):
+    """train() must seed before the fit and persist the seed for reproducibility (PYQ-210)."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    seeds = []
+    monkeypatch.setattr(tft, "seed_everything", lambda s, **k: seeds.append(s))
+
+    fast_settings.training.seed = 123
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    assert 123 in seeds
+    meta = json.loads((tft._bundle_dir(fast_settings, "TEST") / "meta.json").read_text())
+    assert meta["seed"] == 123
+
+
+def test_train_threads_num_workers_into_dataloaders(monkeypatch, sample_ohlcv_df, fast_settings):
+    """TrainingConfig.num_workers must reach the DataLoader construction (PYQ-218)."""
+    from pytorch_forecasting import TimeSeriesDataSet
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.num_workers = 3
+
+    recorded = []
+    real_to_dataloader = TimeSeriesDataSet.to_dataloader
+
+    def spy_to_dataloader(self, *args, **kwargs):
+        recorded.append(kwargs.get("num_workers"))
+        kwargs["num_workers"] = 0  # don't actually spawn workers inside the test
+        return real_to_dataloader(self, *args, **kwargs)
+
+    monkeypatch.setattr(TimeSeriesDataSet, "to_dataloader", spy_to_dataloader)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    train_val_workers = [w for w in recorded if w is not None]
+    assert train_val_workers  # train + val loaders were built
+    assert all(w == 3 for w in train_val_workers)
+
+
+def test_train_threads_precision_into_trainer(monkeypatch, sample_ohlcv_df, fast_settings):
+    """TrainingConfig.precision must reach the Trainer (PYQ-223), run safely regardless."""
+    from lightning.pytorch import Trainer as RealTrainer
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.precision = "bf16-mixed"
+
+    recorded = {}
+
+    def spy_trainer(*args, **kwargs):
+        recorded["precision"] = kwargs.get("precision")
+        kwargs["precision"] = "32-true"  # run at fp32 on CPU regardless of request
+        return RealTrainer(*args, **kwargs)
+
+    monkeypatch.setattr(tft, "Trainer", spy_trainer)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    assert recorded["precision"] == "bf16-mixed"

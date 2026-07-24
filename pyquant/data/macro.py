@@ -45,7 +45,9 @@ def _fetch_vix(start: str | None, end: str | None, period: str) -> pd.Series | N
     """Daily VIX close from Yahoo Finance."""
     try:
         tkr = yf.Ticker("^VIX")
-        df = tkr.history(start=start, end=end) if (start and end) else tkr.history(period=period)
+        # Honor an explicit range if *either* bound is given (yfinance accepts
+        # start or end alone); only fall back to period when neither is set.
+        df = tkr.history(start=start, end=end) if (start or end) else tkr.history(period=period)
         if df is None or df.empty:
             return None
         s = df["Close"].copy()
@@ -70,20 +72,29 @@ def _fetch_fred(api_key: str, start: str | None, end: str | None) -> pd.DataFram
 
     try:
         fred = Fred(api_key=api_key)
-        cols = {}
-        for series_id, spec in FRED_SERIES.items():
-            s = fred.get_series(series_id, observation_start=start, observation_end=end)
-            if s is not None and len(s):
-                s.index = pd.to_datetime(s.index).normalize() + pd.Timedelta(
-                    days=spec.publication_lag_days
-                )
-                cols[spec.column] = s
-        if not cols:
-            return None
-        return pd.DataFrame(cols)
     except Exception as exc:
-        logger.warning("Could not fetch FRED series: %s", exc)
+        logger.warning("Could not initialise FRED client: %s", exc)
         return None
+
+    # Fetch each series independently: a single failing/rate-limited series
+    # (e.g. CPIAUCSL) must not discard the ones that already succeeded
+    # (PYQ-110, same bug shape as PYQ-104), matching _fetch_vix's degrade-and-
+    # continue pattern.
+    cols = {}
+    for series_id, spec in FRED_SERIES.items():
+        try:
+            s = fred.get_series(series_id, observation_start=start, observation_end=end)
+        except Exception as exc:
+            logger.warning("Could not fetch FRED series %s: %s", series_id, exc)
+            continue
+        if s is not None and len(s):
+            s.index = pd.to_datetime(s.index).normalize() + pd.Timedelta(
+                days=spec.publication_lag_days
+            )
+            cols[spec.column] = s
+    if not cols:
+        return None
+    return pd.DataFrame(cols)
 
 
 def fetch_macro(

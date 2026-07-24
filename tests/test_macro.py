@@ -54,6 +54,29 @@ def test_fetch_macro_with_key_adds_fred(monkeypatch, sample_ohlcv_df):
     assert "YieldSpread" in out.columns
 
 
+def test_fetch_macro_keeps_series_that_succeed_when_one_fails(monkeypatch, sample_ohlcv_df):
+    """One failing FRED series must not discard the ones already fetched (PYQ-110)."""
+    monkeypatch.setattr(macro.yf, "Ticker", _fake_vix_ticker(sample_ohlcv_df.index))
+
+    class FlakyFred:
+        def __init__(self, api_key=None):
+            pass
+
+        def get_series(self, series_id, observation_start=None, observation_end=None):
+            if series_id == "CPIAUCSL":
+                raise RuntimeError("transient FRED rate limit")
+            return pd.Series(range(len(sample_ohlcv_df.index)), index=sample_ohlcv_df.index)
+
+    import fredapi
+
+    monkeypatch.setattr(fredapi, "Fred", FlakyFred)
+    out = macro.fetch_macro(api_key="dummy")
+    # DFF/T10Y2Y succeeded before CPIAUCSL failed -- they must survive.
+    assert "FedFunds" in out.columns
+    assert "YieldSpread" in out.columns
+    assert "CPI" not in out.columns
+
+
 def test_fetch_macro_lags_monthly_cpi_by_publication_delay(monkeypatch, sample_ohlcv_df):
     """CPIAUCSL is indexed by BLS's reference period, not its publish date.
 

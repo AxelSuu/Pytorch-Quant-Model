@@ -11,9 +11,35 @@ broadcast across the horizon.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 import numpy as np
+
+logger = logging.getLogger(__name__)
+
+
+def warn_on_quantile_crossing(predictions: np.ndarray, quantiles: list[float]) -> int:
+    """Warn if quantiles cross (a higher quantile below a lower one).
+
+    ``predictions`` is (..., n_quantiles), ordered ascending to match
+    ``quantiles``. QuantileLoss does not enforce monotonicity pointwise
+    (PYQ-216), so surface any crossing rather than silently scoring/rendering a
+    band whose lower bound exceeds its upper. Returns the number of crossed
+    points.
+    """
+    preds = np.asarray(predictions, dtype=float)
+    if preds.shape[-1] < 2:
+        return 0
+    n_crossed = int(np.count_nonzero(np.diff(preds, axis=-1) < 0))
+    if n_crossed:
+        logger.warning(
+            "Quantile crossing detected: %d point(s) where a higher quantile is "
+            "below a lower one (quantiles=%s). Predictions are not monotonic.",
+            n_crossed,
+            quantiles,
+        )
+    return n_crossed
 
 
 def persistence_baseline_mae(actuals: np.ndarray, last_observed: np.ndarray) -> float:
@@ -76,6 +102,7 @@ def evaluate_predictions(
             "TFTConfig.quantiles must include 0.5 to evaluate a median forecast."
         )
     predictions = np.asarray(predictions)
+    warn_on_quantile_crossing(predictions, quantiles)
     median_idx = quantiles.index(0.5)
     median = predictions[:, :, median_idx]
     lower = predictions[:, :, 0]

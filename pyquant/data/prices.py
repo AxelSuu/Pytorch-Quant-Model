@@ -130,7 +130,10 @@ def fetch_prices(
     Open/High/Low/Close/Volume columns.
     """
     ticker = yf.Ticker(symbol)
-    if start and end:
+    # Honor an explicit range if *either* bound is given (yfinance accepts start
+    # or end alone); only fall back to period when neither is set, so passing
+    # just start (e.g. "everything since IPO") isn't silently ignored.
+    if start or end:
         df = ticker.history(start=start, end=end)
     else:
         df = ticker.history(period=period)

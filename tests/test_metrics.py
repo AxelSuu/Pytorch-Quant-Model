@@ -86,3 +86,30 @@ def test_evaluate_predictions_requires_0_5_quantile():
     last_observed = np.zeros(1)
     with pytest.raises(ValueError, match="0.5"):
         metrics.evaluate_predictions(predictions, actuals, last_observed, [0.25, 0.75])
+
+
+def test_warn_on_quantile_crossing_flags_crossed_band(caplog):
+    """A higher quantile below a lower one must be surfaced, not silently scored (PYQ-216)."""
+    # For one point the "p90" (last) is below the "p10" (first): a crossed band.
+    predictions = np.array([[[106.0, 100.0, 95.0]]])
+    with caplog.at_level("WARNING"):
+        n = metrics.warn_on_quantile_crossing(predictions, [0.1, 0.5, 0.9])
+    assert n > 0
+    assert any("crossing" in m.lower() for m in caplog.messages)
+
+
+def test_warn_on_quantile_crossing_silent_when_monotonic(caplog):
+    predictions = np.array([[[95.0, 100.0, 106.0]]])  # properly ordered
+    with caplog.at_level("WARNING"):
+        n = metrics.warn_on_quantile_crossing(predictions, [0.1, 0.5, 0.9])
+    assert n == 0
+    assert not any("crossing" in m.lower() for m in caplog.messages)
+
+
+def test_evaluate_predictions_warns_on_crossing(caplog):
+    predictions = np.array([[[106.0, 100.0, 95.0]]])
+    actuals = np.array([[100.0]])
+    last_observed = np.array([100.0])
+    with caplog.at_level("WARNING"):
+        metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+    assert any("crossing" in m.lower() for m in caplog.messages)

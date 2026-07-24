@@ -25,5 +25,10 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
+      - name: Backlog consistency
+        # Cheap, dependency-free guard against duplicate/out-of-range IDs and
+        # table/detail drift across backlog/*.md, caught in the same PR (PYQ-311).
+        run: python3 scripts/backlog.py check
+
       - name: Test
         run: uv run pytest -q

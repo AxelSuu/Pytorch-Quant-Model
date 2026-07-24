@@ -32,7 +32,9 @@ def fetch_sector_returns(
             etfs,
             start=start,
             end=end,
-            period=None if (start and end) else period,
+            # Honor an explicit range if *either* bound is given; only fall back
+            # to period when neither is set (PYQ-112).
+            period=None if (start or end) else period,
             progress=False,
             auto_adjust=True,
         )

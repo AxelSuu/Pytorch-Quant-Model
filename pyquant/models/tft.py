@@ -16,12 +16,13 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
 import pandas as pd
 import torch
-from lightning.pytorch import Trainer
+from lightning.pytorch import Trainer, seed_everything
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.metrics import QuantileLoss
@@ -100,6 +101,18 @@ def _build_pooled_long_df(
     if len(frames) == 1:
         return frames[0]
 
+    # A sector-ETF symbol has its own SEC_<symbol> column deliberately dropped to
+    # avoid self-leakage (PYQ-102). Left as-is, the column-intersection below
+    # would then strip that (perfectly valid) feature from *every other* pooled
+    # symbol too (PYQ-111). Re-add it as neutral 0.0 for just the symbol that
+    # leaks, so it survives the intersection for the others -- while genuinely
+    # missing columns (a source flaky for some symbols, PYQ-302) still get
+    # dropped as intended.
+    for frame, symbol in zip(frames, symbols, strict=True):
+        self_col = f"SEC_{symbol}"
+        if self_col not in frame.columns and any(self_col in f.columns for f in frames):
+            frame[self_col] = 0.0
+
     common_cols = set.intersection(*(set(f.columns) for f in frames))
     all_cols = set.union(*(set(f.columns) for f in frames))
     dropped = sorted(all_cols - common_cols)
@@ -138,6 +151,10 @@ def train(
     symbols = [s.upper() for s in symbols]
     bundle_name = (bundle_name or "_".join(symbols)).upper()
 
+    # Seed before any data loading / weight init so a run is reproducible and
+    # the recorded seed (below) actually reconstructs it (PYQ-210).
+    seed_everything(settings.training.seed, workers=True)
+
     df = _build_pooled_long_df(symbols, settings, start, end, pin=pin)
 
     horizon = settings.training.max_prediction_length
@@ -153,8 +170,9 @@ def train(
     validation = TimeSeriesDataSet.from_dataset(training, df, predict=True, stop_randomization=True)
 
     batch_size = settings.training.batch_size
-    train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
-    val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
+    num_workers = settings.training.num_workers
+    train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
+    val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
 
     model = build_model(training, settings)
 
@@ -170,6 +188,7 @@ def train(
     trainer = Trainer(
         max_epochs=epochs,
         accelerator="auto",
+        precision=settings.training.precision,
         gradient_clip_val=settings.training.gradient_clip_val,
         callbacks=[ckpt_cb, early_stop],
         logger=False,
@@ -187,7 +206,14 @@ def train(
     torch.save(training.get_parameters(), bundle_dir / "dataset_params.pt")
 
     val_loss = float(ckpt_cb.best_model_score) if ckpt_cb.best_model_score is not None else float("nan")
-    evaluation = _evaluate_validation(model, val_loader, settings.tft.quantiles)
+    # Evaluate the *best* checkpoint (the one saved to model.ckpt and actually
+    # loaded by forecast/explain), not the live post-fit model -- EarlyStopping
+    # stops training several epochs past the best one without rewinding the live
+    # weights, so reporting on `model` measures a worse, already-discarded
+    # checkpoint than the one that gets deployed (PYQ-109).
+    evaluation = _evaluate_best_checkpoint(
+        bundle_dir / "model.ckpt", model, val_loader, settings.tft.quantiles
+    )
     meta = {
         "symbol": bundle_name,
         "symbols": symbols,
@@ -195,6 +221,7 @@ def train(
         "features": feature_columns(df),
         "val_loss": val_loss,
         "epochs_run": trainer.current_epoch,
+        "seed": settings.training.seed,
         "quantiles": settings.tft.quantiles,
         "max_encoder_length": settings.training.max_encoder_length,
         "max_prediction_length": horizon,
@@ -234,6 +261,7 @@ def walk_forward_backtest(
     produce a deployable bundle.
     """
     symbol = symbol.upper()
+    seed_everything(settings.training.seed, workers=True)
     panel = build_panel(symbol, settings, start, end)
     df = panel_to_long(panel, symbol)
 
@@ -254,25 +282,38 @@ def walk_forward_backtest(
     epochs = max_epochs if max_epochs is not None else settings.training.max_epochs
     batch_size = settings.training.batch_size
 
+    num_workers = settings.training.num_workers
     per_window: list[EvaluationMetrics] = []
     for cutoff in cutoffs:
         training = make_dataset(df, settings, training_cutoff=cutoff)
         validation = TimeSeriesDataSet.from_dataset(training, df, predict=True, stop_randomization=True)
-        train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=0)
-        val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=0)
+        train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
+        val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
 
         model = build_model(training, settings)
-        trainer = Trainer(
-            max_epochs=epochs,
-            accelerator="auto",
-            gradient_clip_val=settings.training.gradient_clip_val,
-            callbacks=[EarlyStopping(monitor="val_loss", patience=5, mode="min")],
-            logger=False,
-            enable_progress_bar=progress,
-            enable_model_summary=False,
-        )
-        trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
-        per_window.append(_evaluate_validation(model, val_loader, settings.tft.quantiles))
+        # Checkpoint into a throwaway dir: the backtest discards each window's
+        # model, but it must still evaluate that window's *best* epoch rather
+        # than its final (post-EarlyStopping) one, same as train() (PYQ-109).
+        with tempfile.TemporaryDirectory() as tmp_ckpt_dir:
+            ckpt_cb = ModelCheckpoint(
+                dirpath=tmp_ckpt_dir, filename="best", monitor="val_loss", save_top_k=1, mode="min"
+            )
+            trainer = Trainer(
+                max_epochs=epochs,
+                accelerator="auto",
+                precision=settings.training.precision,
+                gradient_clip_val=settings.training.gradient_clip_val,
+                callbacks=[ckpt_cb, EarlyStopping(monitor="val_loss", patience=5, mode="min")],
+                logger=False,
+                enable_progress_bar=progress,
+                enable_model_summary=False,
+            )
+            trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+            per_window.append(
+                _evaluate_best_checkpoint(
+                    ckpt_cb.best_model_path, model, val_loader, settings.tft.quantiles
+                )
+            )
 
     return BacktestResult(
         symbol=symbol,
@@ -280,6 +321,31 @@ def walk_forward_backtest(
         per_window=per_window,
         aggregated=aggregate_metrics(per_window),
     )
+
+
+def _evaluate_best_checkpoint(
+    best_model_path: str | Path | None,
+    live_model: TemporalFusionTransformer,
+    val_loader,
+    quantiles: list[float],
+) -> EvaluationMetrics:
+    """Evaluate the best-epoch checkpoint, falling back to the live model.
+
+    EarlyStopping does not rewind the live model's weights to the best epoch --
+    ModelCheckpoint does, and it must be reloaded explicitly (as tft.load() does
+    for forecast/explain). Reload the saved best checkpoint so reported metrics
+    reflect the model that actually gets deployed, not the worse final one
+    (PYQ-109). Falls back to the live model only if no checkpoint was written.
+    """
+    best_model_path = Path(best_model_path) if best_model_path else None
+    if best_model_path and best_model_path.exists():
+        model = TemporalFusionTransformer.load_from_checkpoint(
+            str(best_model_path), map_location="cpu"
+        )
+    else:
+        logger.warning("No best checkpoint found; evaluating the live post-fit model instead.")
+        model = live_model
+    return _evaluate_validation(model, val_loader, quantiles)
 
 
 def _evaluate_validation(
@@ -346,6 +412,12 @@ def load(symbol: str, settings: Settings) -> ModelBundle:
             f"No trained model for {symbol.upper()} at {ckpt}. Run `pyquant train` first."
         )
     model = TemporalFusionTransformer.load_from_checkpoint(str(ckpt), map_location="cpu")
+    # weights_only=False is required: get_parameters() serializes
+    # pytorch-forecasting normalizers/encoders that are not on PyTorch's
+    # safe-unpickling allowlist, so weights_only=True raises UnpicklingError
+    # (verified: PYQ-306). This deserialization can execute arbitrary code, so
+    # only ever load bundles from your own trusted training runs -- the same
+    # trust boundary relied on by the pickle panel cache in pyquant.data.cache.
     dataset_params = torch.load(bundle_dir / "dataset_params.pt", weights_only=False)
     meta = json.loads((bundle_dir / "meta.json").read_text())
     return ModelBundle(model=model, dataset_params=dataset_params, meta=meta)

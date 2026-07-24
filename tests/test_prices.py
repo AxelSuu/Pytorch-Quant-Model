@@ -62,6 +62,25 @@ def test_fetch_prices_uses_yfinance(monkeypatch, sample_ohlcv_df):
     assert {"Open", "High", "Low", "Close", "Volume"}.issubset(out.columns)
 
 
+def test_fetch_prices_honors_start_without_end(monkeypatch, sample_ohlcv_df):
+    """Passing only `start` must use the date range, not silently fall back to
+    `period` and discard it (PYQ-112)."""
+    received = {}
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, period=None, start=None, end=None):
+            received.update(period=period, start=start, end=end)
+            return sample_ohlcv_df.copy()
+
+    monkeypatch.setattr(prices.yf, "Ticker", FakeTicker)
+    prices.fetch_prices("AAPL", start="2020-01-01", use_indicators=False)
+    assert received["start"] == "2020-01-01"
+    assert received["period"] is None  # period path not taken
+
+
 def test_fetch_prices_raises_on_empty(monkeypatch):
     class EmptyTicker:
         def __init__(self, symbol):

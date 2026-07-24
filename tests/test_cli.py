@@ -53,6 +53,21 @@ def test_scan_handles_untrained(monkeypatch):
     assert "not trained" in result.stdout
 
 
+def test_scan_survives_one_symbol_raising_non_filenotfound(monkeypatch):
+    """A non-FileNotFoundError from one symbol must not crash the whole scan (PYQ-113)."""
+
+    def flaky(symbol, settings):
+        if symbol == "BAD":
+            raise RuntimeError("transient data-source error")
+        return _fake_forecast(symbol=symbol, predictions=np.array([[102.0, 105.0, 108.0]] * 5))
+
+    monkeypatch.setattr(app_mod, "generate_forecast", flaky)
+    result = runner.invoke(app_mod.app, ["scan", "GOOD,BAD"])
+    assert result.exit_code == 0
+    assert "GOOD" in result.stdout  # the healthy symbol still rendered
+    assert "error" in result.stdout.lower()  # the flaky one shown as an error row
+
+
 def test_train_command_reports_evaluation_metrics(monkeypatch):
     fake_result = TrainResult(
         symbols=["AAPL"],

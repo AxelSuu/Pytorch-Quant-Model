@@ -24,6 +24,7 @@ app = typer.Typer(
     add_completion=False,
 )
 console = Console()
+logger = logging.getLogger(__name__)
 
 
 @app.callback()
@@ -95,8 +96,10 @@ def train(
     settings = _build_settings(period, no_macro, no_sentiment, no_sectors)
     tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     console.print(f"[bold cyan]Training TFT for {', '.join(tickers)}[/bold cyan]")
-    with console.status("Fetching data and training..."):
-        result = tft.train(tickers, settings, bundle_name=name, max_epochs=epochs, progress=True, pin=pin)
+    # Lightning renders its own live progress bar during the fit (progress=True);
+    # a competing console.status() spinner was only ever masked by it (PYQ-222),
+    # so let Lightning's bar be the single live indicator.
+    result = tft.train(tickers, settings, bundle_name=name, max_epochs=epochs, progress=True, pin=pin)
 
     ev = result.evaluation
     table = Table(title=f"Training complete — {result.bundle_dir.name}", show_header=False)
@@ -255,6 +258,12 @@ def scan(
             fc = generate_forecast(ticker, settings)
         except FileNotFoundError:
             table.add_row(ticker, "—", "—", "—", "—", "[dim]not trained[/dim]")
+            continue
+        except Exception as exc:
+            # One flaky symbol (a transient data-source error, a bad config,
+            # etc.) must not sink the whole multi-symbol comparison (PYQ-113).
+            logger.warning("Could not forecast %s: %s", ticker, exc)
+            table.add_row(ticker, "—", "—", "—", "—", "[red]error[/red]")
             continue
         pct = fc.expected_return_pct()
         lo = fc.quantile_series(fc.quantiles[0])[-1]
