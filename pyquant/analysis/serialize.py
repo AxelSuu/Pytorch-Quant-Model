@@ -24,6 +24,9 @@ def evaluation_to_dict(ev: EvaluationMetrics) -> dict[str, Any]:
         "skill_vs_baseline": ev.skill_vs_baseline,
         "directional_accuracy": ev.directional_accuracy,
         "calibration_coverage": ev.calibration_coverage,
+        # The denominator behind every rate above (PYQ-117).
+        "n_samples": ev.n_samples,
+        "n_points": ev.n_points,
     }
 
 
@@ -33,8 +36,14 @@ def forecast_to_dict(fc: Forecast) -> dict[str, Any]:
         "last_date": fc.last_date.date().isoformat(),
         "current_price": fc.current_price,
         "horizon": fc.horizon,
+        # Which dates the predictions are for -- consumers should not have to
+        # re-derive a business-day calendar to find out (PYQ-115).
+        "forecast_dates": [d.date().isoformat() for d in fc.forecast_dates],
         "quantiles": list(fc.quantiles),
         "predictions": np.asarray(fc.predictions).tolist(),  # (horizon, n_quantiles)
+        # Non-zero means the raw band was non-monotonic and has been reordered
+        # (PYQ-124) -- a consumer should not have to guess whether that happened.
+        "n_quantile_crossings": fc.n_quantile_crossings,
     }
     # median / expected return need 0.5 configured (see PYQ-106); omit otherwise
     # rather than raise on the serialization path.

@@ -61,3 +61,31 @@ def test_cli_flag_overrides_yaml_config(tmp_path):
 
     cli_wins = _build_settings("3y", False, False, False, config=cfg)
     assert cli_wins.data.period == "3y"  # explicit --period beats the config
+
+
+def test_training_config_holdout_is_longer_than_one_horizon():
+    """PYQ-117: a holdout of exactly one horizon yields a single validation window."""
+    cfg = TrainingConfig()
+    assert cfg.validation_days > cfg.max_prediction_length
+    # The dead `train_split` knob is gone -- it configured nothing (PYQ-125).
+    assert not hasattr(cfg, "train_split")
+
+
+def test_early_stopping_patience_is_configurable_with_todays_default():
+    """PYQ-224: previously a hardcoded literal in both Trainer constructions."""
+    assert TrainingConfig().early_stopping_patience == 5
+    assert TrainingConfig(early_stopping_patience=9).early_stopping_patience == 9
+
+
+def test_load_settings_rejects_a_config_path_that_does_not_exist(tmp_path):
+    """PYQ-128: a typo'd --config silently trained on defaults, invalidating any
+    A/B comparison between two experiment configs."""
+    missing = tmp_path / "nope.yaml"
+    with pytest.raises(FileNotFoundError, match="nope.yaml"):
+        load_settings(missing)
+
+
+def test_load_settings_without_a_config_stays_silent(monkeypatch):
+    """Absent-by-default is not the same as explicitly-requested-and-missing."""
+    monkeypatch.delenv("PYQUANT_CONFIG", raising=False)
+    assert load_settings().tft.hidden_size == 32

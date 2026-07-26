@@ -5,14 +5,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import plotext as plt
 
 from pyquant.analysis.forecast import Forecast
-
-
-def _future_dates(last_date: pd.Timestamp, horizon: int) -> list[pd.Timestamp]:
-    return list(pd.bdate_range(last_date + pd.Timedelta(days=1), periods=horizon))
 
 
 def fan_chart(forecast: Forecast, history_tail: int = 60) -> None:
@@ -73,7 +68,9 @@ def export_fan_chart(forecast: Forecast, path: Path) -> Path:
 
     path.parent.mkdir(parents=True, exist_ok=True)
     hist = forecast.history
-    fut = _future_dates(forecast.last_date, forecast.horizon)
+    # Forecast.forecast_dates is the same calendar the prediction rows were built
+    # from, so the axis labels cannot drift from the decoded steps (PYQ-115).
+    fut = list(forecast.forecast_dates)
 
     fig, ax = mpl.subplots(figsize=(11, 5))
     ax.plot(hist.index, hist.values, color="#1f77b4", label="history")

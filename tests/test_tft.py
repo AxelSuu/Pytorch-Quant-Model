@@ -5,6 +5,7 @@ train -> save -> load -> predict bundle round-trips. Kept small so it runs in CI
 """
 
 import json
+import logging
 import warnings
 
 import pytest
@@ -263,3 +264,269 @@ def test_train_threads_precision_into_trainer(monkeypatch, sample_ohlcv_df, fast
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
     assert recorded["precision"] == "bf16-mixed"
+
+
+def test_prediction_decoder_covers_steps_after_last_observed_bar(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-115: the forecast must decode FUTURE steps, not re-predict observed days.
+
+    `predict=True` anchors the decoder to the last `max_prediction_length`
+    timesteps present in the frame. Handed a frame that ends at the last
+    observed bar, it re-predicts days that already happened -- so the decoder
+    window must start strictly after the last observed time_idx.
+    """
+    from pyquant.data.dataset import panel_to_long
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    df = panel_to_long(panel, "TEST")
+    observed_max = int(df["time_idx"].max())
+
+    ds = tft._prediction_dataset(bundle, df)
+    x, _ = next(iter(ds.to_dataloader(train=False, batch_size=1, num_workers=0)))
+    assert int(x["decoder_time_idx"].min()) > observed_max
+
+
+def test_prediction_encoder_ends_on_the_last_observed_bar(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-115: attention_to_series() labels attention with the *last* observed
+    panel dates, so the encoder must genuinely end on the last observed bar."""
+    from pyquant.data.dataset import panel_to_long
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    df = panel_to_long(panel, "TEST")
+    observed_max = int(df["time_idx"].max())
+
+    ds = tft._prediction_dataset(bundle, df)
+    x, _ = next(iter(ds.to_dataloader(train=False, batch_size=1, num_workers=0)))
+    # The encoder ends exactly where the observed data ends: the first decoded
+    # step is the first future day.
+    assert int(x["decoder_time_idx"].min()) == observed_max + 1
+
+
+def test_pooling_date_aligns_symbols_with_unequal_history(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-116: a late-listing symbol's validation window must not sit inside training.
+
+    train() derives `cutoff` from the *global* max time_idx. With per-symbol
+    positional indices, a shorter symbol's entire series -- including the window
+    predict=True later returns as validation -- falls below that cutoff.
+    """
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    panels = {"LONG": panel, "SHORT": panel.tail(80)}
+    monkeypatch.setattr(tft, "build_panel", lambda symbol, *a, **k: panels[symbol])
+
+    df = tft._build_pooled_long_df(["LONG", "SHORT"], fast_settings, None, None)
+
+    horizon = fast_settings.training.max_prediction_length
+    cutoff = int(df["time_idx"].max()) - horizon
+    last_per_symbol = df.groupby("symbol")["time_idx"].max()
+    assert (last_per_symbol > cutoff).all(), (
+        f"cutoff={cutoff} but per-symbol max time_idx is {last_per_symbol.to_dict()}"
+    )
+
+
+def test_train_warns_when_a_symbols_history_ends_before_the_cutoff(
+    monkeypatch, sample_ohlcv_df, fast_settings, caplog
+):
+    """PYQ-116: date alignment fixes late *starts*; a stale symbol that stops early
+    still has its validation window inside training, so say so out loud."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    panels = {"LIVE": panel, "STALE": panel.head(200)}
+    monkeypatch.setattr(tft, "build_panel", lambda symbol, *a, **k: panels[symbol])
+
+    with caplog.at_level(logging.WARNING, logger="pyquant.models.tft"):
+        tft.train(["LIVE", "STALE"], fast_settings, max_epochs=1, progress=False)
+
+    assert "STALE" in caplog.text
+    assert "LIVE" not in caplog.text  # the up-to-date symbol is fine
+    assert "cutoff" in caplog.text.lower()
+
+
+def test_train_evaluates_many_validation_windows_not_a_single_one(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-117: `predict=True` plus a one-horizon holdout gave exactly 1 sample --
+    5 points driving every reported metric AND early stopping."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    horizon = fast_settings.training.max_prediction_length
+    assert result.evaluation.n_samples > 1
+    assert result.evaluation.n_points == result.evaluation.n_samples * horizon
+
+
+def test_walk_forward_window_validation_targets_its_own_origin(sample_ohlcv_df, settings):
+    """PYQ-127: every rolling origin evaluated the *same* final window, so a
+    5-window backtest was 5 models scored on one identical 5 days."""
+    from pyquant.data.dataset import align_time_index, make_dataset, panel_to_long
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    df = align_time_index(panel_to_long(panel, "TEST"))
+    horizon = settings.training.max_prediction_length
+
+    windows = []
+    for cutoff in (200, 220, 240):
+        training = make_dataset(df, settings, training_cutoff=cutoff)
+        ds = tft._window_validation_dataset(training, df, cutoff, horizon)
+        x, _ = next(iter(ds.to_dataloader(train=False, batch_size=1, num_workers=0)))
+        decoded = x["decoder_time_idx"][0].tolist()
+        assert decoded[0] == cutoff + 1, f"origin {cutoff} evaluated {decoded}"
+        windows.append(tuple(decoded))
+
+    assert len(set(windows)) == 3, f"origins collapsed onto the same window: {windows}"
+
+
+# --- PYQ-118 / PYQ-119: schema drift and recorded config ---------------------
+
+
+def _rich_and_lean_panels(sample_ohlcv_df):
+    """A panel with an enrichment column, and the same panel without it."""
+    import numpy as np
+
+    lean = add_technical_indicators(sample_ohlcv_df).dropna()
+    rich = lean.copy()
+    rng = np.random.default_rng(0)
+    rich["SEC_SPY"] = rng.normal(scale=0.01, size=len(rich))
+    return rich, lean
+
+
+def test_predict_raises_a_clear_error_when_a_trained_feature_is_missing(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-118: this was a bare `KeyError: 'SEC_SPY'` from inside pytorch-forecasting."""
+    from pyquant.data.dataset import panel_to_long
+
+    rich, lean = _rich_and_lean_panels(sample_ohlcv_df)
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: rich)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    with pytest.raises(tft.FeatureSchemaMismatch) as exc:
+        tft.predict_quantiles(bundle, panel_to_long(lean, "TEST"))
+
+    message = str(exc.value)
+    assert "SEC_SPY" in message
+    assert "sector" in message.lower()  # names the source that went missing
+
+
+def test_predict_ignores_columns_not_seen_during_training(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """Extra columns at predict time were already harmless -- keep them harmless."""
+    from pyquant.data.dataset import panel_to_long
+
+    rich, lean = _rich_and_lean_panels(sample_ohlcv_df)
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: lean)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    predictions = tft.predict_quantiles(bundle, panel_to_long(rich, "TEST"))
+    assert predictions.shape == (fast_settings.training.max_prediction_length, 3)
+
+
+def test_train_records_the_resolved_data_config(monkeypatch, sample_ohlcv_df, fast_settings):
+    """PYQ-119: the feature schema is a function of the data toggles, so the bundle
+    must record them -- nothing else can recover them later."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.data.use_sectors = False
+    fast_settings.data.period = "3y"
+
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    recorded = bundle.meta["config"]["data"]
+    assert recorded["use_sectors"] is False
+    assert recorded["period"] == "3y"
+
+
+def test_settings_for_bundle_restores_the_recorded_data_toggles(fast_settings):
+    """A bundle trained with an enrichment off must not be forecast with it on."""
+
+    class Bundle:
+        meta = {"config": {"data": {"use_sectors": False, "period": "3y"}}}
+
+    fast_settings.data.use_sectors = True
+    fast_settings.data.period = "5y"
+
+    restored = tft.settings_for_bundle(Bundle(), fast_settings)
+
+    assert restored.data.use_sectors is False
+    assert restored.data.period == "3y"
+    # The caller's own settings object is left alone.
+    assert fast_settings.data.use_sectors is True
+
+
+# --- PYQ-224 / PYQ-225: configurable patience, recorded provenance -----------
+
+
+def _spy_trainer_patience(monkeypatch, recorded):
+    from lightning.pytorch.callbacks import EarlyStopping
+
+    real_trainer = tft.Trainer
+
+    def spy(**kwargs):
+        for cb in kwargs.get("callbacks", []):
+            if isinstance(cb, EarlyStopping):
+                recorded.append(cb.patience)
+        return real_trainer(**kwargs)
+
+    monkeypatch.setattr(tft, "Trainer", spy)
+
+
+def test_train_threads_early_stopping_patience_into_the_callback(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-224: patience was a literal 5, while every neighbouring knob was configurable."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.early_stopping_patience = 2
+
+    recorded: list[int] = []
+    _spy_trainer_patience(monkeypatch, recorded)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    assert recorded == [2]
+
+
+def test_backtest_threads_early_stopping_patience_into_the_callback(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.early_stopping_patience = 3
+
+    recorded: list[int] = []
+    _spy_trainer_patience(monkeypatch, recorded)
+    tft.walk_forward_backtest("TEST", fast_settings, n_windows=2, max_epochs=1, progress=False)
+
+    assert recorded == [3, 3]
+
+
+def test_train_records_provenance_including_the_pin(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-225: seed + pinned data only reproduce a run if the code version is known too."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False, pin="exp-7")
+    bundle = tft.load("TEST", fast_settings)
+
+    provenance = bundle.meta["provenance"]
+    assert provenance["pyquant_version"]
+    assert provenance["pin"] == "exp-7"
+    assert "git_sha" in provenance  # best-effort: present, may be None

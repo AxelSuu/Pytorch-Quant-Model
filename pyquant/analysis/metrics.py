@@ -70,12 +70,20 @@ def calibration_coverage(actuals: np.ndarray, lower: np.ndarray, upper: np.ndarr
 
 @dataclass
 class EvaluationMetrics:
-    """Model quality vs. a naive baseline, direction, and quantile calibration."""
+    """Model quality vs. a naive baseline, direction, and quantile calibration.
+
+    ``n_samples``/``n_points`` travel with the metrics deliberately (PYQ-117): a
+    directional accuracy of 100.0% means something very different from 5 points
+    than from 500, and every consumer -- the Rich tables, ``--format json``,
+    meta.json -- should be able to say which it got.
+    """
 
     model_mae: float
     baseline_mae: float
     directional_accuracy: float
     calibration_coverage: float  # empirical coverage of the outermost quantile band
+    n_samples: int = 0  # forecast windows scored
+    n_points: int = 0  # n_samples * horizon -- individual predictions scored
 
     @property
     def skill_vs_baseline(self) -> float:
@@ -108,19 +116,30 @@ def evaluate_predictions(
     lower = predictions[:, :, 0]
     upper = predictions[:, :, -1]
 
+    n_samples, horizon = median.shape
     return EvaluationMetrics(
         model_mae=model_mae(actuals, median),
         baseline_mae=persistence_baseline_mae(actuals, last_observed),
         directional_accuracy=directional_hit_rate(actuals, median, last_observed),
         calibration_coverage=calibration_coverage(actuals, lower, upper),
+        n_samples=int(n_samples),
+        n_points=int(n_samples * horizon),
     )
 
 
 def aggregate_metrics(results: list[EvaluationMetrics]) -> EvaluationMetrics:
-    """Average metrics across multiple windows (e.g. a walk-forward backtest)."""
+    """Average metrics across multiple windows (e.g. a walk-forward backtest).
+
+    The rate/error metrics average; the sample counts *sum* -- five windows of
+    five points is 25 points of evidence, and averaging them back down to 5
+    would throw away the only thing that makes an aggregate worth more than a
+    single window (PYQ-117).
+    """
     return EvaluationMetrics(
         model_mae=float(np.mean([r.model_mae for r in results])),
         baseline_mae=float(np.mean([r.baseline_mae for r in results])),
         directional_accuracy=float(np.mean([r.directional_accuracy for r in results])),
         calibration_coverage=float(np.mean([r.calibration_coverage for r in results])),
+        n_samples=int(sum(r.n_samples for r in results)),
+        n_points=int(sum(r.n_points for r in results)),
     )

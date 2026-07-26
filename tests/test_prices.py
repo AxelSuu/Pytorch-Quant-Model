@@ -116,3 +116,64 @@ def test_fetch_prices_raises_on_empty(monkeypatch):
     monkeypatch.setattr(prices.yf, "Ticker", EmptyTicker)
     with pytest.raises(ValueError):
         prices.fetch_prices("BADSYM")
+
+
+# --- PYQ-121: RSI must be Wilder's RSI, not a simple moving average ----------
+
+
+def _wilder_rsi_reference(values, period=14):
+    """Textbook Wilder RSI, written the slow obvious way as an independent check.
+
+    SMA seed over the first `period` changes, then the recursive smoothed average
+    ((period - 1) * prev + new) / period.
+    """
+    gains, losses = [], []
+    for prev, cur in zip(values[:-1], values[1:], strict=True):
+        change = cur - prev
+        gains.append(max(change, 0.0))
+        losses.append(max(-change, 0.0))
+
+    def to_rsi(avg_gain, avg_loss):
+        if avg_loss == 0:
+            return 100.0
+        rs = avg_gain / avg_loss
+        return 100.0 - 100.0 / (1.0 + rs)
+
+    out = [float("nan")] * len(values)
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+    out[period] = to_rsi(avg_gain, avg_loss)
+    for i in range(period, len(gains)):
+        avg_gain = (avg_gain * (period - 1) + gains[i]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i]) / period
+        out[i + 1] = to_rsi(avg_gain, avg_loss)
+    return out
+
+
+def test_compute_rsi_matches_an_independent_wilder_implementation(sample_ohlcv_df):
+    close = sample_ohlcv_df["Close"]
+    expected = _wilder_rsi_reference(list(close.to_numpy()), period=14)
+    actual = prices.compute_rsi(close, 14)
+    np.testing.assert_allclose(
+        actual.to_numpy()[14:], np.array(expected)[14:], rtol=1e-9, atol=1e-9
+    )
+
+
+def test_compute_rsi_warmup_rows_are_nan_not_fabricated(sample_ohlcv_df):
+    """min_periods=1 used to emit a value from row 2 off a one-row window; those
+    survived dropna() and were only removed because SMA_50 happened to cut them."""
+    rsi = prices.compute_rsi(sample_ohlcv_df["Close"], 14)
+    assert rsi.iloc[:14].isna().all()
+    assert rsi.iloc[14:].notna().all()
+
+
+def test_compute_rsi_is_100_when_price_only_rises():
+    rising = pd.Series(np.arange(1.0, 40.0))
+    rsi = prices.compute_rsi(rising, 14)
+    np.testing.assert_allclose(rsi.dropna().to_numpy(), 100.0)
+
+
+def test_compute_rsi_is_0_when_price_only_falls():
+    falling = pd.Series(np.arange(40.0, 1.0, -1.0))
+    rsi = prices.compute_rsi(falling, 14)
+    np.testing.assert_allclose(rsi.dropna().to_numpy(), 0.0)

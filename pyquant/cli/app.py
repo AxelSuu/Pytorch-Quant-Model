@@ -19,14 +19,22 @@ from pyquant.analysis.interpret import attention_to_series, explain_forecast
 from pyquant.cli import charts
 from pyquant.config import Settings, load_settings
 from pyquant.data import cache as data_cache
-from pyquant.data.options import fetch_options_snapshot
+from pyquant.data.options import OptionsSnapshot, fetch_options_snapshot
 from pyquant.models import tft
 
 app = typer.Typer(
     help="PyQuant — multi-modal market research with a Temporal Fusion Transformer.",
     no_args_is_help=True,
     add_completion=False,
+    # Expected failures (no trained bundle, a vanished data source) carry messages
+    # that are already user-ready; a framed traceback around them is noise that
+    # obscures the instruction (PYQ-120). _fail() renders them instead.
+    pretty_exceptions_enable=False,
 )
+
+# Failures that are part of normal operation rather than bugs: report the message,
+# exit non-zero, no traceback.
+EXPECTED_FAILURES = (FileNotFoundError, tft.FeatureSchemaMismatch, ValueError)
 console = Console()
 logger = logging.getLogger(__name__)
 
@@ -44,6 +52,12 @@ class _Output:
 
 
 _output = _Output()
+
+
+def _fail(exc: Exception) -> None:
+    """Report an expected failure as a clean one-liner and exit non-zero."""
+    console.print(f"[red]Error:[/red] {exc}")
+    raise typer.Exit(1)
 
 
 def _emit_json(data) -> None:
@@ -109,6 +123,62 @@ def _build_settings(
     return s
 
 
+def _band_label(quantiles: list[float]) -> str:
+    """Name the calibration band from the configured quantiles, e.g. "p10-p90".
+
+    `calibration_coverage` measures the *outermost* band, so hardcoding
+    "p10-p90" mislabelled any non-default `quantiles` -- including the project's
+    own configs/wide_quantile_aggressive.yaml (PYQ-122).
+    """
+    return f"p{int(quantiles[0] * 100)}-p{int(quantiles[-1] * 100)}"
+
+
+def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "") -> None:
+    """Add the shared evaluation rows, sample size included.
+
+    The sample size is not optional context: "directional accuracy 100.0%" off 5
+    points and off 500 are different claims, and the table used to render them
+    identically (PYQ-117).
+    """
+    table.add_row(f"Model MAE{suffix}", f"{ev.model_mae:.4f}")
+    table.add_row(f"Baseline MAE{suffix} (persistence)", f"{ev.baseline_mae:.4f}")
+    table.add_row("Skill vs. baseline", f"{ev.skill_vs_baseline:+.1%}")
+    table.add_row(f"Directional accuracy{suffix}", f"{ev.directional_accuracy:.1%}")
+    table.add_row(
+        f"Calibration coverage{suffix} ({_band_label(quantiles)})",
+        f"{ev.calibration_coverage:.1%}",
+    )
+    table.add_row(
+        "Evaluated on", f"{ev.n_samples} windows ({ev.n_points} predictions)"
+    )
+
+
+def _per_window_table(result, quantiles: list[float]) -> Table:
+    """Per-window metrics behind the aggregate.
+
+    A mean directional accuracy of 60% built from windows at 100/20 says something
+    very different from two windows at 60%, and only the mean was ever shown
+    (PYQ-226). The spread is the whole reason to run more than one window.
+    """
+    table = Table(title="Per-window results", title_style="dim")
+    table.add_column("Window", justify="right")
+    table.add_column("Model MAE", justify="right")
+    table.add_column("Baseline MAE", justify="right")
+    table.add_column("Skill", justify="right")
+    table.add_column("Directional", justify="right")
+    table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
+    for i, ev in enumerate(result.per_window, start=1):
+        table.add_row(
+            str(i),
+            f"{ev.model_mae:.4f}",
+            f"{ev.baseline_mae:.4f}",
+            f"{ev.skill_vs_baseline:+.1%}",
+            f"{ev.directional_accuracy:.1%}",
+            f"{ev.calibration_coverage:.1%}",
+        )
+    return table
+
+
 def _color_pct(pct: float) -> str:
     arrow = "▲" if pct >= 0 else "▼"
     color = "green" if pct >= 0 else "red"
@@ -136,33 +206,34 @@ def train(
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
 ):
     """Train a Temporal Fusion Transformer for SYMBOLS (pooled if more than one)."""
-    settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+    try:
+        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
     tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
     if not _output.quiet:
         console.print(f"[bold cyan]Training TFT for {', '.join(tickers)}[/bold cyan]")
     # Lightning renders its own live progress bar during the fit (progress=True);
     # a competing console.status() spinner was only ever masked by it (PYQ-222),
     # so let Lightning's bar be the single live indicator.
-    result = tft.train(
-        tickers, settings, bundle_name=name, max_epochs=epochs, progress=not _output.quiet, pin=pin
-    )
+    try:
+        result = tft.train(
+            tickers, settings, bundle_name=name, max_epochs=epochs, progress=not _output.quiet, pin=pin
+        )
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
 
     if _output.json:
         _emit_json(serialize.train_result_to_dict(result))
         return
 
-    ev = result.evaluation
     table = Table(title=f"Training complete — {result.bundle_dir.name}", show_header=False)
     table.add_row("Bundle", str(result.bundle_dir))
     table.add_row("Symbols", ", ".join(result.symbols))
     table.add_row("Features used", str(result.n_features))
     table.add_row("Epochs run", str(result.epochs_run))
     table.add_row("Validation loss", f"{result.val_loss:.5f}")
-    table.add_row("Model MAE", f"{ev.model_mae:.4f}")
-    table.add_row("Baseline MAE (persistence)", f"{ev.baseline_mae:.4f}")
-    table.add_row("Skill vs. baseline", f"{ev.skill_vs_baseline:+.1%}")
-    table.add_row("Directional accuracy", f"{ev.directional_accuracy:.1%}")
-    table.add_row("Calibration coverage (p10-p90)", f"{ev.calibration_coverage:.1%}")
+    _add_metric_rows(table, result.evaluation, settings.tft.quantiles)
     console.print(table)
     if not _output.quiet:
         console.print("[dim]Next: pyquant forecast " + result.symbols[0] + "[/dim]")
@@ -182,45 +253,52 @@ def backtest(
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
 ):
     """Walk-forward backtest SYMBOL across multiple rolling origins."""
-    settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+    try:
+        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
 
     def _run():
         return tft.walk_forward_backtest(
             symbol, settings, n_windows=windows, max_epochs=epochs, progress=False
         )
 
-    if _output.quiet:
-        result = _run()
-    else:
-        console.print(f"[bold cyan]Walk-forward backtesting {symbol.upper()}[/bold cyan]")
-        with console.status(f"Training and evaluating {windows} rolling windows..."):
+    try:
+        if _output.quiet:
             result = _run()
+        else:
+            console.print(f"[bold cyan]Walk-forward backtesting {symbol.upper()}[/bold cyan]")
+            with console.status(f"Training and evaluating {windows} rolling windows..."):
+                result = _run()
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
 
     if _output.json:
         _emit_json(serialize.backtest_to_dict(result))
         return
 
-    ev = result.aggregated
     table = Table(
         title=f"Walk-forward backtest — {result.symbol} ({result.n_windows} windows)",
         show_header=False,
     )
-    table.add_row("Model MAE (avg)", f"{ev.model_mae:.4f}")
-    table.add_row("Baseline MAE (avg, persistence)", f"{ev.baseline_mae:.4f}")
-    table.add_row("Skill vs. baseline", f"{ev.skill_vs_baseline:+.1%}")
-    table.add_row("Directional accuracy (avg)", f"{ev.directional_accuracy:.1%}")
-    table.add_row("Calibration coverage (avg, p10-p90)", f"{ev.calibration_coverage:.1%}")
+    _add_metric_rows(table, result.aggregated, settings.tft.quantiles, suffix=" (avg)")
     console.print(table)
+    if len(result.per_window) > 1:
+        console.print(_per_window_table(result, settings.tft.quantiles))
 
 
 def _forecast_table(fc: Forecast) -> Table:
     table = Table(title=f"{fc.symbol} — {fc.horizon}-day forecast")
     table.add_column("Day", justify="right")
+    # Name the actual date each step is for; "Day 1" alone gave no way to notice
+    # that the horizon was pointing at the wrong window (PYQ-115).
+    table.add_column("Date", justify="right")
     for q in fc.quantiles:
         table.add_column(f"p{int(q * 100)}", justify="right")
     table.add_column("vs now", justify="right")
+    dates = fc.forecast_dates
     for d in range(fc.horizon):
-        row = [str(d + 1)]
+        row = [str(d + 1), str(dates[d].date())]
         for q in fc.quantiles:
             row.append(f"${fc.quantile_series(q)[d]:.2f}")
         pct = (fc.median[d] - fc.current_price) / fc.current_price * 100
@@ -243,9 +321,18 @@ def forecast(
 ):
     """Forecast SYMBOL with p10/p50/p90 uncertainty bands."""
     settings = load_settings()
-    loaded_bundle = tft.load(bundle, settings) if bundle else None
-    fc = generate_forecast(symbol, settings, bundle=loaded_bundle, pin=pin)
-    snap = fetch_options_snapshot(fc.symbol)
+    try:
+        loaded_bundle = tft.load(bundle, settings) if bundle else None
+        fc = generate_forecast(symbol, settings, bundle=loaded_bundle, pin=pin)
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
+    # An options snapshot is live market context, not a model input, so it is
+    # skipped entirely when the config asks for it to be (PYQ-125).
+    snap = (
+        fetch_options_snapshot(fc.symbol)
+        if settings.data.use_options
+        else OptionsSnapshot(None, None, None, None)
+    )
 
     if _output.json:
         data = serialize.forecast_to_dict(fc)
@@ -270,6 +357,12 @@ def forecast(
             )
         )
     console.print(_forecast_table(fc))
+    if fc.n_quantile_crossings:
+        console.print(
+            f"[yellow]Note:[/yellow] the model produced a non-monotonic band at "
+            f"{fc.n_quantile_crossings} point(s); quantiles were reordered for display. "
+            "Treat the interval width with caution."
+        )
 
     if snap.put_call_ratio is not None:
         console.print(
@@ -295,8 +388,11 @@ def explain(
 ):
     """Explain SYMBOL's forecast: feature importance + temporal attention."""
     settings = load_settings()
-    bundle = tft.load(bundle_name or symbol, settings)
-    interp = explain_forecast(symbol, settings, bundle=bundle)
+    try:
+        bundle = tft.load(bundle_name or symbol, settings)
+        interp = explain_forecast(symbol, settings, bundle=bundle)
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
 
     if _output.json:
         _emit_json(serialize.interpretation_to_dict(interp, top=top))
@@ -406,8 +502,10 @@ app.add_typer(cache_app, name="cache")
 
 def _fmt_bytes(n: int) -> str:
     size = float(n)
-    for unit in ("B", "KB", "MB", "GB"):
-        if size < 1024 or unit == "GB":
+    # GB is the last unit, so it is the explicit fall-through rather than a special
+    # case inside the loop with an unreachable return after it (PYQ-126).
+    for unit in ("B", "KB", "MB"):
+        if size < 1024:
             return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} GB"

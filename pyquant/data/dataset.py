@@ -110,9 +110,22 @@ def build_panel(
             ].fillna(0.0)
             logger.info("Joined sentiment features")
 
-    # Forward/back fill any remaining gaps from joined sources (e.g. a
-    # sector ETF's trading calendar not perfectly matching the target's).
-    panel = panel.ffill().bfill()
+    # Forward-fill gaps from joined sources (e.g. a sector ETF's trading calendar
+    # not perfectly matching the target's). Rows *before* a joined source's first
+    # observation cannot be filled that way, and the bfill that used to follow
+    # filled them from the first *later* value -- look-ahead, the same class of
+    # leak as PYQ-101. Drop them instead, which is the policy indicator warm-up
+    # rows already get (PYQ-123).
+    panel = panel.ffill()
+    empty_cols = [c for c in panel.columns if panel[c].isna().all()]
+    if empty_cols:
+        # No overlap at all with the price calendar: dropping the rows would empty
+        # the panel, so drop the useless columns instead and say so.
+        logger.warning(
+            "Dropping column(s) with no data overlapping the price history: %s", empty_cols
+        )
+        panel = panel.drop(columns=empty_cols)
+    panel = panel.dropna()
 
     if pin:
         cache.write_pin(cache_dir, f"{symbol.upper()}_{pin}", panel)
@@ -131,6 +144,75 @@ def panel_to_long(panel: pd.DataFrame, symbol: str) -> pd.DataFrame:
     df["dow"] = df["Date"].dt.dayofweek.astype(float)
     df["month_num"] = df["Date"].dt.month.astype(float)
     return df
+
+
+def align_time_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Re-map ``time_idx`` onto one calendar shared by every symbol.
+
+    panel_to_long() numbers each symbol's rows from zero independently, so
+    ``time_idx = t`` means a *different calendar date* for each symbol. That has
+    two consequences for pooled training (PYQ-116):
+
+    - Groups are aligned by position rather than by date, so a shared market
+      shock lands at a different index in every group and cannot be learned
+      cross-sectionally -- which is most of the point of pooling.
+    - train() derives ``cutoff`` from the global maximum ``time_idx``, so a
+      symbol with less history has its entire series -- including the window
+      ``predict=True`` later hands back as *validation* -- fall inside the
+      training slice, silently corrupting val_loss and therefore early stopping
+      and checkpoint selection.
+
+    Mapping every row onto the union calendar fixes both. ``make_dataset`` sets
+    ``allow_missing_timesteps=True``, which absorbs the per-symbol gaps this
+    creates (a symbol that did not trade on a day another did).
+    """
+    calendar = pd.DatetimeIndex(sorted(pd.unique(df["Date"])))
+    positions = pd.Series(range(len(calendar)), index=calendar)
+    df = df.copy()
+    df["time_idx"] = df["Date"].map(positions).astype(int)
+    return df
+
+
+def future_business_dates(last_date: pd.Timestamp, horizon: int) -> pd.DatetimeIndex:
+    """The ``horizon`` business days that follow ``last_date``.
+
+    Single source of truth for "what dates is the forecast for": the rows
+    appended by extend_for_prediction(), the CLI's forecast table, the terminal
+    chart and the PNG export all label the same days.
+    """
+    return pd.bdate_range(last_date + pd.Timedelta(days=1), periods=horizon)
+
+
+def extend_for_prediction(df: pd.DataFrame, horizon: int) -> pd.DataFrame:
+    """Append ``horizon`` future rows per symbol so a prediction decoder covers the future.
+
+    ``predict=True`` anchors a TimeSeriesDataSet's decoder to the *last*
+    ``max_prediction_length`` rows of whatever frame it is given. Handed a frame
+    that stops at the last observed bar it therefore re-predicts days that
+    already happened instead of forecasting (PYQ-115). Appending the future rows
+    moves the decoder onto them and leaves the encoder on the last real
+    observations.
+
+    The last observed row is carried forward for every column so nothing is NaN;
+    only ``time_idx`` and the calendar features -- the known-in-future reals --
+    are recomputed. The carried-forward unknown reals, target included, are
+    never read by the model: they land in the decoder, which by construction
+    sees only ``time_varying_known_reals`` plus statics.
+    """
+    if horizon <= 0:
+        return df
+
+    extended: list[pd.DataFrame] = []
+    for _, group in df.groupby("symbol", sort=False):
+        group = group.sort_values("time_idx")
+        last_idx = int(group["time_idx"].iloc[-1])
+        future = pd.concat([group.tail(1)] * horizon, ignore_index=True)
+        future["Date"] = future_business_dates(group["Date"].iloc[-1], horizon)
+        future["time_idx"] = range(last_idx + 1, last_idx + 1 + horizon)
+        future["dow"] = future["Date"].dt.dayofweek.astype(float)
+        future["month_num"] = future["Date"].dt.month.astype(float)
+        extended.append(pd.concat([group, future], ignore_index=True))
+    return pd.concat(extended, ignore_index=True)
 
 
 def feature_columns(df: pd.DataFrame) -> list[str]:

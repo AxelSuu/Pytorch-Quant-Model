@@ -136,3 +136,121 @@ def test_make_dataset_builds_timeseries_dataset(monkeypatch, sample_ohlcv_df, se
     assert len(ds) > 0
     params = ds.get_parameters()
     assert params["max_encoder_length"] == settings.training.max_encoder_length
+
+
+# --- PYQ-115: prediction rows must cover the future, not observed days -------
+
+
+def test_future_business_dates_starts_after_last_observed_date():
+    dates = dataset.future_business_dates(pd.Timestamp("2024-10-07"), 5)
+    assert len(dates) == 5
+    assert dates[0] > pd.Timestamp("2024-10-07")
+    # Business days only -- no weekend rows.
+    assert all(d.dayofweek < 5 for d in dates)
+
+
+def test_extend_for_prediction_appends_horizon_future_rows(monkeypatch, sample_ohlcv_df, settings):
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    df = dataset.panel_to_long(dataset.build_panel("AAPL", settings), "AAPL")
+    observed_max = int(df["time_idx"].max())
+    last_date = df["Date"].iloc[-1]
+
+    extended = dataset.extend_for_prediction(df, 5)
+
+    assert len(extended) == len(df) + 5
+    future = extended[extended["time_idx"] > observed_max]
+    assert len(future) == 5
+    # Contiguous time_idx continuing from the observed data.
+    assert list(future["time_idx"]) == list(range(observed_max + 1, observed_max + 6))
+    # Genuinely future calendar dates.
+    assert (future["Date"] > last_date).all()
+
+
+def test_extend_for_prediction_recomputes_calendar_features(monkeypatch, sample_ohlcv_df, settings):
+    """dow/month_num are known-in-future reals -- they must describe the future date."""
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    df = dataset.panel_to_long(dataset.build_panel("AAPL", settings), "AAPL")
+    extended = dataset.extend_for_prediction(df, 5)
+    future = extended.tail(5)
+    assert list(future["dow"]) == [float(d.dayofweek) for d in future["Date"]]
+    assert list(future["month_num"]) == [float(d.month) for d in future["Date"]]
+
+
+def test_extend_for_prediction_extends_each_symbol_independently(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    panel = dataset.build_panel("AAPL", settings)
+    pooled = pd.concat(
+        [dataset.panel_to_long(panel, "AAA"), dataset.panel_to_long(panel, "BBB")],
+        ignore_index=True,
+    )
+    extended = dataset.extend_for_prediction(pooled, 3)
+    assert len(extended) == len(pooled) + 6
+    for symbol in ("AAA", "BBB"):
+        group = extended[extended["symbol"] == symbol]
+        assert int(group["time_idx"].max()) == int(
+            pooled[pooled["symbol"] == symbol]["time_idx"].max()
+        ) + 3
+
+
+# --- PYQ-116: pooled symbols must share one calendar -------------------------
+
+
+def test_align_time_index_maps_the_same_date_to_the_same_index(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    panel = dataset.build_panel("AAPL", settings)
+    # Two symbols with very different history lengths but the same last date.
+    pooled = pd.concat(
+        [
+            dataset.panel_to_long(panel, "LONG"),
+            dataset.panel_to_long(panel.tail(80), "SHORT"),
+        ],
+        ignore_index=True,
+    )
+    # Before alignment: position-based, so the same date has different indices.
+    overlap = pooled.pivot_table(index="Date", columns="symbol", values="time_idx").dropna()
+    assert not (overlap["LONG"] == overlap["SHORT"]).all()
+
+    aligned = dataset.align_time_index(pooled)
+
+    overlap = aligned.pivot_table(index="Date", columns="symbol", values="time_idx").dropna()
+    assert (overlap["LONG"] == overlap["SHORT"]).all()
+
+
+def test_align_time_index_leaves_a_single_symbol_unchanged(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """A lone symbol's dates are already contiguous positions -- alignment is a no-op."""
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    df = dataset.panel_to_long(dataset.build_panel("AAPL", settings), "AAPL")
+    aligned = dataset.align_time_index(df)
+    pd.testing.assert_series_equal(aligned["time_idx"], df["time_idx"], check_dtype=False)
+
+
+# --- PYQ-123: no back-filling future values into leading rows ----------------
+
+
+def test_build_panel_does_not_backfill_a_late_starting_source(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """A joined source that starts late must not have its first value carried
+    *backwards* into earlier rows -- that is look-ahead, same class as PYQ-101."""
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    settings.data.use_macro = True
+
+    # VIX only exists for the back half of the price history, at a constant 99.
+    price_dates = sample_ohlcv_df.index
+    late_start = price_dates[300]
+    macro = pd.DataFrame({"VIX": 99.0}, index=price_dates[price_dates >= late_start])
+    macro.index.name = "Date"
+    monkeypatch.setattr(dataset, "fetch_macro", lambda *a, **k: macro)
+
+    panel = dataset.build_panel("AAPL", settings)
+
+    # Every surviving row must be at or after the source's first observation:
+    # the pre-source rows are dropped, not fabricated from a future value.
+    assert panel.index.min() >= late_start
+    assert (panel["VIX"] == 99.0).all()

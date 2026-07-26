@@ -31,6 +31,9 @@ def explain_forecast(
     """Compute feature importance + temporal attention for ``symbol``."""
     symbol = symbol.upper()
     bundle = bundle or tft.load(symbol, settings)
+    # Same reasoning as generate_forecast: the panel must match the bundle's own
+    # recorded data config, not the live defaults (PYQ-119).
+    settings = tft.settings_for_bundle(bundle, settings)
     panel = build_panel(symbol, settings)
     df = panel_to_long(panel, symbol)
 

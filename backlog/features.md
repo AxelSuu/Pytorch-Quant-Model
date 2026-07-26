@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-224**.
+Next free ID: **PYQ-232**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -28,6 +28,14 @@ Next free ID: **PYQ-224**.
 | [PYQ-221](#pyq-221) | Low | Resolved | `pyquant cache` subcommand — the local panel cache has no eviction/pruning |
 | [PYQ-222](#pyq-222) | Low | Resolved | `train`'s `console.status()` spinner competes with Lightning's own progress bar |
 | [PYQ-223](#pyq-223) | Low | Resolved | Mixed-precision training option (Trainer has no `precision=` set, fp32 only) |
+| [PYQ-224](#pyq-224) | Medium | Resolved | Make `EarlyStopping` patience configurable (hardcoded to 5 in both trainers) |
+| [PYQ-225](#pyq-225) | Medium | Resolved | Record full provenance in `meta.json` (version, git sha, pin, resolved config) |
+| [PYQ-226](#pyq-226) | Medium | Resolved | Report metric dispersion across backtest windows, not just the mean |
+| [PYQ-227](#pyq-227) | Medium | Open | Per-quantile calibration + pinball loss alongside band coverage |
+| [PYQ-228](#pyq-228) | Low | Open | Bound dependency majors; pass `auto_adjust` to `yfinance` explicitly |
+| [PYQ-229](#pyq-229) | Low | Open | CI: Python matrix, frozen install, `uv lock --check`, `ruff format --check` |
+| [PYQ-230](#pyq-230) | Low | Open | CI: measure and report test coverage |
+| [PYQ-231](#pyq-231) | Medium | Resolved | CLI failure-path test coverage — every existing test asserts `exit_code == 0` |
 
 ---
 
@@ -641,3 +649,270 @@ to today's fp32 so nothing changes unless opted in. Covered by
 `test_train_threads_precision_into_trainer` (asserts the configured value
 reaches the `Trainer`; the hardware speed/memory comparison in the acceptance
 criteria needs capable GPU hardware and is left to the operator).
+
+---
+
+## [PYQ-224]
+Make `EarlyStopping` patience configurable (hardcoded to 5 in both trainers)
+Status: Resolved — 2026-07-26
+Priority: Medium
+Files: `pyquant/models/tft.py` (`train`, `walk_forward_backtest`), `pyquant/config.py` (`TrainingConfig`)
+
+Problem: `EarlyStopping(monitor="val_loss", patience=5, mode="min")` is
+constructed with a literal in both places. Meanwhile `max_epochs`,
+`learning_rate`, `gradient_clip_val`, `precision`, `num_workers` and `seed`
+are all configurable via `TrainingConfig` and YAML. Patience is arguably the
+most consequential of the set given how noisy the selection metric is
+(bugs.md#pyq-117): with a small validation sample, 5 is either far too
+impatient or meaningless depending on the run.
+
+Ask: add `TrainingConfig.early_stopping_patience: int = 5` (preserving today's
+behaviour as the default) and thread it into both `EarlyStopping`
+constructions, the same way PYQ-218/PYQ-223 threaded `num_workers`/`precision`.
+
+Acceptance criteria: a test asserting the configured value reaches the
+callback in both `train` and `walk_forward_backtest`.
+
+Resolution: added `TrainingConfig.early_stopping_patience: int = 5` (preserving
+today's behaviour) and threaded it into both `EarlyStopping` constructions, matching
+how PYQ-218/PYQ-223 threaded `num_workers`/`precision`.
+
+Covered by `test_train_threads_early_stopping_patience_into_the_callback`,
+`test_backtest_threads_early_stopping_patience_into_the_callback` (asserting it
+reaches all of the backtest's per-window trainers) and a config default test.
+
+---
+
+## [PYQ-225]
+Record full provenance in `meta.json` (version, git sha, pin, resolved config)
+Status: Resolved — 2026-07-26
+Priority: Medium
+Files: `pyquant/models/tft.py` (`train`), `pyquant/config.py`
+
+Problem: the project has invested deliberately in reproducibility — PYQ-210's
+`seed_everything` plus a recorded seed, PYQ-205's TTL cache and TTL-exempt
+dataset pins, PYQ-209's checked-in YAML experiment configs. But `meta.json`
+records only `seed`, `quantiles`, `max_encoder_length`,
+`max_prediction_length`, `features` and `trained_at`. It does not record:
+
+- the `pyquant` version or a git sha — so you cannot tell which code produced
+  a bundle, and the PYQ-121 RSI change (for instance) silently changes what a
+  feature name means across bundles;
+- the `pin` name, if the run used one — so the reproducibility mechanism does
+  not record that it was used;
+- the resolved `data`/`training` config — see bugs.md#pyq-119, which needs
+  this anyway.
+
+Together those are the missing third leg: seed + pinned data + *code version*
+is what actually reproduces a run.
+
+Ask: write a `provenance` block into `meta.json` (and therefore into the
+append-only `runs.jsonl`) carrying the package version, git sha when
+available, pin name, and the resolved `data`/`training` sub-configs.
+
+Acceptance criteria: a test asserting a freshly trained bundle's `meta.json`
+carries the package version and, when a `pin` was passed, the pin name.
+
+Resolution: `train()` writes a `provenance` block into `meta.json`/`runs.jsonl`
+carrying `pyquant_version` (via `importlib.metadata`, `"unknown"` when running from
+an uninstalled source tree), `git_sha` (best-effort `git rev-parse --short HEAD`,
+`None` outside a repo) and the `pin` name when one was used. The resolved
+`data`/`training`/`tft` config is recorded alongside it by bugs.md#pyq-119.
+
+Together with PYQ-210's seed and PYQ-205's dataset pins, that is the set which
+actually reproduces a run. It is not hypothetical: bugs.md#pyq-121 redefined what
+`RSI_14` means, so two bundles with identical feature *names* can have been trained
+on different data.
+
+Covered by `test_train_records_provenance_including_the_pin`.
+
+---
+
+## [PYQ-226]
+Report metric dispersion across backtest windows, not just the mean
+Status: Resolved — 2026-07-26
+Priority: Medium
+Files: `pyquant/cli/app.py` (`backtest`), `pyquant/analysis/metrics.py` (`aggregate_metrics`)
+
+Problem: `walk_forward_backtest` computes `per_window: list[EvaluationMetrics]`
+and `aggregate_metrics()` averages them. The Rich table prints only the
+averages. With `--windows 5` the spread across windows *is* the finding — a
+mean directional accuracy of 60% built from windows at 100/20/100/40/40 says
+something very different from five windows at 60%. `--format json` already
+exposes `per_window`, so the information exists and is simply not shown.
+
+Directly serves the stability question in investigations.md#pyq-303, and pairs
+with bugs.md#pyq-127 (until that lands, the "windows" are all the same window,
+so dispersion would read as zero for the wrong reason).
+
+Ask: print min/max (or standard deviation) per metric alongside the mean, and
+consider a compact per-window row listing so the walk is visible.
+
+Acceptance criteria: a test asserting the backtest table shows per-window
+spread, not only the aggregate.
+
+Resolution: `backtest` now prints a `Per-window results` table beneath the
+aggregate whenever there is more than one window, listing each window's model MAE,
+baseline MAE, skill, directional accuracy and band coverage. The aggregate row also
+carries `n_samples`/`n_points` from bugs.md#pyq-117.
+
+This only became meaningful once bugs.md#pyq-127 landed: before that every origin
+evaluated the same final window, so the "spread" would have reflected model-init
+noise rather than performance across time.
+
+Covered by `test_backtest_table_shows_per_window_spread`, which asserts the 20%/100%
+window values appear and not merely their 60% mean.
+
+---
+
+## [PYQ-227]
+Per-quantile calibration + pinball loss alongside band coverage
+Status: Open
+Priority: Medium
+Files: `pyquant/analysis/metrics.py`
+
+Problem: `calibration_coverage` measures only the outermost band (p10-p90 by
+default) as a single number. For a quantile model that is the least
+informative calibration statistic available: it cannot distinguish a
+well-calibrated band from one that is too wide on one side and too narrow on
+the other, and it says nothing about the interior quantiles that
+`configs/wide_quantile_aggressive.yaml` deliberately adds.
+
+Two additions are standard and cheap here:
+
+- **per-quantile exceedance**: for each configured quantile q, the empirical
+  fraction of actuals below the prediction. A calibrated p10 should sit near
+  0.10. This is the diagnostic that tells you *which side* of the band is
+  wrong.
+- **pinball (quantile) loss**: the proper scoring rule the model is actually
+  trained on, reported per quantile and averaged — directly comparable across
+  configs in a way `val_loss` is not (it is reported on normalized targets).
+
+Also worth noting: `model_mae`/`baseline_mae` are in dollars and therefore not
+comparable across symbols in `scan`. `skill_vs_baseline` is effectively
+1 - MASE and *is* scale-free, which is the right primary number — it is simply
+shown third.
+
+Ask: add per-quantile exceedance rates and pinball loss to
+`EvaluationMetrics`, surface them in `--format json` always and in the Rich
+table for `backtest` (where there is room).
+
+Acceptance criteria: unit tests for both statistics against hand-computed
+values on a small known array.
+
+---
+
+## [PYQ-228]
+Bound dependency majors; pass `auto_adjust` to `yfinance` explicitly
+Status: Open
+Priority: Low
+Files: `pyproject.toml`, `pyquant/data/prices.py` (`fetch_prices`), `pyquant/data/macro.py` (`_fetch_vix`)
+
+Problem: every dependency is specified with a lower bound and no upper bound.
+For most of the stack that is tolerable; for `yfinance` it is not. The
+declared constraint is `yfinance>=0.2.40` and `uv.lock` has already resolved
+to **1.4.1** — a major-version jump on the least stable dependency in the
+project, whose `Ticker.history` signature is now just `(self, *args, **kwargs)`.
+
+Concretely: `fetch_prices()` and `_fetch_vix()` never pass `auto_adjust`, whose
+default flipped to `True` during the 0.2.x series. So whether `Close` is
+split/dividend-adjusted — which changes every price level, every technical
+indicator derived from it, and therefore every trained model — is decided by
+whatever version happens to resolve. `sectors.py` already passes
+`auto_adjust=True` explicitly, so the codebase is internally inconsistent on
+the point too.
+
+`uv.lock` protects developers and CI. It does not protect anyone who installs
+the package, and it did not prevent the silent 0.2 -> 1.4 jump.
+
+Ask: pass `auto_adjust` explicitly everywhere prices are fetched (and document
+which convention the model assumes), and cap majors on at least `yfinance`,
+`torch`, `lightning` and `pytorch-forecasting`.
+
+Acceptance criteria: a test asserting `fetch_prices` passes an explicit
+`auto_adjust` to `yfinance`; constraints updated in `pyproject.toml`.
+
+---
+
+## [PYQ-229]
+CI: Python matrix, frozen install, `uv lock --check`, `ruff format --check`
+Status: Open
+Priority: Low
+Files: `.github/workflows/ci.yml`, `pyproject.toml`
+
+Problem: four gaps in an otherwise solid pipeline (lint + backlog check +
+tests all gated):
+
+- `pyproject.toml` declares `requires-python = ">=3.10,<3.13"` but CI installs
+  only 3.12. 3.10 and 3.11 are completely unverified, despite being supported
+  on paper. `from __future__ import annotations` is used consistently, so the
+  risk is mostly in third-party resolution rather than syntax — but that is
+  exactly what a matrix would tell us.
+- `uv sync --extra dev` is not `--frozen`, and nothing runs `uv lock --check`,
+  so a `pyproject.toml` edit that desyncs the lockfile passes CI silently.
+- No `ruff format --check`. Lint rules are enforced; formatting is not, so
+  style drift is invisible until someone runs the formatter and produces a
+  large unrelated diff.
+
+Ask: add a `python-version: ["3.10", "3.11", "3.12"]` matrix, switch to a
+frozen install plus `uv lock --check`, and add `ruff format --check .`.
+
+Acceptance criteria: CI green across all matrix entries; a deliberate lockfile
+desync fails the build.
+
+---
+
+## [PYQ-230]
+CI: measure and report test coverage
+Status: Open
+Priority: Low
+Files: `.github/workflows/ci.yml`, `pyproject.toml`
+
+Problem: `pytest-cov` is not a dev dependency and coverage is never measured.
+investigations.md#pyq-304 is marked Resolved on the strength of a one-off
+local coverage run, but nothing makes that repeatable or visible, so the number
+it produced is already stale and unverifiable. With 122 tests the suite is
+substantial enough that the interesting question is no longer "is there
+coverage" but "which paths are uncovered" — and the answer to that turned out
+to matter: bugs.md#pyq-120 notes that no CLI failure path is tested at all.
+
+Ask: add `pytest-cov` to the dev extra, a `[tool.coverage]` config excluding
+the obvious untestable branches, and a CI step printing the report. A
+threshold gate is optional and probably premature; visibility is the point.
+
+Acceptance criteria: CI prints a per-module coverage table; the number is
+reproducible locally with one documented command.
+
+---
+
+## [PYQ-231]
+CLI failure-path test coverage — every existing test asserts `exit_code == 0`
+Status: Resolved — 2026-07-26
+Priority: Medium
+Files: `tests/test_cli.py`
+
+Problem: all 18 CLI tests assert `result.exit_code == 0`. Not one exercises a
+failure: no untrained bundle, no invalid `--format`, no unreadable config
+path, no data-source failure, no insufficient-history error. The CLI is the
+only user-facing surface in the project and half of its behaviour — what it
+does when something is wrong — is untested. bugs.md#pyq-120 (a raw traceback
+on the most likely first-time user error) is a direct consequence.
+
+Ask: add failure-path tests covering at minimum: forecast/explain on an
+untrained symbol, an invalid `--format` value, a `--config` pointing at a
+missing file, and `train` on a symbol with insufficient history. Assert exit
+codes *and* that the message is a clean one-liner rather than a traceback.
+
+Acceptance criteria: each listed failure has a test asserting a non-zero exit
+code and a readable message.
+
+Resolution: added failure-path coverage for every case the ticket listed --
+`forecast`/`explain` on an untrained symbol, an invalid `--format`, a `--config`
+pointing at a missing file, and `train` on insufficient history. Each asserts a
+non-zero exit code, that the raised object is a `SystemExit` rather than the
+original exception leaking through, and that the output is a readable one-liner
+with no traceback.
+
+Writing them found two real defects rather than merely documenting existing
+behaviour: bugs.md#pyq-120 (the traceback) and bugs.md#pyq-128 (a missing
+`--config` silently training on defaults), which is the argument for the ticket.

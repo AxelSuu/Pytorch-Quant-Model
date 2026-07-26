@@ -8,8 +8,8 @@ Next free ID: **PYQ-312**.
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
 | [PYQ-301](#pyq-301) | Medium | Open | How much of the training window actually has non-neutral sentiment? |
-| [PYQ-302](#pyq-302) | High | Open | Schema drift between train-time and predict-time panels |
-| [PYQ-303](#pyq-303) | High | Open | Is a single 5-day validation window statistically reliable for model selection? |
+| [PYQ-302](#pyq-302) | High | Answered | Schema drift between train-time and predict-time panels |
+| [PYQ-303](#pyq-303) | High | Superseded | Is a single 5-day validation window statistically reliable for model selection? |
 | [PYQ-304](#pyq-304) | Medium | Resolved | Re-run full test suite + coverage with the complete ML stack installed |
 | [PYQ-305](#pyq-305) | Medium | Resolved | Establish a documented publication-lag convention for future macro/fundamental sources |
 | [PYQ-306](#pyq-306) | Low | Answered | Confirm whether `weights_only=False` is actually required for `dataset_params.pt` |
@@ -43,7 +43,7 @@ data-provider and test-coverage angles.
 
 ## [PYQ-302]
 Schema drift between train-time and predict-time panels
-Status: Open
+Status: Answered — 2026-07-26
 Priority: High
 Files: `pyquant/data/dataset.py` (`build_panel`), `pyquant/models/tft.py` (`_prediction_dataset`)
 
@@ -56,11 +56,35 @@ sentiment enabled — reasoning through the code this looks likely to error or
 misbehave. Worth a deliberate test: train with a source enabled, then force
 that source to fail at predict time, and see what actually happens.
 
+Answer (2026-07-26): ran the deliberate test both directions. Results:
+
+- **extra** columns at predict time (trained lean, predicted rich):
+  `from_parameters` silently ignores them and returns a normal forecast.
+  Benign.
+- **missing** column at predict time (trained rich, predicted lean):
+  `KeyError: 'SEC_SPY'`, raised from inside pytorch-forecasting with no
+  indication of which source vanished or why.
+
+So the suspicion was correct and the failure mode is the worse of the two
+possibilities: a hard crash with an opaque message. Two things follow, both
+filed as bugs:
+
+- bugs.md#pyq-118 — validate `meta["features"]` against the rebuilt panel and
+  raise one clear, actionable error instead of the bare `KeyError`.
+- bugs.md#pyq-119 — the *reason* this is easy to hit: `forecast`/`explain`/
+  `scan` never see the config the bundle was trained with, so they rebuild the
+  panel from defaults. Train with `--no-sectors` and forecast without it and
+  the schemas differ by construction, not by bad luck.
+
+Closing as answered; the remediation lives in those two tickets. This also
+unblocks PYQ-213 — the API cannot be trusted against live data until PYQ-118
+lands, which was the concern that made this High.
+
 ---
 
 ## [PYQ-303]
 Is a single 5-day validation window statistically reliable for model selection?
-Status: Open
+Status: Superseded by PYQ-117 — 2026-07-26
 Priority: High (raised from Medium — see update)
 Files: `pyquant/models/tft.py` (`train` — `training_cutoff`, `EarlyStopping`, `ModelCheckpoint`)
 
@@ -84,6 +108,27 @@ question this ticket asks is still open and separate.) features.md#pyq-210's
 `seed_everything` is a prerequisite for running the seed-variance comparison
 this ticket asks for, and should be re-run after bugs.md#pyq-109 lands so
 the comparison isn't itself measuring the wrong checkpoint.
+
+Superseded (2026-07-26) by bugs.md#pyq-117. The question does not need the
+seed-variance experiment to be answered: the validation set was measured and
+contains exactly **one** sample per group (5 points at the default horizon),
+because `predict=True` yields one window and `cutoff = max_idx - horizon`
+leaves a holdout exactly one horizon long. A 5-point sample is not a
+reliable basis for early stopping or model selection, and no amount of
+seed-variance measurement would make it one.
+
+Reframing this as a bug rather than a question matters: the numbers derived
+from those 5 points ship to the `train` table as `Directional accuracy 100.0%`
+and `Calibration coverage 100.0%`, with no denominator shown. That is a defect
+in what the tool reports, not an open research question — so remediation
+(a real holdout span, plus reporting the sample size) moved to PYQ-117.
+
+Two adjacent defects surfaced while measuring this and are filed separately:
+bugs.md#pyq-127 (every backtest origin evaluates the *same* final window, so
+"5 windows" was 5 models scored on the same 5 days) and bugs.md#pyq-116
+(pooled training leaks a shorter symbol's validation window into training).
+Together with PYQ-117 those three were the reason validation numbers here
+never looked trustworthy.
 
 ---
 

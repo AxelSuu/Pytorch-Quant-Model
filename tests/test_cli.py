@@ -12,7 +12,7 @@ from typer.testing import CliRunner
 from pyquant.analysis.forecast import Forecast
 from pyquant.analysis.metrics import EvaluationMetrics
 from pyquant.cli import app as app_mod
-from pyquant.models.tft import TrainResult
+from pyquant.models.tft import BacktestResult, TrainResult
 
 runner = CliRunner()
 
@@ -273,3 +273,227 @@ def test_train_json_output_serializes_result(monkeypatch):
     data = json.loads(result.stdout)
     assert data["symbols"] == ["AAPL"]
     assert data["evaluation"]["directional_accuracy"] == 0.6
+
+
+# --- PYQ-117: a percentage must never be shown without its denominator -------
+
+
+def _train_result_with(**metric_kwargs):
+    defaults = dict(
+        model_mae=1.5,
+        baseline_mae=2.0,
+        directional_accuracy=0.6,
+        calibration_coverage=0.8,
+        n_samples=56,
+        n_points=280,
+    )
+    defaults.update(metric_kwargs)
+    return TrainResult(
+        symbols=["AAPL"],
+        bundle_dir=Path("checkpoints/AAPL"),
+        val_loss=0.123,
+        n_features=10,
+        epochs_run=5,
+        evaluation=EvaluationMetrics(**defaults),
+    )
+
+
+def test_train_table_reports_the_metric_sample_size(monkeypatch):
+    monkeypatch.setattr(app_mod.tft, "train", lambda *a, **k: _train_result_with())
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "56" in result.stdout and "280" in result.stdout
+
+
+def test_train_json_output_includes_the_metric_sample_size(monkeypatch):
+    monkeypatch.setattr(app_mod.tft, "train", lambda *a, **k: _train_result_with())
+    result = runner.invoke(app_mod.app, ["--format", "json", "train", "AAPL"])
+    assert result.exit_code == 0
+    ev = json.loads(result.stdout)["evaluation"]
+    assert ev["n_samples"] == 56
+    assert ev["n_points"] == 280
+
+
+# --- PYQ-122: the calibration band label must follow the configured quantiles -
+
+
+def test_train_table_labels_the_calibration_band_from_configured_quantiles(monkeypatch, tmp_path):
+    """With quantiles [0.05, 0.5, 0.95] the band is p5-p95, not the hardcoded p10-p90."""
+    cfg = tmp_path / "wide.yaml"
+    cfg.write_text("tft:\n  quantiles: [0.05, 0.5, 0.95]\n")
+    monkeypatch.setattr(app_mod.tft, "train", lambda *a, **k: _train_result_with())
+
+    result = runner.invoke(app_mod.app, ["train", "AAPL", "--config", str(cfg)])
+
+    assert result.exit_code == 0
+    assert "p5-p95" in result.stdout
+    assert "p10-p90" not in result.stdout
+
+
+def test_backtest_table_labels_the_calibration_band_from_configured_quantiles(
+    monkeypatch, tmp_path
+):
+    cfg = tmp_path / "wide.yaml"
+    cfg.write_text("tft:\n  quantiles: [0.05, 0.5, 0.95]\n")
+    fake = BacktestResult(
+        symbol="AAPL",
+        n_windows=2,
+        per_window=[],
+        aggregated=EvaluationMetrics(1.0, 2.0, 0.5, 0.7, n_samples=2, n_points=10),
+    )
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", lambda *a, **k: fake)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL", "--config", str(cfg)])
+
+    assert result.exit_code == 0
+    assert "p5-p95" in result.stdout
+    assert "p10-p90" not in result.stdout
+
+
+# --- PYQ-120: failures must be clean messages, not tracebacks ----------------
+
+
+def test_forecast_on_untrained_symbol_exits_cleanly_without_a_traceback(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: _settings_in(tmp_path))
+    result = runner.invoke(app_mod.app, ["forecast", "NEVERTRAINED"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit), f"leaked {result.exception!r}"
+    assert "No trained model" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_explain_on_untrained_symbol_exits_cleanly_without_a_traceback(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: _settings_in(tmp_path))
+    result = runner.invoke(app_mod.app, ["explain", "NEVERTRAINED"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit), f"leaked {result.exception!r}"
+    assert "No trained model" in result.output
+
+
+def _settings_in(tmp_path):
+    from pyquant.config import Settings
+
+    s = Settings()
+    s.checkpoint_dir = tmp_path / "checkpoints"
+    return s
+
+
+# --- PYQ-124: a crossed band must never reach display or signalling ----------
+
+
+def test_forecast_table_renders_a_crossed_band_monotonically(monkeypatch):
+    crossed = Forecast(
+        symbol="AAPL",
+        last_date=pd.Timestamp("2024-03-01"),
+        current_price=100.0,
+        quantiles=[0.1, 0.5, 0.9],
+        predictions=np.array([[110.0, 100.0, 90.0]]),  # p90 below p10
+        history=pd.Series([100.0], index=pd.bdate_range("2024-03-01", periods=1)),
+    )
+    table = app_mod._forecast_table(crossed)
+    rendered = [
+        c._cells[0] for c in table.columns if c.header.startswith("p")
+    ]
+    assert rendered == ["$90.00", "$100.00", "$110.00"]
+
+
+# --- PYQ-125: use_options must actually gate the options fetch ---------------
+
+
+def test_forecast_skips_the_options_fetch_when_use_options_is_false(monkeypatch, tmp_path):
+    called = []
+    monkeypatch.setattr(
+        app_mod, "fetch_options_snapshot", lambda s: called.append(s) or _empty_snapshot()
+    )
+
+    settings = _settings_in(tmp_path)
+    settings.data.use_options = False
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+    monkeypatch.setattr(app_mod.tft, "load", lambda *a, **k: object())
+    monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: _simple_forecast())
+
+    result = runner.invoke(app_mod.app, ["forecast", "AAPL", "--no-chart"])
+    assert result.exit_code == 0
+    assert called == []
+
+
+def _empty_snapshot():
+    from pyquant.data.options import OptionsSnapshot
+
+    return OptionsSnapshot(None, None, None, None)
+
+
+def _simple_forecast():
+    return Forecast(
+        symbol="AAPL",
+        last_date=pd.Timestamp("2024-03-01"),
+        current_price=100.0,
+        quantiles=[0.1, 0.5, 0.9],
+        predictions=np.array([[95.0, 100.0, 105.0]]),
+        history=pd.Series([100.0], index=pd.bdate_range("2024-03-01", periods=1)),
+    )
+
+
+# --- PYQ-126: no unreachable branch in _fmt_bytes ----------------------------
+
+
+def test_fmt_bytes_formats_every_unit():
+    assert app_mod._fmt_bytes(512) == "512 B"
+    assert app_mod._fmt_bytes(2 * 1024) == "2.0 KB"
+    assert app_mod._fmt_bytes(3 * 1024**2) == "3.0 MB"
+    assert app_mod._fmt_bytes(4 * 1024**3) == "4.0 GB"
+    # Beyond GB there is no larger unit: it stays GB rather than falling through.
+    assert app_mod._fmt_bytes(5000 * 1024**3) == "5000.0 GB"
+
+
+# --- PYQ-226: the spread across backtest windows, not just the mean ----------
+
+
+def test_backtest_table_shows_per_window_spread(monkeypatch):
+    from pyquant.analysis.metrics import aggregate_metrics
+
+    per_window = [
+        EvaluationMetrics(1.0, 2.0, 1.0, 1.0, n_samples=1, n_points=5),
+        EvaluationMetrics(3.0, 2.0, 0.2, 0.4, n_samples=1, n_points=5),
+    ]
+    fake = BacktestResult(
+        symbol="AAPL", n_windows=2, per_window=per_window, aggregated=aggregate_metrics(per_window)
+    )
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", lambda *a, **k: fake)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL"])
+
+    assert result.exit_code == 0
+    # The mean directional accuracy is 60%; the window range 20%-100% is the point.
+    assert "20.0%" in result.stdout
+    assert "100.0%" in result.stdout
+
+
+# --- PYQ-231: failure paths, which had zero coverage -------------------------
+
+
+def test_train_with_a_missing_config_file_fails_instead_of_using_defaults(monkeypatch, tmp_path):
+    """PYQ-128 via the CLI: silently training on defaults is the dangerous outcome."""
+    called = []
+    monkeypatch.setattr(app_mod.tft, "train", lambda *a, **k: called.append(1))
+    result = runner.invoke(app_mod.app, ["train", "AAPL", "--config", str(tmp_path / "nope.yaml")])
+    assert result.exit_code != 0
+    assert called == [], "trained anyway despite an unusable config"
+
+
+def test_invalid_output_format_is_rejected():
+    result = runner.invoke(app_mod.app, ["--format", "bogus", "forecast", "AAPL"])
+    assert result.exit_code != 0
+    assert "rich" in result.output and "json" in result.output
+
+
+def test_train_on_insufficient_history_reports_cleanly(monkeypatch, tmp_path):
+    def raise_short(*a, **k):
+        raise ValueError("Not enough history for TINY: need more than 80 rows, got 15.")
+
+    monkeypatch.setattr(app_mod.tft, "train", raise_short)
+    result = runner.invoke(app_mod.app, ["train", "TINY"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit), f"leaked {result.exception!r}"
+    assert "Not enough history" in result.output
+    assert "Traceback" not in result.output

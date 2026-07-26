@@ -36,15 +36,50 @@ INDICATOR_COLUMNS = [
 ]
 
 
+def _wilder_average(changes: pd.Series, period: int) -> pd.Series:
+    """Wilder's smoothed average: SMA seed, then ``((n-1)*prev + new) / n``.
+
+    Not the same as an exponential mean with ``alpha=1/period`` and no seed, and
+    not the same as a rolling mean -- the seed is what makes this match the RSI
+    every charting package plots.
+    """
+    out = pd.Series(np.nan, index=changes.index, dtype=float)
+    valid = changes.dropna()
+    if len(valid) < period:
+        return out
+    average = float(valid.iloc[:period].mean())
+    out.loc[valid.index[period - 1]] = average
+    for label, value in valid.iloc[period:].items():
+        average = (average * (period - 1) + float(value)) / period
+        out.loc[label] = average
+    return out
+
+
 def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """Relative Strength Index."""
+    """Relative Strength Index, using Wilder's smoothing.
+
+    This previously smoothed the average gain/loss with a plain
+    ``rolling(period).mean()``, which is a different indicator that happens to
+    share the name: every reference implementation and charting package uses
+    Wilder's smoothing, so the old values were not comparable to any external RSI
+    and the usual 30/70 thresholds only loosely applied (PYQ-121).
+
+    The first ``period`` rows are genuinely undefined and returned as NaN --
+    ``build_panel()`` drops them. The old ``min_periods=1`` emitted a value from
+    the second row off a one-row window, which was not NaN and therefore survived
+    that cleanup; it was removed only because ``SMA_50`` happened to cut the first
+    49 rows anyway.
+    """
     delta = series.diff()
-    gain = delta.where(delta > 0, 0.0)
-    loss = -delta.where(delta < 0, 0.0)
-    avg_gain = gain.rolling(window=period, min_periods=1).mean()
-    avg_loss = loss.rolling(window=period, min_periods=1).mean()
-    rs = avg_gain / (avg_loss + 1e-10)
-    return 100 - (100 / (1 + rs))
+    gain = delta.clip(lower=0.0)
+    loss = (-delta).clip(lower=0.0)
+    avg_gain = _wilder_average(gain, period)
+    avg_loss = _wilder_average(loss, period)
+
+    rsi = 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+    # An all-gains window has avg_loss == 0; state RSI = 100 explicitly rather
+    # than leaning on float division by zero.
+    return rsi.mask((avg_loss == 0) & avg_gain.notna(), 100.0)
 
 
 def compute_macd(

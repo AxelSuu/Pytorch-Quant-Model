@@ -113,3 +113,33 @@ def test_evaluate_predictions_warns_on_crossing(caplog):
     with caplog.at_level("WARNING"):
         metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
     assert any("crossing" in m.lower() for m in caplog.messages)
+
+
+# --- PYQ-117: metrics must carry their own sample size -----------------------
+
+
+def test_evaluate_predictions_records_sample_size():
+    """A percentage without a denominator is not a result. 3 windows x 2 days = 6 points."""
+    predictions = np.zeros((3, 2, 3))
+    predictions[:, :, 0] = 90.0
+    predictions[:, :, 1] = 100.0
+    predictions[:, :, 2] = 110.0
+    actuals = np.full((3, 2), 100.0)
+    last_observed = np.full(3, 99.0)
+
+    ev = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+
+    assert ev.n_samples == 3
+    assert ev.n_points == 6
+
+
+def test_aggregate_metrics_sums_sample_counts_rather_than_averaging_them():
+    """Five windows of 5 points is 25 points of evidence, not 5."""
+    windows = [
+        metrics.EvaluationMetrics(1.0, 2.0, 0.5, 0.9, n_samples=1, n_points=5) for _ in range(5)
+    ]
+    agg = metrics.aggregate_metrics(windows)
+    assert agg.n_samples == 5
+    assert agg.n_points == 25
+    # The rate-style metrics still average.
+    assert agg.directional_accuracy == 0.5

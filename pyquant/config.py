@@ -54,7 +54,17 @@ class TrainingConfig(BaseModel):
     batch_size: int = 64
     max_epochs: int = 30
     learning_rate: float = 0.01
-    train_split: float = 0.85
+    # Length of the held-out validation tail, in trading days. This must be
+    # comfortably longer than max_prediction_length: the number of validation
+    # windows scored is (validation_days - max_prediction_length + 1), so a
+    # holdout of exactly one horizon yields a single window -- 5 points driving
+    # every reported metric plus early stopping and checkpoint selection
+    # (PYQ-117). 60 days gives ~56 windows at the default 5-day horizon.
+    validation_days: int = 60
+    # Epochs without val_loss improvement before EarlyStopping fires. Worth tuning
+    # alongside validation_days: the noisier the selection metric, the less a small
+    # patience means (PYQ-224).
+    early_stopping_patience: int = 5
     gradient_clip_val: float = 0.1
     # Reproducibility: seed_everything() is called with this before each fit and
     # the value is recorded in meta.json so a run can be reproduced.
@@ -149,6 +159,16 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     """
     global _active_yaml_file
     chosen = config_path or os.environ.get("PYQUANT_CONFIG")
+    # An explicitly requested config that isn't there is an error, not a silent
+    # fallback to defaults: YamlConfigSettingsSource treats a missing file as
+    # "no values to contribute", so a typo'd path used to train a completely
+    # different experiment than the one asked for -- and record it as such
+    # (PYQ-128). No config requested at all stays silent, as before.
+    if chosen is not None and not Path(chosen).is_file():
+        raise FileNotFoundError(
+            f"Config file not found: {chosen}. Remove the --config/PYQUANT_CONFIG "
+            "setting to run with the built-in defaults."
+        )
     _active_yaml_file = Path(chosen) if chosen else None
     try:
         return Settings()

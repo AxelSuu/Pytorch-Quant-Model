@@ -21,7 +21,7 @@ def test_explain_forecast_reuses_the_panel_it_built(monkeypatch, sample_ohlcv_df
     monkeypatch.setattr(interp_mod, "panel_to_long", lambda p, s: p)
 
     class FakeBundle:
-        pass
+        meta: dict = {}  # a real ModelBundle always carries meta (PYQ-119)
 
     monkeypatch.setattr(
         interp_mod.tft,
@@ -49,3 +49,36 @@ def test_attention_to_series_uses_interpretations_own_panel_index():
     )
     att = attention_to_series(interp)
     pd.testing.assert_index_equal(att.index, dates[-3:])
+
+
+def test_explain_forecast_rebuilds_the_panel_with_the_bundles_recorded_config(
+    monkeypatch, sample_ohlcv_df
+):
+    """PYQ-119: explain shares the forecast's schema problem, so it needs the fix too."""
+    from pyquant.config import Settings
+    from pyquant.data.prices import add_technical_indicators
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    seen = {}
+
+    def fake_build_panel(symbol, settings, *a, **k):
+        seen["use_sectors"] = settings.data.use_sectors
+        return panel
+
+    monkeypatch.setattr(interp_mod, "build_panel", fake_build_panel)
+    monkeypatch.setattr(interp_mod, "panel_to_long", lambda p, s: p)
+    monkeypatch.setattr(
+        interp_mod.tft,
+        "interpret",
+        lambda bundle, df: {"encoder_importance": {"RSI_14": 1.0}, "attention": np.array([1.0])},
+    )
+
+    class FakeBundle:
+        meta = {"config": {"data": {"use_sectors": False}}}
+
+    settings = Settings()
+    assert settings.data.use_sectors is True
+
+    interp_mod.explain_forecast("test", settings, bundle=FakeBundle())
+
+    assert seen["use_sectors"] is False

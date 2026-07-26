@@ -2,36 +2,24 @@
 
 [![CI](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml/badge.svg)](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml)
 
-> Multi-modal market research with a **Temporal Fusion Transformer** — probabilistic
-> forecasts you can interrogate, not just a single guessed price.
+> Probabilistic stock forecasting with a **Temporal Fusion Transformer** and real time data.
 
-PyQuant fuses Yahoo Finance prices with macro, options, news-sentiment, and cross-asset
-signals, trains a [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363), and
-serves **multi-horizon quantile forecasts** (p10/p50/p90) plus **interpretability** —
-which features and which past days drove the prediction — all from a Rich terminal UI.
-
-*(Evolved from PyStock, a single-feature LSTM next-day price predictor.)*
+PyQuant processes api vendor products such as prices, macro, sector, and news-sentiment signals. 
+Trains a [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363), and serves 5-day
+p10/p50/p90 forecasts from a Rich terminal UI.
 
 ```
-            AAPL — 5-day forecast
-┏━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━┳━━━━━━━━━━┓
-┃ Day ┃     p10 ┃     p50 ┃     p90 ┃   vs now ┃
-┡━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━╇━━━━━━━━━━┩
-│   1 │ $269.37 │ $278.34 │ $308.07 │ ▼ 10.18% │
-│  …  │    …    │    …    │    …    │    …     │
-└─────┴─────────┴─────────┴─────────┴──────────┘
-Options: put/call 0.48 (bullish), ATM IV 12%, skew +6.25%
+                  NVO — 5-day forecast
+┏━━━━━┳━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┓
+┃ Day ┃       Date ┃    p10 ┃    p50 ┃    p90 ┃  vs now ┃
+┡━━━━━╇━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━━┩
+│   1 │ 2026-07-24 │ $43.81 │ $45.43 │ $49.14 │ ▼ 5.70% │
+│  …  │      …     │    …   │    …   │    …   │    …    │
+│   5 │ 2026-07-30 │ $43.66 │ $45.62 │ $49.62 │ ▼ 5.31% │
+└─────┴────────────┴────────┴────────┴────────┴─────────┘
+Options: put/call 0.54 (bullish), ATM IV 42%, skew +3.12%
 ```
 
-## What makes it interesting
-
-- **Uncertainty, not point guesses.** Quantile regression gives a p10–p90 fan, so you see
-  *confidence*, not just a number.
-- **Multi-modal features.** Prices + technical indicators, macro (VIX, rates, CPI, yield
-  curve), cross-asset sector returns, and FinBERT-scored news sentiment.
-- **Interpretable.** `explain` surfaces TFT feature importances and temporal attention.
-- **Graceful degradation.** Runs on pure Yahoo Finance OHLCV out of the box; each API key
-  you add lights up another data source. Missing sources are dropped, never fatal.
 
 ## Install
 
@@ -45,52 +33,13 @@ uv sync --extra sentiment     # + FinBERT news sentiment (downloads the model on
 ## Quickstart
 
 ```bash
-uv run pyquant train AAPL              # train a TFT (saves to checkpoints/AAPL/)
-uv run pyquant train AAPL,MSFT,NVDA    # pool multiple symbols into one model (checkpoints/AAPL_MSFT_NVDA/)
-uv run pyquant forecast AAPL           # quantile forecast + fan chart + options context
-uv run pyquant forecast AAPL --export aapl.png   # also write a PNG fan chart
-uv run pyquant forecast AAPL --bundle AAPL_MSFT_NVDA   # forecast AAPL using a pooled bundle
-uv run pyquant explain AAPL            # feature importance + temporal attention
-uv run pyquant scan AAPL,MSFT,NVDA     # multi-asset comparison table
-uv run pyquant backtest AAPL           # walk-forward backtest across rolling windows
+uv run pyquant train AAPL       # train a TFT  ->  checkpoints/AAPL/
+uv run pyquant forecast AAPL    # 5-day p10/p50/p90 forecast + fan chart
+uv run pyquant explain AAPL     # which features and which days drove it
 ```
 
-Useful flags: `train --epochs 50 --period 10y`, `train --name my_bundle` to
-override the checkpoint directory name, `backtest --windows 10`, and
-`--no-macro / --no-sentiment / --no-sectors` to train on a leaner feature set.
-
-Training on multiple comma-separated symbols pools them into a single
-TimeSeriesDataSet/model (via `group_ids=["symbol"]`) instead of training a
-separate model per ticker on a few years of daily bars each -- meaningfully
-more data for the same architecture. `forecast`/`explain --bundle <name>` let
-you query an individual symbol's forecast from a pooled bundle.
-
-Fetched data panels are cached locally (`.cache/pyquant/`, 1h TTL by default;
-tune via `DataConfig.cache_ttl_seconds` or disable with `cache_enabled=False`)
-so repeated runs don't re-hit Yahoo/FRED/Finnhub. `train --pin NAME` /
-`forecast --pin NAME` save (or replay) a named, TTL-exempt dataset snapshot,
-so a specific experiment can be re-run later against byte-identical data
-instead of whatever happens to be live that day.
-
-Pass `--verbose`/`--debug` before the subcommand (e.g. `pyquant --debug train
-AAPL`) to re-enable INFO/DEBUG logging and Lightning's own training output --
-useful for diagnosing NaN losses or unexpected feature drift.
-
-`train` and `backtest` both report model quality against a naive persistence
-baseline (predict "no change"), directional hit-rate, and empirical calibration
-(how often the realized price actually falls inside the forecast's p10-p90
-band) -- not just an absolute loss number with nothing to compare it against.
-
-## API keys (optional)
-
-Copy `.env.example` to `.env` and add any you have. All are optional:
-
-| Key | Unlocks | Free key |
-|-----|---------|----------|
-| `FRED_API_KEY` | Macro features (Fed funds, CPI, yield curve) | https://fredaccount.stlouisfed.org/apikeys |
-| `FINNHUB_API_KEY` | News headlines for sentiment scoring | https://finnhub.io/register |
-
-VIX and sector ETFs come from Yahoo Finance and need no key.
+Defaults: 5 years of daily bars, a 60-day lookback, a 5-day horizon, and p10/p50/p90
+quantiles, trained for up to 30 epochs with early stopping.
 
 ## How it works
 
@@ -108,35 +57,82 @@ sectors ──┘                                                     ▼
                               └──────────────► Rich CLI (cli/app.py) ◄──────────────┘
 ```
 
-A note on **options data**: Yahoo Finance only exposes the *current* option chain, not
-history, so put/call ratio, ATM IV, and IV skew are shown as live market *context* rather
-than fed to the model as a time series. The historical volatility signal the model trains
-on is `Realized_Vol_20` (annualised 20-day realized volatility).
+Every enrichment join degrades gracefully: a source that is missing a key, rate-limited,
+or disabled is dropped with a logged notice rather than failing the run.
+
 
 ## Development
 
 ```bash
-uv run pytest          # full suite (network-free; external APIs are mocked)
-uv run ruff check .    # lint
+uv run pytest                                # full suite (network-free; external APIs are mocked)
+uv run ruff check .                          # lint
+uv run python scripts/backlog.py list        # open tickets, priority-sorted
 ```
 
-## Known limitations
+Open bugs, planned features, and investigations live in [`backlog/`](backlog/README.md);
+[`docs/api-design.md`](docs/api-design.md) sketches the planned HTTP service layer.
 
-- `train`'s/`backtest`'s reported metrics (skill vs. baseline, calibration
-  coverage) currently reflect the model's state at its *final* training
-  epoch, not the best checkpoint that actually gets saved and used for
-  forecasting — so the numbers you see can look meaningfully worse than the
-  model you're actually running (PYQ-109). A single 5-day validation window
-  per training run also makes any one run's metrics a small, high-variance
-  sample — prefer `pyquant backtest` over `pyquant train`'s own summary for
-  a more reliable read.
-- Single-node only today: checkpoints and the data cache are local files;
-  there's no hosted API yet (design in progress, PYQ-213).
+## API keys (optional)
 
-See [`backlog/`](backlog/README.md) for the full backlog of open bugs,
-planned features, and investigations (`uv run python scripts/backlog.py
-list` for a quick priority-sorted view).
+Copy `.env.example` to `.env` and add any you have. All are optional — PyQuant runs on
+Yahoo Finance OHLCV alone, and each key simply lights up another data source:
 
-## Disclaimer
+| Key | Unlocks | Free key |
+|-----|---------|----------|
+| `FRED_API_KEY` | Macro features (Fed funds, CPI, yield curve) | https://fredaccount.stlouisfed.org/apikeys |
+| `FINNHUB_API_KEY` | News headlines for sentiment scoring | https://finnhub.io/register |
 
-For research and education only. Forecasts are model output, not financial advice.
+## Commands
+
+| Command | What it does |
+|---|---|
+| `train SYMBOLS` | Train a TFT and save a bundle. Comma-separated symbols pool into one model. |
+| `forecast SYMBOL` | Quantile forecast, fan chart, and live options context. |
+| `explain SYMBOL` | Feature importances + temporal attention for the forecast. |
+| `scan SYMBOLS` | Compare forecasts across several trained symbols. |
+| `backtest SYMBOL` | Walk-forward evaluation across rolling origins. |
+| `cache list\|prune\|rm-pin` | Inspect and prune the local data-panel cache. |
+
+Common flags: `train --epochs 50 --period 10y`, `train --name my_bundle` to override the
+bundle directory, `backtest --windows 10`, `explain --top 20`, `forecast --export
+aapl.png` to also write a PNG, and `--no-macro / --no-sentiment / --no-sectors` on
+`train`/`backtest` for a leaner feature set. `pyquant <command> --help` has the rest.
+
+**Global flags** go *before* the subcommand — `pyquant --debug train AAPL`:
+`--format json`, `--quiet/-q`, `--verbose/-v`, `--debug`.
+
+**Pooling.** `train AAPL,MSFT,NVDA` trains a single model across all three rather than
+one model per ticker on a few years of bars each — meaningfully more data for the same
+architecture. It saves to `checkpoints/AAPL_MSFT_NVDA/`, and
+`forecast AAPL --bundle AAPL_MSFT_NVDA` pulls one symbol's forecast back out of it.
+
+**Caching and pins.** Fetched data panels are cached in `.cache/pyquant/` for an hour so
+repeated runs don't re-hit Yahoo/FRED/Finnhub. `train --pin NAME` / `forecast --pin NAME`
+save and replay a named, TTL-exempt snapshot, so an experiment can be re-run later against
+byte-identical data instead of whatever happens to be live that day.
+
+```bash
+uv run pyquant cache list      # size, entry count, saved pins
+uv run pyquant cache prune     # drop expired entries (pins are never touched)
+uv run pyquant cache rm-pin NAME
+```
+
+**Experiment configs.** `train`/`backtest` accept `--config configs/aapl_baseline.yaml`
+to load a whole experiment — architecture, windows, epochs, data toggles — from one
+checked-in file. Precedence is CLI flags > environment > YAML > built-in defaults. Two
+examples ship in [`configs/`](configs/). (`forecast`/`explain` need no config: they read
+the one recorded in the bundle they load.)
+
+**Measuring quality.** `train` and `backtest` score the model against a naive persistence
+baseline ("predict no change") with directional hit-rate and calibration coverage, rather
+than an absolute loss with nothing to compare it to. Every rate prints with the sample
+size behind it (`Evaluated on 56 windows (280 predictions)`); tune the holdout with
+`TrainingConfig.validation_days`, default 60 days. `backtest` also prints each rolling
+origin separately, because the spread across time is the reason to run more than one.
+
+**JSON output.** `--format json` makes any command emit a machine-readable document on
+stdout instead of tables — no Rich markup, no ANSI escapes.
+
+```bash
+uv run pyquant --format json forecast AAPL | jq '.forecast_dates, .predictions'
+```

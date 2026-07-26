@@ -33,31 +33,32 @@ uv run python scripts/backlog.py list --type bug --priority critical,high
 uv run python scripts/backlog.py check                      # table/detail consistency + duplicate-ID check
 ```
 
-`check` is cheap enough to run before every backlog edit lands; there's no CI
-hook for it yet (see PYQ-311 in investigations.md for whether that's worth
-adding).
+`check` runs in CI (PYQ-311) and is cheap enough to run before every backlog
+edit lands.
 
 ## Now
 
 A hand-curated shortlist, not auto-generated — re-pick this after every
-review pass. Full context for each is in its file. (Re-picked 2026-07-24 after
-the second closeout pass below — PYQ-209/212 landed and dropped off; only the
-experiment-heavy and decision-gated tickets remain.)
+review pass. Full context for each is in its file. (Re-picked 2026-07-26 after
+the third closeout pass below. Every bug is closed; what remains needs
+hardware, real API keys, or a product decision.)
 
-1. **PYQ-302** (investigation, High) — confirm what actually happens on
-   schema drift between train-time and predict-time panels (the top blocker
-   for trusting the PYQ-213 API against live data).
-2. **PYQ-303** (investigation, High) — is a single 5-day validation window
-   reliable enough to drive early stopping / model selection? Now unblocked:
-   PYQ-210 (`seed_everything`) landed and PYQ-109 (best-checkpoint eval) is
-   fixed, so the seed-variance comparison it asks for can finally be run on
-   correctly-evaluated models.
+1. **PYQ-211** (feature, Medium) — learning-rate tuning. Now the most
+   valuable open ticket rather than a nice-to-have: PYQ-117 showed the default
+   config scores −23.5% skill against a persistence baseline on 280 real
+   validation points, and PYQ-127 made the walk-forward actually walk, so an
+   lr sweep can finally be judged on trustworthy numbers. Needs real data +
+   GPU.
+2. **PYQ-227** (feature, Medium) — per-quantile calibration + pinball loss.
+   Directly motivated by what PYQ-117 exposed: 99.3% coverage on a nominal 80%
+   band says the interval is far too wide, and a single band-coverage number
+   cannot say *which* side is at fault.
 3. **PYQ-220** (feature, Medium) — absolute bundle/cache paths; a stated
    prerequisite in the PYQ-213 design note before anything server-side. Needs
    a location decision (platformdirs XDG vs. project-root anchor).
-4. **PYQ-211** (feature, Medium) — learning-rate tuning; re-run its backtest
-   comparison now that PYQ-109 evaluates the right checkpoint (needs real data
-   + GPU).
+4. **PYQ-301** (investigation, Medium) — how much of the training window has
+   non-neutral sentiment? The last open question about whether a feature the
+   model is being fed is worth its place. Needs a `FINNHUB_API_KEY`.
 5. **PYQ-217** (feature, Medium) — Dockerfile; pairs with the PYQ-213 design
    note for deploying the eventual API.
 
@@ -96,3 +97,47 @@ local-only `[tool.mypy]`, no CI gate). Added 17 tests (105 → 122 passing) and
 PYQ-211/214/217/220 (features) and PYQ-301/302/303 (investigations) — all
 needing real API keys, GPU hardware, Docker, or a product decision to close
 responsibly.
+
+A third review pass (2026-07-26) audited models/data/analysis/CLI/config/
+tooling/project-management together and added PYQ-115..128 (bugs) and
+PYQ-224..231 (features) — 24 tickets, bringing the total to 70. It then closed
+18 of them, including all four defects that decided whether the tool did what
+it claimed:
+
+- **PYQ-115** (Critical) — `forecast` was predicting the last five
+  *already-observed* days rather than the next five, because `predict=True`
+  anchors the decoder to the end of the frame it is handed. Every number
+  `forecast`/`scan`/`explain` printed was affected; `expected_return_pct` was a
+  residual on known prices presented as a prediction. Live before/after on the
+  same NVO bundle: `+2.73%` off medians for 2026-07-17..23 became `−5.31%` off
+  medians for 2026-07-24..30.
+- **PYQ-117** (High) — every reported metric, plus `EarlyStopping` and
+  `ModelCheckpoint`, rested on a single 5-point validation sample, which is
+  where "directional accuracy 100.0%" came from. Now 56 windows / 280 points at
+  the default config, and the honest numbers are much worse (57.5% direction,
+  −23.5% skill). Superseded investigations.md#pyq-303.
+- **PYQ-127** (High) — `backtest --windows 5` trained five models and scored
+  all five on the *same* final five days, so the walk-forward never walked.
+- **PYQ-116** (Critical) — pooled training computed its cutoff from a global
+  `time_idx` while numbering each symbol's rows from zero independently, so a
+  late-listing symbol's validation window sat inside the training slice.
+
+Two of those (PYQ-115, PYQ-127) were invisible from inside any single file —
+they only surface if you ask what `decoder_time_idx` actually contains, which
+is why the previous two passes found neither. The lesson recorded here: this
+backlog was optimising local correctness ticket by ticket while the invariants
+that span the pipeline went unstated. PYQ-115/117/127 now each ship a test that
+asserts one of those invariants directly.
+
+Also closed: PYQ-118/119 (schema drift now a clear error naming the missing
+source, and bundles record the config they were trained with, answering
+investigations.md#pyq-302), PYQ-121 (`RSI_14` was a simple moving average, not
+Wilder's RSI), PYQ-123 (a `bfill` back-filling future values into leading
+rows), PYQ-124 (crossed quantile bands reaching `scan`'s BUY/SELL guards),
+PYQ-120/128/231 (CLI failure paths — writing the missing tests is what found
+both defects), and PYQ-122/125/126/224/225/226.
+
+The change added 47 tests (122 → 169 passing), still `check`-clean and
+`ruff`-clean. Nine tickets remain open — PYQ-211/214/217/220/227/228/229/230
+and investigation PYQ-301 — every one needing real API keys, GPU hardware,
+Docker, or a product decision to close responsibly.
