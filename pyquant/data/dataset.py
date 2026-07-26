@@ -24,7 +24,8 @@ from pyquant.data import cache
 from pyquant.data.macro import fetch_macro
 from pyquant.data.prices import fetch_prices
 from pyquant.data.sectors import fetch_sector_returns
-from pyquant.data.sentiment import fetch_sentiment
+from pyquant.data.sentiment import align_to_sessions, fetch_sentiment
+from pyquant.data.trading_calendar import next_sessions
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +104,11 @@ def build_panel(
     if settings.data.use_sentiment:
         sentiment = fetch_sentiment(settings.finnhub_api_key, symbol, start=start, end=end)
         if not sentiment.empty:
-            panel = panel.join(sentiment.reindex(price_index))
+            # fetch_sentiment already assigns each headline to the session that
+            # may act on it (PYQ-129); align_to_sessions rolls the weekend and
+            # holiday dates that produces onto real trading rows, which a plain
+            # reindex would silently drop instead.
+            panel = panel.join(align_to_sessions(sentiment, price_index))
             # Days without news are neutral (0 sentiment, 0 headlines).
             panel[["Sentiment", "HeadlineCount"]] = panel[
                 ["Sentiment", "HeadlineCount"]
@@ -174,13 +179,18 @@ def align_time_index(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def future_business_dates(last_date: pd.Timestamp, horizon: int) -> pd.DatetimeIndex:
-    """The ``horizon`` business days that follow ``last_date``.
+    """The ``horizon`` trading sessions that follow ``last_date``.
 
     Single source of truth for "what dates is the forecast for": the rows
     appended by extend_for_prediction(), the CLI's forecast table, the terminal
     chart and the PNG export all label the same days.
+
+    Exchange holidays are skipped (PYQ-130). This was ``pd.bdate_range``, which
+    is Mon-Fri and holiday-blind, so it made that single source of truth the
+    single source of one consistent error -- both on screen and in ``dow``,
+    which the decoder reads.
     """
-    return pd.bdate_range(last_date + pd.Timedelta(days=1), periods=horizon)
+    return next_sessions(last_date, horizon)
 
 
 def extend_for_prediction(df: pd.DataFrame, horizon: int) -> pd.DataFrame:

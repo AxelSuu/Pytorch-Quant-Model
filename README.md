@@ -1,8 +1,8 @@
 # PyQuant
 
-[![CI](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml/badge.svg)](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml)
+Probabilistic time series forecasting app with a [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363) and real time data.
 
-> Probabilistic stock forecasting with a **Temporal Fusion Transformer** and real time data.
+[![CI](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml/badge.svg)](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml)
 
 PyQuant processes api vendor products such as prices, macro, sector, and news-sentiment signals. 
 Trains a [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363), and serves 5-day
@@ -32,16 +32,19 @@ uv sync --extra sentiment     # + FinBERT news sentiment (downloads the model on
 
 ## Quickstart
 
+Defaults: 5 years of daily bars, a 60-day lookback, a 5-day horizon, and p10/p50/p90
+quantiles, trained for up to 30 epochs with early stopping.
+
 ```bash
 uv run pyquant train AAPL       # train a TFT  ->  checkpoints/AAPL/
 uv run pyquant forecast AAPL    # 5-day p10/p50/p90 forecast + fan chart
 uv run pyquant explain AAPL     # which features and which days drove it
 ```
 
-Defaults: 5 years of daily bars, a 60-day lookback, a 5-day horizon, and p10/p50/p90
-quantiles, trained for up to 30 epochs with early stopping.
-
 ## How it works
+
+Every enrichment join degrades gracefully: a source that is missing a key, rate-limited,
+or disabled is dropped with a logged notice rather than failing the run.
 
 ```
 yfinance ─┐
@@ -57,20 +60,15 @@ sectors ──┘                                                     ▼
                               └──────────────► Rich CLI (cli/app.py) ◄──────────────┘
 ```
 
-Every enrichment join degrades gracefully: a source that is missing a key, rate-limited,
-or disabled is dropped with a logged notice rather than failing the run.
-
-
 ## Development
+
+Open bugs, planned features, and investigations live in [`backlog/`](backlog/README.md).
 
 ```bash
 uv run pytest                                # full suite (network-free; external APIs are mocked)
 uv run ruff check .                          # lint
 uv run python scripts/backlog.py list        # open tickets, priority-sorted
 ```
-
-Open bugs, planned features, and investigations live in [`backlog/`](backlog/README.md);
-[`docs/api-design.md`](docs/api-design.md) sketches the planned HTTP service layer.
 
 ## API keys (optional)
 

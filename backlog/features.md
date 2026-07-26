@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-232**.
+Next free ID: **PYQ-264**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -15,7 +15,7 @@ Next free ID: **PYQ-232**.
 | [PYQ-208](#pyq-208) | Medium | Resolved | `test_options.py` — was 0% covered |
 | [PYQ-209](#pyq-209) | High | Resolved | Config-file (YAML) support for experiments |
 | [PYQ-210](#pyq-210) | Medium | Resolved | `seed_everything` + recorded seed for reproducibility |
-| [PYQ-211](#pyq-211) | Medium | Open | Learning-rate tuning instead of one fixed lr for every run |
+| [PYQ-211](#pyq-211) | Low | Open | Learning-rate tuning instead of one fixed lr for every run |
 | [PYQ-212](#pyq-212) | Medium | Resolved | Machine-readable output mode (`--format json` / `--quiet`) |
 | [PYQ-213](#pyq-213) | High | Resolved | Design (and scaffold) a FastAPI service layer alongside the CLI |
 | [PYQ-214](#pyq-214) | Medium | Open | Broaden and harden external data providers |
@@ -36,6 +36,38 @@ Next free ID: **PYQ-232**.
 | [PYQ-229](#pyq-229) | Low | Open | CI: Python matrix, frozen install, `uv lock --check`, `ruff format --check` |
 | [PYQ-230](#pyq-230) | Low | Open | CI: measure and report test coverage |
 | [PYQ-231](#pyq-231) | Medium | Resolved | CLI failure-path test coverage — every existing test asserts `exit_code == 0` |
+| [PYQ-232](#pyq-232) | High | Open | Sphinx + autodoc API documentation site |
+| [PYQ-233](#pyq-233) | Medium | Open | Gate the docs build in CI with warnings-as-errors |
+| [PYQ-234](#pyq-234) | Medium | Open | Host the docs on Read the Docs via uv |
+| [PYQ-235](#pyq-235) | High | Open | Narrative docs: architecture, leakage invariants, methodology |
+| [PYQ-236](#pyq-236) | Low | Open | Adopt one docstring style and enforce it with ruff's `D` rules |
+| [PYQ-237](#pyq-237) | Low | Open | Executable doctests for the metrics and forecast APIs |
+| [PYQ-238](#pyq-238) | High | Open | `tests/test_invariants.py` — assert the pipeline-spanning invariants directly |
+| [PYQ-239](#pyq-239) | High | Open | Learnability test: inject a known signal and assert the model recovers it |
+| [PYQ-240](#pyq-240) | Medium | Open | Regression test that predictions/actuals/last_observed share units |
+| [PYQ-241](#pyq-241) | Medium | Open | End-to-end CLI journey test across every command and both output formats |
+| [PYQ-242](#pyq-242) | Low | Open | Property-based tests for `analysis/metrics.py` |
+| [PYQ-243](#pyq-243) | Medium | Open | Recorded-payload contract tests for every external vendor |
+| [PYQ-244](#pyq-244) | Low | Open | Scheduled nightly CI job against live vendors |
+| [PYQ-245](#pyq-245) | Low | Open | Mutation testing on the metrics and indicator modules |
+| [PYQ-246](#pyq-246) | Medium | Open | Determinism test: same seed + same pin ⇒ identical metrics |
+| [PYQ-247](#pyq-247) | High | Open | Forecast log-returns instead of price levels |
+| [PYQ-248](#pyq-248) | High | Open | Conformal / split-calibration of the quantile band |
+| [PYQ-249](#pyq-249) | Medium | Open | Add a time-series foundation model as a zero-shot baseline |
+| [PYQ-250](#pyq-250) | Medium | Open | Purge + embargo around every walk-forward split |
+| [PYQ-251](#pyq-251) | Medium | Open | Report effective sample size and block-bootstrap intervals |
+| [PYQ-252](#pyq-252) | Medium | Open | CRPS, Winkler score and a PIT histogram |
+| [PYQ-253](#pyq-253) | Medium | Open | Optuna hyperparameter search (absorbs PYQ-211's scope) |
+| [PYQ-254](#pyq-254) | Medium | Open | Promote options data from display context to model features |
+| [PYQ-255](#pyq-255) | Medium | Open | Signal evaluation: does `scan`'s BUY/SELL actually make money? |
+| [PYQ-256](#pyq-256) | Low | Open | `has_sentiment_data` indicator column |
+| [PYQ-257](#pyq-257) | High | Open | Use FRED/ALFRED vintages instead of a fixed publication lag |
+| [PYQ-258](#pyq-258) | Medium | Open | Pluggable price-provider interface with a licensed fallback |
+| [PYQ-259](#pyq-259) | Medium | Open | Experiment tracking (MLflow) alongside `runs.jsonl` |
+| [PYQ-260](#pyq-260) | Low | Open | Ship a `py.typed` marker |
+| [PYQ-261](#pyq-261) | Medium | Open | Scaffold `pyquant/api/` per the PYQ-213 design note |
+| [PYQ-262](#pyq-262) | Low | Open | Pre-commit configuration |
+| [PYQ-263](#pyq-263) | Low | Open | `pyquant doctor` — environment and bundle health check |
 
 ---
 
@@ -233,7 +265,7 @@ comparison in investigations.md#pyq-303 is now unblocked.
 ## [PYQ-211]
 Learning-rate tuning instead of one fixed lr for every run
 Status: Open
-Priority: Medium (downgraded from High — see update)
+Priority: Low (downgraded again from Medium — see 2026-07-26 update)
 Files: `pyquant/models/tft.py` (`build_model`, `train`), `pyquant/config.py` (`TrainingConfig.learning_rate`)
 
 Problem: `learning_rate` is a single hardcoded default (0.01) applied
@@ -260,6 +292,24 @@ unreliable until it's re-run against correctly-evaluated (best-checkpoint)
 models. LR tuning is still a reasonable improvement on its own merits, just
 no longer the leading theory for the bad numbers, hence the priority
 downgrade.
+
+Update (2026-07-26, external review pass): a second reason to deprioritise, more
+fundamental than the first. `TARGET = "Close"` means the model predicts the price
+**level**, and for a near-random-walk series the persistence baseline is near-optimal by
+construction on that formulation — so the reported −23.5% skill is roughly what the
+formulation predicts *a priori*, largely independent of learning rate. Tuning lr searches
+for a better answer inside a formulation whose ceiling is approximately "tie the
+baseline." See features.md#pyq-247 (log-return target) for the change actually likely to
+move the number, and it needs no GPU, unlike this ticket.
+
+Separately, learning rate is also just one of at least six coupled knobs (`hidden_size`,
+`attention_head_size`, `dropout`, `hidden_continuous_size`, `learning_rate`,
+`early_stopping_patience`), so tuning it alone is close to uninformative regardless of the
+target question. features.md#pyq-253 proposes an Optuna study over the full set instead,
+run *after* PYQ-247 lands. Suggest treating this ticket as superseded by PYQ-253 once that
+lands, rather than working it standalone — downgraded to Low in the meantime rather than
+closed, since "tie the baseline" is still marginally better than "lose to it," and the
+narrow `lr_find` fix costs little if someone picks it up first.
 
 ---
 
@@ -916,3 +966,1018 @@ with no traceback.
 Writing them found two real defects rather than merely documenting existing
 behaviour: bugs.md#pyq-120 (the traceback) and bugs.md#pyq-128 (a missing
 `--config` silently training on defaults), which is the argument for the ticket.
+
+---
+
+## [PYQ-232]
+Sphinx + autodoc API documentation site
+Status: Open
+Priority: High
+Files: new `docs/conf.py`, `docs/index.md`, `docs/api/`, `pyproject.toml`
+
+Problem: the project has **79% docstring coverage across 126 functions and classes**
+(measured by AST walk), and the docstrings are unusually good — they explain *why*, cite
+ticket IDs, and record decisions (`compute_rsi`, `align_time_index`, `extend_for_prediction`
+and `Forecast.__post_init__` are the standouts). None of it is rendered anywhere. The only
+way to read the design rationale is to open the source files in order.
+
+That is the whole cost/benefit: the expensive part of a docs site — writing good prose —
+is already paid for. What is missing is scaffolding.
+
+Ask: a Sphinx site. Recommended extension set, chosen for this codebase specifically:
+
+- `sphinx.ext.autodoc` + `sphinx.ext.autosummary` — the reference pages
+- `sphinx.ext.napoleon` — the existing docstrings are Google-ish prose; napoleon parses
+  them without a rewrite
+- `sphinx.ext.intersphinx` — **the reason to prefer Sphinx over MkDocs here.** This
+  codebase is largely a thin, correct layer over pandas / torch / pytorch-forecasting /
+  pydantic, so resolving `TimeSeriesDataSet`, `DataFrame` and `BaseSettings` into live
+  upstream links carries real explanatory weight. mkdocstrings still does not match
+  intersphinx on this.
+- `sphinx.ext.viewcode` — source links, which matter when the comments are the point
+- `myst_parser` — so `docs/api-design.md` and the new narrative pages (PYQ-235) stay
+  Markdown and are included rather than duplicated
+- `furo` theme; `sphinx-autobuild` in the docs group for the authoring loop
+
+Add a `docs` dependency group (PEP 735 `[dependency-groups]`, which uv supports) rather
+than an optional-dependency extra, so it never ships to installers. Build with
+`uv run --group docs sphinx-build -b html docs docs/_build/html`.
+
+Structure: `index` → Quickstart (reuse README) → Concepts (PYQ-235) → API reference
+(autosummary over the six subpackages) → Design notes (`api-design.md`, MyST-included) →
+Backlog (link out, do not duplicate — the backlog's value is that it lives with the code).
+
+Acceptance criteria: `sphinx-build` produces a site with a page per public module; the
+`Settings`/`TFTConfig`/`TrainingConfig`/`DataConfig` reference renders every field with
+its default and description; at least one `pytorch_forecasting` and one `pandas` type in a
+signature resolves to an external link.
+
+---
+
+## [PYQ-233]
+Gate the docs build in CI with warnings-as-errors
+Status: Open
+Priority: Medium
+Files: `.github/workflows/ci.yml`, `docs/conf.py`
+
+Problem/Ask: a docs site that is not built in CI rots within two refactors. Run
+`sphinx-build -W --keep-going -b html docs docs/_build/html` as a CI step, so a broken
+`:func:` cross-reference, a renamed module, or an autodoc import failure fails the PR that
+caused it.
+
+This is the same instinct as PYQ-311's decision to gate `scripts/backlog.py check`: cheap,
+dependency-light, catches a bookkeeping error in the PR that introduced it rather than
+three months later. Consider `nitpicky = True` once the baseline is clean — it turns every
+unresolvable type reference into an error, which is strict but is exactly the check that
+keeps an autodoc site honest as signatures change.
+
+Acceptance criteria: CI fails on a deliberately broken cross-reference; passes on the
+current tree.
+
+---
+
+## [PYQ-234]
+Host the docs on Read the Docs via uv
+Status: Open
+Priority: Medium
+Files: new `.readthedocs.yaml`
+
+Problem/Ask: a built site that only exists in CI artifacts is not readable by anyone
+evaluating the project. Read the Docs added native `uv` support in April 2026, so this is
+a short config file rather than a pip-shim workaround, and it gives versioned URLs
+(`latest`, `stable`, one per tag) at no cost.
+
+Note the build must not need the full torch stack, or RTD builds will be slow and fragile.
+Two options: install the real dependencies (simplest, slower), or set
+`autodoc_mock_imports = ["torch", "lightning", "pytorch_forecasting", "yfinance",
+"fredapi", "transformers"]` and install only the docs group. **Prefer the real install
+first** — mocked imports silently produce wrong signatures for anything that inspects a
+base class, and this codebase subclasses/returns upstream types in several public
+signatures. Fall back to mocking only if build time becomes a problem.
+
+Acceptance criteria: a pushed tag produces a versioned docs URL; the badge is in the README
+next to the CI badge.
+
+---
+
+## [PYQ-235]
+Narrative docs: architecture, leakage invariants, methodology
+Status: Open
+Priority: High
+Files: new `docs/architecture.md`, `docs/invariants.md`, `docs/methodology.md`
+
+Problem: this is the highest-value documentation in the project and it does not exist in
+readable form. The `backlog/` directory contains genuine, hard-won, non-obvious knowledge
+about look-ahead leakage in this specific pipeline — PYQ-101 (reference vs. publication
+date), PYQ-103 (fills laundering warm-up rows), PYQ-115 (`predict=True` anchors to the end
+of the frame it is handed), PYQ-116 (per-symbol `time_idx` means different dates),
+PYQ-123 (`bfill` is look-ahead by construction), PYQ-127 (a walk-forward that does not
+walk). Every one of those is a mistake most practitioners make and never notice.
+
+Right now that knowledge is discoverable only by reading 70 tickets in ID order. Promoting
+it into narrative pages is what converts the repo from "well-managed" into "instructive,"
+and it is the part a reader is most likely to remember.
+
+Ask: three pages.
+
+- **`architecture.md`** — the README diagram expanded: what each layer owns, why
+  pytorch-forecasting is confined to two modules, what the graceful-degradation contract
+  guarantees and (per PYQ-118) where it deliberately stops.
+- **`invariants.md`** — the properties the pipeline must satisfy, each stated as a
+  falsifiable claim, each linked to the ticket that established it and the test that now
+  guards it. This page and PYQ-238's test module are the same content in two forms and
+  should be written together.
+- **`methodology.md`** — how the model is evaluated and why: persistence baseline,
+  walk-forward geometry, what `validation_days` buys, what calibration coverage does and
+  does not tell you, and an honest statement of current results including the negative
+  skill. The negative result stated plainly is more persuasive than a positive one stated
+  vaguely.
+
+Acceptance criteria: each of the six leakage tickets above appears in `invariants.md` as a
+stated invariant with a link to its test; `methodology.md` states the current
+skill/coverage numbers with their sample size.
+
+---
+
+## [PYQ-236]
+Adopt one docstring style and enforce it with ruff's `D` rules
+Status: Open
+Priority: Low
+Files: `pyproject.toml` (`[tool.ruff.lint]`)
+
+Problem/Ask: 79% coverage means 27 undocumented functions/classes, and the existing style
+is consistent by habit rather than by rule. Once autodoc (PYQ-232) renders them, gaps
+become visible to readers. Enable ruff's `D` ruleset with
+`convention = "google"`, ignore the rules that fight the current style (`D203`/`D213`
+family), and either document or explicitly `# noqa` the remaining private helpers.
+
+Deliberately Low: PYQ-310 already established the project's stance that a tool must catch
+something real before it earns a CI gate. Run it once, look at the findings, and only then
+decide whether it is a gate or a local convenience — the same disposition, applied to a
+different tool.
+
+Acceptance criteria: `ruff check` passes with `D` enabled; docstring coverage measured the
+same way as this review (AST walk over `pyquant/`) is above 90%.
+
+---
+
+## [PYQ-237]
+Executable doctests for the metrics and forecast APIs
+Status: Open
+Priority: Low
+Files: `pyquant/analysis/metrics.py`, `pyquant/analysis/forecast.py`, `pyproject.toml`
+
+Problem/Ask: `metrics.py`'s functions are pure, take small numpy arrays, and have
+docstrings that *describe* behaviour a two-line example would *demonstrate*
+(`skill_vs_baseline`, `calibration_coverage`, `directional_hit_rate`). Add `>>>` examples
+and run them with `--doctest-modules` in pytest (and/or `sphinx.ext.doctest` for the
+rendered site).
+
+This is the cheapest documentation-drift guard available: an example that stops matching
+the code fails the build. It is also the best place to make the units question concrete
+(see PYQ-240 / PYQ-313) — a worked example showing dollars in and a dimensionless skill
+figure out documents the contract better than a sentence can.
+
+Acceptance criteria: `pytest --doctest-modules pyquant/analysis` passes and covers at
+least `skill_vs_baseline`, `calibration_coverage` and `Forecast.expected_return_pct`.
+
+---
+
+## [PYQ-238]
+`tests/test_invariants.py` — assert the pipeline-spanning invariants directly
+Status: Open
+Priority: High
+Files: new `tests/test_invariants.py`
+
+Problem: `backlog/README.md` states the lesson from the third review pass precisely —
+*"this backlog was optimising local correctness ticket by ticket while the invariants that
+span the pipeline went unstated."* PYQ-115/117/127 each then shipped a test asserting one
+invariant. That prevents those three exact recurrences. It does not prevent the *next*
+member of the family, and there have now been six members (PYQ-101, 103, 115, 116, 123,
+127), every one of which was correct in each individual file and wrong across files.
+
+The structural fix is to state the invariants once, in one place, as properties rather
+than as regressions — so a future change that violates any of them fails immediately
+regardless of which file it touched.
+
+Ask: a dedicated module whose every test is a named invariant over a synthetic
+multi-symbol panel with deliberately unequal history:
+
+1. **No future information in any training row.** Every non-price column's value at row
+   *t* must be derivable from data timestamped at or before *t*. (Constructible: give each
+   joined source a distinctive monotone value and assert no row carries a value first
+   observed later.) — guards PYQ-101, PYQ-123, PYQ-129.
+2. **Warm-up rows never carry fabricated values.** The panel's first surviving row is
+   determined by the longest indicator window, and no column is constant across the
+   leading rows. — guards PYQ-103, PYQ-132.
+3. **Prediction decodes the future.** `decoder_time_idx.min() > df["time_idx"].max()` for
+   the un-extended frame. — guards PYQ-115.
+4. **The encoder ends on the last observed bar.** — guards PYQ-115's second half.
+5. **One calendar across pooled symbols.** The same `Date` maps to the same `time_idx` for
+   every group. — guards PYQ-116.
+6. **Validation is strictly after the cutoff.** Every validation decoder index exceeds
+   `training_cutoff` for every group, including the shortest-history one. — guards
+   PYQ-116, PYQ-117.
+7. **The walk-forward walks.** Consecutive origins produce disjoint decoder windows, each
+   starting at its own `cutoff + 1`. — guards PYQ-127.
+8. **The forecast dates are the decoded dates.** The dates in the table, the JSON, the PNG
+   and the appended rows are one set. — guards PYQ-115, PYQ-130.
+9. **The band is monotone wherever it is consumed.** — guards PYQ-124.
+
+Write each with a docstring naming the ticket it descends from, and link the module from
+`docs/invariants.md` (PYQ-235) so the two stay in sync.
+
+Acceptance criteria: every invariant above has a named test; each one fails if the
+corresponding fix is reverted (verify this while writing them — an invariant test that
+passes against the broken code is worthless, which is exactly the trap PYQ-120's coverage
+gap illustrates).
+
+---
+
+## [PYQ-239]
+Learnability test: inject a known signal and assert the model recovers it
+Status: Open
+Priority: High
+Files: `tests/test_tft.py` or new `tests/test_learnability.py`
+
+Problem: `test_train_load_predict_roundtrip` asserts the bundle files exist, that
+`n_features > 0`, and that the metrics are within `[0, 1]`. **Every one of those assertions
+would pass against a model that emits a constant.** Nothing anywhere in 164 tests asserts
+that the training pipeline can learn *anything*.
+
+That matters more than usual here, because the repo's headline number is negative
+(−23.5% skill) and there is currently no way to distinguish the two explanations:
+
+- the target genuinely is not forecastable from these features (the interesting answer,
+  and quite possibly the true one — see investigations.md#pyq-312), or
+- something in the wiring is silently broken (normalisation, feature ordering, target
+  scaling, an off-by-one that survived PYQ-115).
+
+A learnability test discriminates between them in seconds and permanently.
+
+Ask: a synthetic panel where the target is a deterministic, learnable function of an
+observable feature at the required lag — e.g. `Close[t+h] = Close[t] * (1 + k *
+feature[t])` with a modest `k` and light noise. Train a small model for a handful of
+epochs and assert `skill_vs_baseline > 0` by a comfortable margin. Keep it fast enough for
+CI (tiny `hidden_size`, short encoder, few epochs) and, if it proves flaky, mark it
+`@pytest.mark.slow` and run it on a schedule rather than deleting it.
+
+The second, cheaper half: a *degenerate* control — train on pure white noise and assert
+skill is approximately zero and not implausibly positive. A pipeline that finds skill in
+noise has a leak, and this test finds it without needing to know where.
+
+Acceptance criteria: the injected-signal test asserts positive skill; the noise-control
+test asserts skill is not significantly positive. Both run in CI within a sensible time
+budget.
+
+---
+
+## [PYQ-240]
+Regression test that predictions/actuals/last_observed share units
+Status: Open
+Priority: Medium
+Files: `tests/test_tft.py`, `pyquant/models/tft.py` (`_evaluate_validation`)
+
+Problem: `_evaluate_validation()` assembles three arrays from three different places in
+pytorch-forecasting's output:
+
+```python
+predictions   = result.output.cpu().numpy()          # mode="quantiles"
+actuals       = result.y[0].cpu().numpy()
+last_observed = result.x["encoder_target"][:, -1].cpu().numpy()
+```
+
+and hands all three to `evaluate_predictions()`, which subtracts them from one another.
+That is only meaningful if all three are in the **same space** — and the dataset applies
+`GroupNormalizer(transformation="softplus")`, so "price space" and "normalised space" are
+very different scales. Whether `x["encoder_target"]` is normalised or raw is a semantic
+detail of the upstream library, not of this code, and nothing in the test suite pins it.
+
+Circumstantial evidence says it is currently correct (a reported `baseline_mae` of 7.40
+for AAPL is a plausible dollar figure and an implausible normalised one). But "currently
+correct, unasserted, and dependent on an upstream library's internal convention" is
+exactly the profile of the PYQ-109 class of bug: silent, total, and invisible from inside
+any one file. A pytorch-forecasting minor release that changes this would corrupt every
+metric the project reports with no test failing.
+
+See investigations.md#pyq-313 for confirming the semantics; this ticket is the guard that
+makes the answer durable.
+
+Ask: a test on a synthetic panel with a known price level (say ~$100) asserting all three
+arrays are within an order of magnitude of that level, and that `baseline_mae` computed by
+`_evaluate_validation` matches a persistence MAE computed independently from the raw panel
+to within a tight tolerance.
+
+Acceptance criteria: the independent-recomputation assertion passes on the current stack
+and would fail if any of the three arrays were silently swapped into normalised space.
+
+---
+
+## [PYQ-241]
+End-to-end CLI journey test across every command and both output formats
+Status: Open
+Priority: Medium
+Files: `tests/test_cli.py`
+
+Problem/Ask: the CLI tests are thorough per-command but each starts from a mocked
+mid-state. No test performs the actual user journey — `train` → `forecast` → `explain` →
+`scan` → `backtest` → `cache list` — against one temp `checkpoint_dir`, using each
+command's *real* output as the next command's input. That sequence is what a first-time
+user does, and it is where cross-command contract breaks live: a bundle written by `train`
+that `forecast` cannot read, a `meta.json` field `explain` expects and `train` stopped
+writing, a `--pin` created by one command and not found by another.
+
+PYQ-119 was exactly this class of bug (read-side commands ignoring the write side's
+config) and was found by reasoning rather than by a test.
+
+Run the whole journey twice, once with `--format rich` and once with `--format json`,
+asserting the JSON parses and carries the documented keys at each step. Mark it
+`@pytest.mark.slow` if the real fit is too slow, but keep it in CI.
+
+Acceptance criteria: one test function walking all six commands against a shared temp
+directory with mocked network but real training; JSON output parsed and key-checked at
+each step.
+
+---
+
+## [PYQ-242]
+Property-based tests for `analysis/metrics.py`
+Status: Open
+Priority: Low
+Files: `tests/test_metrics.py`, `pyproject.toml` (dev extra)
+
+Problem/Ask: the metric functions are pure, small, and take numpy arrays — the ideal
+target for Hypothesis. Example-based tests confirm hand-computed cases; properties confirm
+the whole input space. Worth asserting:
+
+- `calibration_coverage` ∈ [0, 1] for any arrays, including degenerate ones
+- `directional_hit_rate` ∈ [0, 1], and equals 1 when median and actual are on the same
+  side of `last_observed` everywhere
+- `skill_vs_baseline` is **invariant under a common affine rescaling of all inputs** —
+  this is the property that would have caught a units mismatch (PYQ-240) as a *design*
+  statement rather than a spot check
+- `warn_on_quantile_crossing` returns 0 for any array already sorted along the last axis
+- `aggregate_metrics` over a single-element list is the identity
+
+Acceptance criteria: `hypothesis` in the dev extra; at least the five properties above,
+each with a shrinking-friendly strategy.
+
+---
+
+## [PYQ-243]
+Recorded-payload contract tests for every external vendor
+Status: Open
+Priority: Medium
+Files: `tests/fixtures/` (new), `tests/test_prices.py`, `test_macro.py`, `test_sentiment.py`, `test_options.py`, `test_sectors.py`
+
+Problem: every vendor test today mocks at the *function* boundary — `fetch_prices` is
+patched, or `yf.Ticker` returns a hand-built DataFrame with exactly the columns the code
+wants. That verifies our logic against our own assumptions about the payload, which is
+half a test. It cannot catch the failure that actually happens in production: **the vendor
+changes its response shape.**
+
+That risk is not hypothetical here. PYQ-228 records that `yfinance` has already jumped
+from the declared `>=0.2.40` to a resolved **1.4.1**, with `Ticker.history` now typed
+`(self, *args, **kwargs)`, and that `auto_adjust`'s default flipped mid-0.2.x — which
+silently changes every price level, every derived indicator, and therefore every trained
+model. `fetch_prices` also does `df[["Open","High","Low","Close","Volume"]]` with no guard.
+
+Ask: capture one real response per source as a checked-in fixture (JSON for
+Finnhub/FRED, a small pickled/parquet frame for yfinance), record the vendor + library
+version alongside it, and mock at the **transport** boundary (`requests`, `yf.Ticker`)
+rather than at our own function boundary. Each source then gets a test asserting our
+parser produces the expected columns and dtypes from a genuine payload.
+
+Pairs with PYQ-244: fixtures catch *our* regressions, the nightly job catches *theirs*.
+
+Acceptance criteria: one recorded fixture per source; each source's happy-path test drives
+the real parsing code from that fixture; the fixture files record which vendor/library
+version produced them.
+
+---
+
+## [PYQ-244]
+Scheduled nightly CI job against live vendors
+Status: Open
+Priority: Low
+Files: `.github/workflows/nightly.yml` (new)
+
+Problem/Ask: the test suite is deliberately network-free, which is correct for PR CI and
+means **no automated check ever talks to a real vendor.** yfinance is an unofficial
+scraper of Yahoo's internal endpoints with no SLA; when it breaks, the project finds out
+when a human runs a command.
+
+Add a `schedule:`-triggered workflow that runs a minimal live smoke test — fetch prices
+for one liquid symbol, fetch VIX, fetch sector ETFs, and (if repo secrets are configured)
+FRED and Finnhub — asserting only shape and freshness, never values. Use
+`continue-on-error` or a separate workflow so a vendor outage never blocks a PR; the
+signal is the notification, not the gate.
+
+Acceptance criteria: the workflow runs on schedule, is not required for merges, and fails
+loudly (issue or notification) when a source stops returning the expected shape.
+
+---
+
+## [PYQ-245]
+Mutation testing on the metrics and indicator modules
+Status: Open
+Priority: Low
+Files: `pyquant/analysis/metrics.py`, `pyquant/data/prices.py`
+
+Problem/Ask: coverage (PYQ-230) tells you which lines ran; it does not tell you whether an
+assertion would have noticed them being wrong. `metrics.py` and `prices.py` are pure,
+fast, and numerically dense — the ideal mutation-testing target, and the two modules where
+a silently-wrong result is most damaging because every downstream number inherits it.
+
+Run `mutmut` (or `cosmic-ray`) once against those two modules and look at the survivors: a
+flipped comparison in `directional_hit_rate`, an off-by-one in `_wilder_average`'s seed, a
+swapped `lower`/`upper` in `calibration_coverage`. Each survivor is a missing assertion.
+
+Deliberately a one-off survey rather than a CI gate, matching the disposition PYQ-310
+established for mypy: run it, record what it found, then decide.
+
+Acceptance criteria: a recorded mutation score for both modules and a test added for each
+surviving mutant judged worth killing.
+
+---
+
+## [PYQ-246]
+Determinism test: same seed + same pin ⇒ identical metrics
+Status: Open
+Priority: Medium
+Files: `tests/test_tft.py`
+
+Problem/Ask: PYQ-210 added `seed_everything` and PYQ-205 added dataset pins, and
+PYQ-210's own acceptance criterion was "two consecutive `train()` calls with the same seed
+and a pinned dataset produce identical val_loss" — but the test that shipped asserts only
+that the seed is *passed* and *recorded*, not that the run is actually reproducible.
+
+That is a meaningful gap: `seed_everything` does not by itself guarantee determinism on
+every backend (cuDNN autotuning, non-deterministic reductions, `num_workers > 0` ordering
+— all three of which PYQ-218/PYQ-223 made configurable), so the property the project
+claims may already be false on some configurations.
+
+Ask: train twice on a pinned synthetic panel with an identical seed and assert
+`val_loss` and every `EvaluationMetrics` field match exactly. If they do not, the correct
+outcome is not to weaken the test but to decide explicitly whether to set
+`torch.use_deterministic_algorithms(True)` / `Trainer(deterministic=True)` and record the
+performance cost — and, if determinism is not guaranteed on GPU, to say so in the docs
+rather than let `runs.jsonl` imply comparability it cannot deliver.
+
+Acceptance criteria: the two-run equality test passes on CPU; the GPU/`num_workers > 0`
+situation is documented either way.
+
+---
+
+## [PYQ-247]
+Forecast log-returns instead of price levels
+Status: Open
+Priority: High
+Files: `pyquant/data/dataset.py` (`TARGET`, `make_dataset`), `pyquant/analysis/forecast.py`, `pyquant/analysis/metrics.py`
+
+Problem: `TARGET = "Close"`. The model predicts the **price level**, normalised with
+`GroupNormalizer(transformation="softplus")`, and is scored against a persistence baseline
+that predicts the last observed close.
+
+For a series close to a random walk, the conditional expectation of the level essentially
+*is* the last observed level. So the baseline is near-optimal by construction, and any
+deviation the model makes costs MAE in expectation. **The reported −23.5% skill is roughly
+what this formulation predicts a priori, largely independent of hyperparameters.**
+
+This has a direct consequence for the current "Now" list: PYQ-211 (learning-rate tuning)
+is ranked #1, but it optimises *within* a formulation where the achievable ceiling is
+approximately "tie the baseline." It is unlikely to move the headline number meaningfully
+however carefully it is run — and it needs GPU hardware, while this ticket does not.
+
+Standard practice is to model log-returns, `r[t] = log(C[t] / C[t-1])`, which are
+approximately stationary and roughly zero-mean. Then:
+
+- the baseline becomes "predict zero return," which is beatable in principle;
+- the quantile band is a band on returns, which is what a calibration number should
+  describe and is comparable across symbols (fixing the "MAE is in dollars" complaint
+  PYQ-227 already records);
+- `GroupNormalizer`'s per-group scaling stops fighting a non-stationary level;
+- pooling across symbols becomes far more sensible, since returns are comparable across
+  tickers in a way price levels are not — which strengthens the rationale PYQ-116 already
+  flagged as weaker than advertised.
+
+Ask: make the target configurable (`TrainingConfig.target: Literal["close", "log_return"]`,
+defaulting to the new behaviour once validated), predict cumulative log-returns over the
+horizon, and reconstruct price paths for display by exponentiating from the last observed
+close. Report metrics in return space; keep the price-space table for the user. Note that
+reconstruction preserves quantile monotonicity, so `Forecast.__post_init__`'s invariant
+(PYQ-124) still holds.
+
+Acceptance criteria: a config toggle switching the target; unit tests for the
+return↔price round-trip (reconstruct(transform(x)) == x); a documented before/after
+`backtest` comparison on the same symbol and seed. **The result may well be that skill
+stays near zero — that is a legitimate and interesting outcome (see
+investigations.md#pyq-312), and it should be recorded rather than tuned away.**
+
+---
+
+## [PYQ-248]
+Conformal / split-calibration of the quantile band
+Status: Open
+Priority: High
+Files: `pyquant/analysis/metrics.py`, `pyquant/models/tft.py`, new `pyquant/analysis/calibrate.py`
+
+Problem: PYQ-117 measured 99.3% empirical coverage on a nominal 80% (p10–p90) band. The
+interval is far wider than it claims, which makes it useless for decisions — an 80% band
+that contains 99% of outcomes tells you almost nothing, and `scan`'s "is the whole band on
+one side of zero" guard (PYQ-206) will essentially never fire, silently collapsing the
+BUY/SELL logic into permanent HOLD.
+
+PYQ-227 (open) will add per-quantile exceedance and pinball loss, which **diagnoses** which
+side is at fault. Nothing currently **fixes** it. Retraining with different
+hyperparameters is an indirect and unreliable route to a calibrated interval; direct
+recalibration is the standard one.
+
+Ask: split-conformal calibration. Hold out a calibration slice separate from both training
+and test, compute conformity scores on it (for quantile regression, the CQR score
+`max(q_lo - y, y - q_hi)`), take the appropriate empirical quantile, and widen/narrow the
+predicted band by that amount. Properties that make this the right tool here:
+
+- distribution-free, with a finite-sample marginal coverage guarantee;
+- requires no retraining and no change to the model or the loss;
+- roughly 80 lines plus tests;
+- composes cleanly with the existing quantile head and with PYQ-247's return target.
+
+Store the calibration offset in the bundle (`meta.json`) so `forecast` applies it
+automatically, and record it in the provenance block. Note the guarantee assumes
+exchangeability, which financial time series violate — so pair it with PYQ-250's
+purged/embargoed splits and report *achieved* coverage on a genuinely held-out period
+rather than relying on the theoretical guarantee.
+
+Acceptance criteria: after calibration, empirical coverage on an out-of-sample period is
+within a few points of nominal; a unit test on synthetic data with a deliberately
+overwide band asserts calibration narrows it toward nominal; the offset is persisted and
+applied by `forecast`.
+
+---
+
+## [PYQ-249]
+Add a time-series foundation model as a zero-shot baseline
+Status: Open
+Priority: Medium
+Files: `pyquant/analysis/metrics.py`, new `pyquant/models/baselines.py`
+
+Problem: the only baseline is persistence. That was the right first move (PYQ-201) and it
+already produced the project's most important finding. But it leaves the central question
+unanswered: **is the TFT — 25 features, four vendors, a training loop, a bundle format —
+earning its complexity against something that needs none of it?**
+
+Since 2024 a class of pretrained time-series foundation models has made that comparison
+cheap. Chronos-2 (Amazon, 2025) and TimesFM (Google) both produce probabilistic zero-shot
+forecasts from a raw univariate series with no training, no features, and no API key, and
+both are reported to beat tuned statistical baselines out of the box on standard
+benchmarks. Chronos in particular emits full predictive distributions, so it is directly
+comparable to a quantile band rather than only to a point forecast.
+
+Adding one as a *third* baseline changes what every number in the project means. Three
+outcomes, all informative:
+
+- TFT beats both baselines → the pipeline is genuinely earning its keep, and that is a
+  strong, defensible claim.
+- Foundation model beats TFT → an important finding, and a cheap alternative production
+  path (no training, no GPU, no bundle management).
+- Neither beats persistence → strong evidence for the efficient-market reading in
+  investigations.md#pyq-312, and the honest headline result.
+
+Ask: an optional `foundation` extra; a `baselines.py` exposing the same
+`(n_samples, horizon, n_quantiles)` contract `evaluate_predictions` already consumes, so
+it plugs into the existing metric path unchanged; a `--baseline persistence|chronos|both`
+flag on `backtest`. Keep it optional — it must not become a required dependency of the
+core install.
+
+Acceptance criteria: `backtest --baseline both` reports skill against both baselines on
+the same windows; the foundation model path is skipped with a clear message when the extra
+is not installed (matching the existing FinBERT degradation pattern).
+
+---
+
+## [PYQ-250]
+Purge + embargo around every walk-forward split
+Status: Open
+Priority: Medium
+Files: `pyquant/models/tft.py` (`train`, `walk_forward_backtest`, `_window_validation_dataset`)
+
+Problem: PYQ-127 made the walk-forward genuinely walk. The splits are still naive in the
+sense the financial-ML literature means: training rows immediately adjacent to the
+validation window remain in training, and their own decoder targets overlap the period the
+validation window is about to be scored on.
+
+The standard treatment (López de Prado, *Advances in Financial Machine Learning*) is:
+
+- **purge** — drop training samples whose label window overlaps the test window. Here, any
+  training sample whose decoder covers `time_idx > cutoff - horizon` overlaps the
+  validation period and should be dropped.
+- **embargo** — additionally drop a small buffer after the test window before training
+  resumes, because serial correlation leaks information across the boundary even without
+  literal overlap.
+
+Without these, reported out-of-sample performance is optimistically biased. Given the
+project's demonstrated seriousness about look-ahead (PYQ-101/103/115/116/123/127), this is
+the remaining known gap in the same family, and it is the one the literature considers
+table stakes.
+
+Ask: `TrainingConfig.purge_horizon` (default = `max_prediction_length`) and
+`TrainingConfig.embargo_days` (default a small positive number, e.g. 2), applied when
+building each training dataset in both `train()` and `walk_forward_backtest()`.
+
+Note the interaction with PYQ-136: purging will produce windows with unequal sample counts,
+which is precisely when `aggregate_metrics`'s unweighted averaging becomes wrong. Land
+PYQ-136 first or together.
+
+Acceptance criteria: a test asserting no training sample's decoder overlaps the validation
+decoder range at any origin; a documented before/after skill comparison (skill is expected
+to *drop*, and that drop is the point).
+
+---
+
+## [PYQ-251]
+Report effective sample size and block-bootstrap intervals
+Status: Open
+Priority: Medium
+Files: `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`
+
+Problem: PYQ-117 was right that a percentage without a denominator is misleading, and
+`Evaluated on 56 windows (280 predictions)` was a large improvement. But those 56 windows
+are built with `min_prediction_idx=cutoff + 1` and therefore **overlap heavily**:
+consecutive windows share 4 of their 5 target days and roughly 59 of their 60 encoder
+days.
+
+So "280 predictions" overstates the independent evidence by roughly a factor of the
+horizon. The effective number of independent windows is closer to `validation_days /
+horizon` ≈ **12**, not 56. Any confidence interval computed as if n = 280 would be about
+`sqrt(5)` ≈ 2.2× too narrow — which matters directly, because the interesting question
+about `57.5% directional accuracy` is whether it is distinguishable from 50%, and the
+answer changes completely between n = 280 and n = 12.
+
+Ask: two things.
+- Report an **effective sample size** alongside the raw count, computed from the overlap
+  geometry (`n_independent ≈ n_samples / horizon` as a first approximation), and label the
+  raw figure as overlapping.
+- For `backtest`, add a **moving-block bootstrap** confidence interval on the headline
+  metrics — blocks of length ≥ horizon preserve the autocorrelation the naive bootstrap
+  destroys. Report e.g. `directional accuracy 57.5% [46.2, 68.1]`, which immediately
+  answers the question a bare 57.5% invites.
+
+This is the natural completion of PYQ-117: that ticket made the sample size visible; this
+one makes it *honest*.
+
+Acceptance criteria: a unit test asserting the effective-size calculation on a known
+geometry; the backtest table shows an interval alongside each rate; a test asserting the
+bootstrap uses blocks no shorter than the horizon.
+
+---
+
+## [PYQ-252]
+CRPS, Winkler score and a PIT histogram
+Status: Open
+Priority: Medium
+Files: `pyquant/analysis/metrics.py`, `pyquant/cli/charts.py`
+
+Problem/Ask: complements PYQ-227 (per-quantile exceedance + pinball). Three further
+standard probabilistic-forecast diagnostics, all cheap given the quantile output already
+exists:
+
+- **CRPS** (continuous ranked probability score) — the standard proper scoring rule for a
+  full predictive distribution, approximable from a quantile set by averaging pinball loss
+  across quantiles. Single number, strictly proper, comparable across models — which is
+  what makes a comparison against PYQ-249's foundation-model baseline meaningful.
+- **Winkler / interval score** — scores an interval on both coverage *and* width in one
+  figure. Directly diagnoses the 99.3%-on-80% pathology, which coverage alone cannot: a
+  band can hit nominal coverage by being enormous, and Winkler penalises exactly that.
+- **PIT histogram** — the probability-integral-transform of actuals through the predictive
+  CDF. Uniform means calibrated; U-shaped means overconfident; hump-shaped means
+  underconfident (the expected shape here). One glance replaces several numbers, and
+  `charts.py` already has the plumbing to render it.
+
+Land after PYQ-227 so the two share one refactor of `EvaluationMetrics` rather than two.
+
+Acceptance criteria: unit tests for CRPS and Winkler against hand-computed values on small
+arrays; the PIT histogram renders in `explain` or a new `pyquant calibration` command.
+
+---
+
+## [PYQ-253]
+Optuna hyperparameter search (absorbs PYQ-211's scope)
+Status: Open
+Priority: Medium
+Files: `pyquant/models/tft.py`, `pyproject.toml`
+
+Problem/Ask: PYQ-211 proposes `Tuner.lr_find` for the learning rate specifically. That is
+a reasonable narrow fix, but learning rate is one of at least six coupled knobs
+(`hidden_size`, `attention_head_size`, `dropout`, `hidden_continuous_size`,
+`learning_rate`, `early_stopping_patience`) and tuning one in isolation is close to
+uninformative — especially since PYQ-224's own note observes that patience and
+`validation_days` interact with how noisy the selection metric is.
+
+pytorch-forecasting ships `optimize_hyperparameters()` (Optuna-backed) for exactly this
+model. Using it gives a proper study with pruning, a persisted database of trials, and a
+record of *which* configuration won — which slots naturally into `runs.jsonl` and PYQ-259.
+
+**Two prerequisites, both important.** First, land PYQ-247 (return target) before running
+any search: a large hyperparameter study inside a formulation with a near-unbeatable
+baseline burns GPU hours to discover that nothing helps. Second, every trial is a
+selection event, so a search of *N* trials inflates the best observed score — report the
+winning configuration's performance on a **held-out period the search never saw**, and be
+explicit that the in-search score is optimistically biased.
+
+Suggest superseding PYQ-211 by this ticket rather than keeping both.
+
+Acceptance criteria: a `pyquant tune SYMBOL --trials N` command persisting an Optuna study;
+the winning config written as a YAML file in `configs/`; the reported figure comes from a
+period excluded from the search.
+
+---
+
+## [PYQ-254]
+Promote options data from display context to model features
+Status: Open
+Priority: Medium
+Files: `pyquant/data/options.py`, `pyquant/data/dataset.py`, `pyquant/config.py`
+
+Problem: `fetch_options_snapshot()` computes put/call ratio, ATM implied volatility and IV
+skew — genuinely forward-looking, market-priced expectations, and the only truly
+predictive (rather than backward-looking) signal in the whole data layer. It is fetched at
+`forecast` time, printed once, and thrown away. `cli/app.py` says so explicitly: *"An
+options snapshot is live market context, not a model input."*
+
+So the README's multi-modal framing counts four sources but the model sees three, and the
+one it does not see is arguably the most informative. `Realized_Vol_20`'s own comment
+concedes it is a "free-data stand-in for options-implied vol."
+
+The obstacle is real and is why the current choice is defensible: yfinance exposes only a
+*current* chain, not history, so there is no way to build a historical IV series from it
+and therefore no way to train on the feature. Two honest routes:
+
+1. **Start accumulating.** Add a `pyquant snapshot SYMBOL` command that appends today's
+   options metrics to a local time series. Useless on day one, a genuinely proprietary
+   dataset after a year, and it costs almost nothing to start now. This is the highest
+   value-per-effort option precisely because the value is time-dependent.
+2. **Source historical IV** — CBOE offers some free historical index IV; several vendors
+   sell equity surfaces (see PYQ-258 and `SYSTEMS-RESEARCH.md`). Evaluate cost against
+   value once route 1 has produced enough data to estimate the latter.
+
+Either way the same publication-timing discipline applies as PYQ-101/PYQ-129: a snapshot
+taken at time *T* must be joined to a row whose target is after *T*.
+
+Acceptance criteria: for route 1, a `snapshot` command with an append-only store and a
+join path in `build_panel` that activates once sufficient history exists; a test asserting
+the join respects observation time.
+
+---
+
+## [PYQ-255]
+Signal evaluation: does `scan`'s BUY/SELL actually make money?
+Status: Open
+Priority: Medium
+Files: `pyquant/cli/app.py` (`scan`), new `pyquant/analysis/signals.py`
+
+Problem: `scan` emits BUY / SELL / HOLD from a threshold on expected return plus a
+band-direction guard (PYQ-206, PYQ-124). Nothing anywhere evaluates whether following
+those signals would have made or lost money. The project measures forecast *accuracy*
+carefully and its *usefulness* not at all — and they are different questions: a model can
+have excellent MAE and a useless signal (right about magnitude, wrong about the sign that
+matters), or mediocre MAE and a profitable one.
+
+This is also the gap most visible to anyone reading the repo as a finance project rather
+than a forecasting project.
+
+Ask: a signal-evaluation layer scoring the historical signal series over the backtest
+period — hit rate conditional on a signal firing (not on all days), average return
+following each signal class, turnover, and cumulative P&L against a buy-and-hold benchmark
+with a configurable per-trade cost (a few basis points is a realistic default and is
+usually decisive at daily frequency).
+
+Two cautions worth writing into the ticket so they are not discovered later: (a) the
+signal thresholds (±2%) are themselves parameters, so tuning them on the same data is a
+selection event — hold out a period; (b) `scan`'s guard requires the entire band on one
+side of zero, and with the current 99.3%-coverage band that will essentially never fire,
+so this ticket is only informative **after PYQ-248**.
+
+Acceptance criteria: `backtest --signals` reports hit rate, turnover and cost-adjusted P&L
+vs. buy-and-hold; unit tests for the P&L accounting on a hand-built signal series.
+
+---
+
+## [PYQ-256]
+`has_sentiment_data` indicator column
+Status: Open
+Priority: Low
+Files: `pyquant/data/dataset.py` (`build_panel`), `pyquant/data/sentiment.py`
+
+Problem/Ask: the concrete remediation half of investigations.md#pyq-301. Finnhub's free
+tier covers ~365 days, so at the default `period="5y"` roughly 80% of training rows carry
+a structural `Sentiment = 0` that means "no data," while at prediction time 0 would mean
+"neutral news." The model cannot distinguish those two meanings, and the second is the
+only one that ever occurs live — a textbook train/serve distribution shift on a feature.
+
+Add a binary `has_sentiment_data` column so the model can condition on which regime a row
+is in. Cheap, standard practice for structurally-missing features, and it makes PYQ-301's
+measurement interpretable: if the model learns to ignore `Sentiment` when the indicator is
+0, that is directly visible in `explain`'s variable-selection weights.
+
+Consider also truncating the effective training window to sentiment availability as a
+comparison arm — fewer rows but a consistent schema — and letting the backtest decide.
+
+Acceptance criteria: the column is present when sentiment is enabled and absent otherwise
+(so it never breaks the PYQ-118 schema check); a test asserting rows outside the news
+window get 0 and rows inside get 1.
+
+---
+
+## [PYQ-257]
+Use FRED/ALFRED vintages instead of a fixed publication lag
+Status: Open
+Priority: High
+Files: `pyquant/data/macro.py` (`_FredSeriesSpec`, `_fetch_fred`)
+
+Problem: PYQ-101's fix — a per-series `publication_lag_days` shifted onto the index — was
+the right emergency fix and PYQ-305 made it a convention. It is still an **approximation**
+of the correct thing, in three ways:
+
+1. The lag is a constant; real release calendars are not. CPI is released on a schedule
+   that varies by several days month to month, and holidays shift it further.
+2. It handles the *first* release only. Macro series are **revised**, sometimes
+   substantially. `get_series()` returns today's revised value for a historical date, so a
+   training row for 2019 sees the number as it is understood *now*, not as it was
+   published then. That is look-ahead of a subtler kind that a date shift cannot fix at
+   all — and it is the dominant error for GDP and PCE, precisely the series PYQ-214 wants
+   to add next.
+3. It requires a hand-maintained constant per series, which is the recurring-maintenance
+   cost PYQ-305 was trying to bound.
+
+FRED's sibling database **ALFRED** exists for exactly this: it serves *vintage* data —
+what each series looked like as of any given date. `fredapi` exposes it directly via
+`get_series_as_of_date()` and `get_series_first_release()`.
+
+Ask: switch `_fetch_fred` to vintage-aware retrieval, so each panel row carries the value
+that was actually published and known as of that date. This makes the lag constants
+unnecessary rather than merely more accurate, removes revision leakage entirely, and
+generalises to any new series for free — which directly unblocks PYQ-214's plan to add
+UNRATE/PCE/GDP without re-deriving a lag for each.
+
+Note the trade-off honestly in the ticket: vintage retrieval is more API calls and more
+data, so the panel cache (PYQ-205) matters more, and PYQ-110's per-series error isolation
+must be preserved.
+
+Acceptance criteria: a test asserting a training row for a historical date carries the
+first-published value rather than the currently-revised one; `publication_lag_days`
+removed or documented as a fallback for sources without a vintage API; PYQ-305's
+convention note updated to record the supersession.
+
+---
+
+## [PYQ-258]
+Pluggable price-provider interface with a licensed fallback
+Status: Open
+Priority: Medium
+Files: `pyquant/data/prices.py`, `pyquant/data/sectors.py`, `pyquant/data/macro.py` (`_fetch_vix`), `pyquant/data/options.py`
+
+Problem/Ask: the concrete shape for PYQ-214's second point. yfinance is currently the sole
+source of OHLCV **and** VIX **and** sector ETFs **and** options — four of the project's
+data sources behind one unofficial, unversioned, ToS-ambiguous scraper of Yahoo's internal
+endpoints. Every enrichment degrades gracefully except the one that everything else
+depends on: if `fetch_prices` fails, nothing works.
+
+Introduce a `PriceProvider` protocol (`fetch_ohlcv(symbol, start, end) -> DataFrame`) with
+a `YFinanceProvider` implementation and at least one licensed alternative behind a config
+toggle — Tiingo and Alpha Vantage both have usable free tiers with real API keys; Polygon
+and EODHD are the paid steps up. See `SYSTEMS-RESEARCH.md` for the comparison.
+
+Two properties matter more than which vendor is chosen: (a) an *interface*, so switching
+is a config change rather than a rewrite; (b) an explicit statement of which adjustment
+convention the model assumes — split/dividend adjusted or not — since PYQ-228 records that
+this is currently decided by whichever yfinance version resolves, and it silently changes
+every price level and every derived indicator.
+
+Acceptance criteria: the protocol exists and yfinance implements it; one alternative
+provider is implemented and selectable; a test asserting both providers return the same
+column schema and dtypes; the adjustment convention is documented and asserted.
+
+---
+
+## [PYQ-259]
+Experiment tracking (MLflow) alongside `runs.jsonl`
+Status: Open
+Priority: Medium
+Files: `pyquant/models/tft.py` (`train`), `pyproject.toml`
+
+Problem/Ask: `runs.jsonl` (PYQ-203) plus provenance (PYQ-225) plus pins (PYQ-205) is a
+genuinely thoughtful hand-rolled tracking system, and it should stay — it is
+dependency-free, greppable, and lives next to the bundle. What it cannot do is *compare*:
+answering "which of my last 30 runs had the best skill, and what did they have in common"
+means writing a script, and the moment PYQ-253's Optuna search lands there will be hundreds
+of runs rather than tens.
+
+Add optional MLflow logging (an `mlflow` extra, local file backend by default, no server
+required) writing params, metrics and the bundle as an artifact. It is additive — keep
+`runs.jsonl` as the source of truth and treat MLflow as a queryable view, so nothing
+breaks when the extra is absent. The comparison UI is the entire point; do not adopt it
+for logging alone.
+
+Worth noting for the ticket: this is a *systems-engineering* decision with a defensible
+"no" — PYQ-310's precedent is that a tool must earn its place. Evaluate it against the
+alternative of a `scripts/runs.py compare` reading `runs.jsonl` directly, which would cost
+~100 lines and no dependency.
+
+Acceptance criteria: `MLFLOW_TRACKING_URI` set → runs appear with params and metrics;
+unset → no behaviour change and no import cost.
+
+---
+
+## [PYQ-260]
+Ship a `py.typed` marker
+Status: Open
+Priority: Low
+Files: new `pyquant/py.typed`, `pyproject.toml`
+
+Problem/Ask: PYQ-310 established that the codebase is fully annotated and internally
+consistent under mypy (0 errors with `ignore_missing_imports`). But without a
+`py.typed` marker (PEP 561), no downstream consumer's type checker will use any of it —
+the annotations are invisible outside the package. One empty file plus a hatch
+`force-include` entry.
+
+Matters most for the PYQ-213 API layer and for anyone importing `pyquant` as a library,
+which is the stated direction.
+
+Acceptance criteria: the marker ships in the built wheel; a smoke check that mypy in a
+consuming project resolves `pyquant` types rather than treating it as untyped.
+
+---
+
+## [PYQ-261]
+Scaffold `pyquant/api/` per the PYQ-213 design note
+Status: Open
+Priority: Medium
+Files: new `pyquant/api/`, `pyproject.toml`
+
+Problem/Ask: PYQ-213 delivered its stated deliverable — a design note — and closed
+correctly. The implementation follow-up it names has no ticket, so it is currently
+invisible in the backlog.
+
+The note's own prerequisites have since landed: PYQ-114 (FinBERT cache no longer poisons,
+which the note flagged as fatal for a long-running server), PYQ-118 (clear schema-mismatch
+error, which the note called the top blocker for trusting the API against live data),
+PYQ-119 (bundles record their config), PYQ-212 (reusable serializers). The main
+outstanding blocker the note lists is PYQ-220 (absolute bundle/cache paths), which remains
+open and should be landed first.
+
+Build the v1 the note specifies: `/healthz`, `GET /forecast/{symbol}`, `GET
+/explain/{symbol}`, `POST /scan`, `POST /train` → job id + `GET /train/{job_id}`, with
+per-bundle locking and an LRU bundle cache, API-key auth, and the pydantic response models
+reusing `analysis/serialize.py`. Stop where the note says the design stops — no queue, no
+object storage — and file the follow-ups it lists rather than pre-building them.
+
+Acceptance criteria: `uvicorn pyquant.api.app:app` serves the endpoints; response schemas
+match the CLI's `--format json` payloads field-for-field (assert this in a test, so the two
+front-ends cannot drift); concurrent requests against one bundle are serialised.
+
+---
+
+## [PYQ-262]
+Pre-commit configuration
+Status: Open
+Priority: Low
+Files: new `.pre-commit-config.yaml`
+
+Problem/Ask: CI catches lint and backlog drift, but only after a push. A pre-commit config
+running `ruff check --fix`, `ruff format`, `scripts/backlog.py check`, and the standard
+whitespace/EOF/large-file hooks moves those to commit time. Zero new CI cost.
+
+Pairs with PYQ-229's `ruff format --check` request — adopt the formatter locally in the
+same pass that gates it in CI, so the first formatting commit is one deliberate diff rather
+than noise spread across unrelated PRs.
+
+Acceptance criteria: `pre-commit run --all-files` passes on a clean tree; the README's
+Development section documents installation.
+
+---
+
+## [PYQ-263]
+`pyquant doctor` — environment and bundle health check
+Status: Open
+Priority: Low
+Files: `pyquant/cli/app.py`
+
+Problem/Ask: the project has a lot of optional, silently-degrading surface — two API keys,
+one optional extra, a TTL cache, named pins, bundles that record a config and a feature
+schema, and an accelerator that may or may not be available. Every one of those degrades
+gracefully by design, which is correct, and which also means **a user cannot easily tell
+what is actually switched on.**
+
+A `doctor` command that reports, in one screen: which keys are set (presence only, never
+values), whether `transformers`/FinBERT is importable, torch's available accelerator and
+precision support, cache size and pin list, and for each bundle its symbols, training date,
+recorded config, feature count and whether that schema can still be satisfied right now
+(reusing PYQ-118's `_check_feature_schema`).
+
+That last part is the genuinely useful bit: it turns "your bundle is broken" from a runtime
+error into a proactive check, and it is the natural first thing to run when something is
+wrong.
+
+Acceptance criteria: `pyquant doctor` reports all of the above and exits non-zero if any
+existing bundle's feature schema can no longer be satisfied; `--format json` supported.

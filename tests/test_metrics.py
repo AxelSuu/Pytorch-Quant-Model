@@ -141,5 +141,52 @@ def test_aggregate_metrics_sums_sample_counts_rather_than_averaging_them():
     agg = metrics.aggregate_metrics(windows)
     assert agg.n_samples == 5
     assert agg.n_points == 25
-    # The rate-style metrics still average.
+    # Equal-sized windows: pooling and averaging coincide.
     assert agg.directional_accuracy == 0.5
+
+
+# --- PYQ-136: the aggregate rate must be pooled over the summed denominator ---
+
+
+def test_aggregate_metrics_weights_rates_by_each_window_point_count():
+    """A rate reported over 30 pooled points must be the rate *of* those 30 points.
+
+    n_points sums (PYQ-117), so an unweighted mean of the rates reports a
+    numerator and a denominator computed different ways.
+    """
+    big = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=2.0,
+        directional_accuracy=1.0,
+        calibration_coverage=1.0,
+        n_samples=5,
+        n_points=25,
+    )
+    small = metrics.EvaluationMetrics(
+        model_mae=11.0,
+        baseline_mae=12.0,
+        directional_accuracy=0.0,
+        calibration_coverage=0.0,
+        n_samples=1,
+        n_points=5,
+    )
+
+    agg = metrics.aggregate_metrics([big, small])
+
+    # 25 hits out of 30 points, not the midpoint of 1.0 and 0.0.
+    assert agg.directional_accuracy == pytest.approx(25 / 30)
+    assert agg.calibration_coverage == pytest.approx(25 / 30)
+    assert agg.model_mae == pytest.approx((25 * 1.0 + 5 * 11.0) / 30)
+    assert agg.baseline_mae == pytest.approx((25 * 2.0 + 5 * 12.0) / 30)
+    assert agg.n_points == 30
+
+
+def test_aggregate_metrics_falls_back_to_unweighted_mean_without_point_counts():
+    """Metrics constructed without n_points still aggregate rather than divide by zero."""
+    a = metrics.EvaluationMetrics(1.0, 2.0, 0.4, 0.6)
+    b = metrics.EvaluationMetrics(3.0, 4.0, 0.8, 1.0)
+
+    agg = metrics.aggregate_metrics([a, b])
+
+    assert agg.directional_accuracy == pytest.approx(0.6)
+    assert agg.model_mae == pytest.approx(2.0)

@@ -85,11 +85,24 @@ def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
 def compute_macd(
     series: pd.Series, fast: int = 12, slow: int = 26, signal: int = 9
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
-    """MACD line, signal line, histogram."""
-    ema_fast = series.ewm(span=fast, adjust=False).mean()
-    ema_slow = series.ewm(span=slow, adjust=False).mean()
+    """MACD line, signal line, histogram.
+
+    Each ``ewm`` carries ``min_periods`` equal to its own span, so the warm-up
+    is genuinely NaN (PYQ-132). Without it, ``adjust=False`` emits a value from
+    row 1 that is just ``series[0]`` -- an average of nothing -- and an EMA is
+    materially biased toward its seed for roughly 3-4 spans. Those rows are not
+    NaN, so they survive ``build_panel()``'s ``dropna()``; they were removed
+    only because ``SMA_50`` happened to cut the first 49 rows, the same
+    accidental dependency PYQ-121 fixed for RSI_14.
+
+    The signal line inherits the slow EMA's warm-up and adds its own, so
+    ``MACD_Signal``/``MACD_Hist`` are first defined ``signal - 1`` rows after
+    ``MACD`` is.
+    """
+    ema_fast = series.ewm(span=fast, adjust=False, min_periods=fast).mean()
+    ema_slow = series.ewm(span=slow, adjust=False, min_periods=slow).mean()
     macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(span=signal, adjust=False).mean()
+    signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=signal).mean()
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 
@@ -116,8 +129,10 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["SMA_10"] = close.rolling(window=10).mean()
     df["SMA_20"] = close.rolling(window=20).mean()
     df["SMA_50"] = close.rolling(window=50).mean()
-    df["EMA_12"] = close.ewm(span=12, adjust=False).mean()
-    df["EMA_26"] = close.ewm(span=26, adjust=False).mean()
+    # min_periods keeps the EMA warm-up genuinely NaN rather than seeding it
+    # with close[0] and calling that an average (PYQ-132).
+    df["EMA_12"] = close.ewm(span=12, adjust=False, min_periods=12).mean()
+    df["EMA_26"] = close.ewm(span=26, adjust=False, min_periods=26).mean()
 
     df["RSI_14"] = compute_rsi(close, 14)
 

@@ -3,8 +3,17 @@
 import datetime as dt
 import sys
 import types
+import warnings
+
+import pandas as pd
+import pytest
 
 from pyquant.data import sentiment
+
+
+def _utc(year, month, day, hour):
+    """An explicit UTC timestamp, so these tests do not depend on the host tz."""
+    return int(dt.datetime(year, month, day, hour, tzinfo=dt.timezone.utc).timestamp())
 
 
 def test_finbert_retries_after_transient_load_failure(monkeypatch):
@@ -146,3 +155,86 @@ def test_fetch_sentiment_ignores_one_malformed_article(monkeypatch, caplog):
     assert out["HeadlineCount"].iloc[0] == 1
     assert abs(out["Sentiment"].iloc[0] - 0.9) < 1e-9
     assert any("malformed" in msg.lower() or "datetime" in msg.lower() for msg in caplog.messages)
+
+
+# --- PYQ-129: post-close news belongs to the *next* session -------------------
+
+
+def test_post_close_headline_is_assigned_to_the_next_session(monkeypatch):
+    """A headline published after the close cannot inform that day's close.
+
+    A US session closes at 16:00 ET (20:00/21:00 UTC), so bucketing by UTC
+    calendar date attaches the last 3-4 hours of every UTC day -- the slice
+    that holds post-close earnings releases -- to a row whose target is that
+    day's close. Same class of leak as PYQ-101 (PYQ-129).
+    """
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    articles = [
+        {"headline": "pre-close", "datetime": _utc(2024, 1, 2, 14)},  # 09:00 ET
+        {"headline": "post-close", "datetime": _utc(2024, 1, 2, 22)},  # 17:00 ET
+    ]
+    monkeypatch.setattr(sentiment, "fetch_news", lambda *a, **k: articles)
+    monkeypatch.setattr(sentiment, "score_headlines", lambda h: [0.8, -0.4])
+
+    out = sentiment.fetch_sentiment(api_key="dummy", symbol="AAPL")
+
+    assert list(out.index) == [pd.Timestamp("2024-01-02"), pd.Timestamp("2024-01-03")]
+    assert out.loc[pd.Timestamp("2024-01-02"), "Sentiment"] == pytest.approx(0.8)
+    assert out.loc[pd.Timestamp("2024-01-03"), "Sentiment"] == pytest.approx(-0.4)
+
+
+def test_fetch_sentiment_raises_no_deprecation_warning(monkeypatch):
+    """utcfromtimestamp is deprecated in 3.12 and PYQ-108's filter hides it."""
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    monkeypatch.setattr(
+        sentiment,
+        "fetch_news",
+        lambda *a, **k: [{"headline": "x", "datetime": _utc(2024, 1, 2, 14)}],
+    )
+    monkeypatch.setattr(sentiment, "score_headlines", lambda h: [0.5])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        sentiment.fetch_sentiment(api_key="dummy", symbol="AAPL")
+
+
+# --- PYQ-129: aligning the daily series onto real trading sessions ------------
+
+
+def test_align_to_sessions_rolls_non_trading_dates_onto_the_next_session():
+    """News dated on a weekend must land on Monday, not be silently dropped.
+
+    build_panel() reindexes the daily series straight onto the price index, so
+    any date that is not itself a trading day vanishes. Shifting post-close news
+    forward would otherwise convert a leak into data loss.
+    """
+    daily = pd.DataFrame(
+        {"Sentiment": [1.0, -1.0, 0.5], "HeadlineCount": [1.0, 3.0, 2.0]},
+        index=pd.DatetimeIndex(
+            [pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-06"), pd.Timestamp("2024-01-08")],
+            name="Date",
+        ),
+    )
+    sessions = pd.DatetimeIndex([pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-08")])
+
+    aligned = sentiment.align_to_sessions(daily, sessions)
+
+    assert list(aligned.index) == list(sessions)
+    assert aligned.loc[pd.Timestamp("2024-01-05"), "HeadlineCount"] == 1.0
+    # Saturday's 3 headlines roll onto Monday and pool with Monday's own 2.
+    assert aligned.loc[pd.Timestamp("2024-01-08"), "HeadlineCount"] == 5.0
+    # Pooled sentiment is headline-weighted: (3*-1.0 + 2*0.5) / 5.
+    assert aligned.loc[pd.Timestamp("2024-01-08"), "Sentiment"] == pytest.approx(-0.4)
+
+
+def test_align_to_sessions_drops_news_after_the_last_session():
+    """News with no session left to land on is dropped, never rolled backwards."""
+    daily = pd.DataFrame(
+        {"Sentiment": [1.0], "HeadlineCount": [4.0]},
+        index=pd.DatetimeIndex([pd.Timestamp("2024-02-01")], name="Date"),
+    )
+    sessions = pd.DatetimeIndex([pd.Timestamp("2024-01-05"), pd.Timestamp("2024-01-08")])
+
+    aligned = sentiment.align_to_sessions(daily, sessions)
+
+    assert aligned["HeadlineCount"].sum() == 0.0

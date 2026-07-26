@@ -1,7 +1,7 @@
 # Bugs (PYQ-1xx)
 
 Concrete, reproducible defects — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-129**.
+Next free ID: **PYQ-138**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -33,6 +33,15 @@ Next free ID: **PYQ-129**.
 | [PYQ-126](#pyq-126) | Low | Resolved | `_fmt_bytes` has an unreachable final `return` |
 | [PYQ-127](#pyq-127) | High | Resolved | `walk_forward_backtest` evaluates the *same* final window at every rolling origin |
 | [PYQ-128](#pyq-128) | Medium | Resolved | A `--config` path that does not exist is silently ignored |
+| [PYQ-129](#pyq-129) | Critical | Resolved | News sentiment is joined to the session it was published in, including post-close headlines |
+| [PYQ-130](#pyq-130) | High | Resolved | `future_business_dates()` names exchange holidays as forecast days |
+| [PYQ-131](#pyq-131) | Medium | Open | `predict_quantiles` returns `out[0]` without checking which group it is |
+| [PYQ-132](#pyq-132) | Medium | Resolved | EMA/MACD warm-up rows survive `dropna()` — the still-live half of PYQ-121 |
+| [PYQ-133](#pyq-133) | High | Open | Cache entries and pins record no code version, so a pin outlives a feature redefinition |
+| [PYQ-134](#pyq-134) | Low | Open | `_git_sha()` resolves against the installed package directory, not the working tree |
+| [PYQ-135](#pyq-135) | Low | Open | `Volume_Change` yields `inf` on a zero-volume session |
+| [PYQ-136](#pyq-136) | Medium | Resolved | `aggregate_metrics()` sums sample counts but unweighted-averages the rates they describe |
+| [PYQ-137](#pyq-137) | Low | Open | EMA seed bias survives `min_periods`: the first surviving panel rows are still ~0.08% off |
 
 ---
 
@@ -1140,3 +1149,538 @@ Covered by `test_load_settings_rejects_a_config_path_that_does_not_exist`,
 `test_load_settings_without_a_config_stays_silent`, and
 `test_train_with_a_missing_config_file_fails_instead_of_using_defaults` (which
 asserts `tft.train` was never reached).
+
+---
+
+## [PYQ-129]
+News sentiment is joined to the session it was published in, including post-close headlines
+Status: Resolved — 2026-07-26
+Priority: Critical
+Files: `pyquant/data/sentiment.py` (`fetch_sentiment`), `pyquant/data/dataset.py` (`build_panel`, sentiment join)
+
+Problem: `fetch_sentiment()` buckets each article by its **UTC calendar date**
+(`pd.Timestamp(dt.datetime.utcfromtimestamp(a["datetime"]).date())`) and
+`build_panel()` joins that daily series straight onto the trading row of the same
+date. A US equity session closes at 20:00 UTC (21:00 during EST), so **every headline
+published in the last 3–4 hours of each UTC day is post-close information attached to a
+row whose target is that day's close.** Roughly 12–17% of each day's news window is
+affected, and it is the *most* market-moving slice — post-close earnings releases land
+there almost by definition.
+
+This is the same class of leak as PYQ-101, in the one source that PYQ-305's
+`publication_lag_days` convention was never extended to. It is arguably worse than
+PYQ-101 because the leaked information is event-driven rather than slow-moving: a
+same-day earnings-beat headline is nearly a direct readout of the next move.
+
+The leak is currently masked, not absent: PYQ-301 notes ~80% of a default 5-year training
+window has structurally-zero sentiment, so the contaminated rows are a minority of
+training data — but they are 100% of the *live* prediction path, where sentiment is always
+populated. That is the worst possible distribution of the error.
+
+Secondary: `dt.datetime.utcfromtimestamp` is deprecated as of Python 3.12 and emits a
+`DeprecationWarning` that PYQ-108's filter silences by default.
+
+Suggested fix: convert each article timestamp to the exchange's local time, and assign it
+to the **next** trading session whenever it lands at or after that session's close.
+Simplest correct-by-construction variant, if per-exchange close times are more machinery
+than is wanted: shift the whole daily sentiment series forward by one trading day before
+the join, and say so in the docstring — strictly conservative, never leaks, costs at most
+one session of freshness. Either way, record the choice using the same
+`publication_lag`-style convention PYQ-305 established for FRED so the two sources are
+reasoned about identically. Replace `utcfromtimestamp` with
+`dt.datetime.fromtimestamp(ts, tz=dt.timezone.utc)`.
+
+Acceptance criteria: a test with two synthetic articles on the same UTC date — one at
+14:00 UTC (pre-close) and one at 22:00 UTC (post-close) — asserting the first lands on
+that session's row and the second on the next session's. Plus a test asserting no
+`DeprecationWarning` is raised by `fetch_sentiment`.
+
+Resolution: took the first (precise) option rather than the blanket one-day shift, because
+the blanket shift costs a full session of freshness on *every* headline to fix a problem
+that only affects the last few hours of each day — and the live prediction path, where
+sentiment is always populated, is exactly where that freshness matters.
+
+`session_date(epoch_seconds)` is now the single rule: convert the timestamp to
+`America/New_York`, and assign the headline to the next calendar date if it was published
+at or after the 16:00 close, otherwise to that date. `ZoneInfo` keeps the boundary correct
+across DST instead of drifting an hour for half the year; it is stdlib, so no new
+dependency (per the CLAUDE.md rule on justifying additions). The docstring states the
+convention in the same terms `macro.py` uses for `publication_lag_days`, so the two sources
+are now reasoned about identically, which is what PYQ-305 established and this source never
+inherited.
+
+**Fixing only that would have converted the leak into data loss**, which is why the fix has
+a second half. `session_date` returns a calendar date, so Friday-post-close news now lands
+on Saturday — and `build_panel` reindexed the daily series straight onto the price index,
+which silently drops any date that is not itself a trading day. `align_to_sessions()` maps
+each dated bucket onto the first session at or after it, pooling buckets that land on the
+same session (counts add; sentiment is averaged *weighted by headline count*, so a
+10-headline day does not count the same as a 1-headline day). News after the last session
+is dropped and logged — never rolled backwards, which would reintroduce the leak. Weekend
+news, which the old code also dropped, now lands on Monday.
+
+Verification, on the assembled panel rather than on either half. Two headlines on Friday
+2022-05-27, one at 11:00 ET and one at 17:00 ET, scored +0.6 and −0.9:
+
+```
+before:  Friday Sentiment = -0.15   (mean of both -- the 17:00 headline leaked)
+         Monday Sentiment =  0.0    (no news)
+after:   Friday Sentiment = +0.6    Monday Sentiment = -0.9
+```
+
+The −0.15 is the leak in one number: a headline published after the bell moved the feature
+on the row whose target is that day's close.
+
+Covered by `test_post_close_headline_is_assigned_to_the_next_session` (the ticket's exact
+14:00/22:00 UTC case), `test_fetch_sentiment_raises_no_deprecation_warning` (which promotes
+`DeprecationWarning` to an error, since PYQ-108's filter otherwise hides it),
+`test_align_to_sessions_rolls_non_trading_dates_onto_the_next_session`,
+`test_align_to_sessions_drops_news_after_the_last_session`, and — the one that actually
+guards the cross-file behaviour — `test_build_panel_lands_post_close_news_on_the_next_
+trading_row`, verified to fail with the −0.15 above when `session_date` is reverted to UTC
+bucketing. Every one of the six previous leaks was correct in each individual file and
+wrong across files, so this ticket's binding test is deliberately the panel-level one.
+
+`dt.datetime.utcfromtimestamp` is gone, replaced by `dt.datetime.fromtimestamp(ts,
+tz=dt.timezone.utc)`.
+
+Invalidates: any bundle trained with `use_sentiment=True` has different feature values on
+the rows that carry news, so its metrics are not comparable to a post-fix run. PYQ-301's
+question — how much of the training window has non-neutral sentiment — is now also the
+question of how much this fix moved, and its answer bounds this ticket's practical impact.
+Assumes a 16:00 close and no half-days; the 13:00 early closes (roughly 3 a year) will
+assign an afternoon headline to the same session it can no longer trade on. That is the
+*conservative* direction — it never leaks — so it is left as a known limitation rather than
+pulling in an exchange calendar here; PYQ-130 introduces one for the forecast dates.
+
+---
+
+## [PYQ-130]
+`future_business_dates()` names exchange holidays as forecast days
+Status: Resolved — 2026-07-26
+Priority: High
+Files: `pyquant/data/dataset.py` (`future_business_dates`, `extend_for_prediction`), `pyquant/cli/charts.py`
+
+Problem: `pd.bdate_range` returns Mon–Fri and knows nothing about market holidays. So a
+forecast made on 2026-07-02 will label a step for 2026-07-03 (the observed Independence
+Day holiday), one made before Thanksgiving will label the Friday half-day and the Thursday
+holiday identically, and so on. Two distinct consequences:
+
+- **Display**: the table, the PNG export and `--format json` all assert a date on which
+  no price will exist, so the forecast cannot be scored against reality without a manual
+  correction. PYQ-115 went to real trouble to make one helper the single source of truth
+  for these dates; that helper is now the single source of one consistent error.
+- **Model input**: `extend_for_prediction()` writes `dow`/`month_num` for those rows, and
+  `dow` is a `time_varying_known_real` the decoder genuinely reads. A holiday row supplies
+  a (weekday, position-in-horizon) combination that never occurs in training data, because
+  training rows only exist for sessions that traded.
+
+The second is the reason this is High rather than cosmetic: it is a silent train/serve
+skew in a known-future feature, roughly 9 sessions a year, concentrated around exactly the
+dates with unusual volatility.
+
+Suggested fix: derive the future calendar from a real exchange calendar
+(`exchange_calendars` is the maintained successor to `trading_calendars`;
+`pandas_market_calendars` is the other common choice), defaulting to XNYS and made
+configurable on `DataConfig` since the panel already supports non-US tickers in principle.
+A dependency-free fallback worth considering first: infer the calendar from the observed
+`Date` index — any weekday absent from ~5 years of history is a holiday — which needs no
+new dependency and self-corrects per exchange, at the cost of being wrong for a
+newly-declared holiday.
+
+Acceptance criteria: a test with `last_date = 2026-07-02` asserting the returned dates
+skip 2026-07-03; a test asserting `extend_for_prediction` appends the same dates
+`future_business_dates` returns (guarding the PYQ-115 invariant against this change).
+
+Resolution: took **neither** of the two options as stated, and the reasoning is the point.
+
+The dependency-free option the ticket floated — infer the calendar from weekdays absent
+from ~5 years of observed history — does not actually work for this use. US market
+holidays are *rules* ("fourth Thursday in November", "Good Friday"), not fixed dates, so a
+calendar inferred from which dates were historically absent cannot project the next
+Thanksgiving into a year it has not seen. Since `future_business_dates` is only ever used
+in the forward direction, an inferred calendar is wrong exactly where it is needed.
+
+But `exchange_calendars` is not required either: **pandas already ships the holiday-rule
+primitives**, and pandas is already a core dependency. New
+`pyquant/data/trading_calendar.py` states the NYSE calendar in ~20 lines of
+`AbstractHolidayCalendar` rules and adds no supply chain — which is the disposition
+PYQ-310 and PYQ-308 established. `future_business_dates()` now delegates to
+`next_sessions()`.
+
+Deliberately *not* `USFederalHolidayCalendar`, which is wrong on three counts: the NYSE
+closes on Good Friday (not federal) and trades on Columbus Day and Veterans Day (both
+federal). `nearest_workday` encodes the exchange observance rule, with New Year's Day using
+`sunday_to_monday` because the NYSE does not close on 31 December when 1 January is a
+Saturday.
+
+Verification against the published calendar rather than against itself — the generated 2026
+holidays are exactly the ten real NYSE closures, and 2027 (whose observances shift
+differently: Juneteenth Sat→Fri 06-18, Independence Sun→Mon 07-05, Christmas Sat→Fri 12-24)
+is also exact. The ticket's own example:
+
+```
+before:  future_business_dates(2026-07-02, 5) -> 07-03, 07-06, 07-07, 07-08, 07-09
+after:   future_business_dates(2026-07-02, 5) -> 07-06, 07-07, 07-08, 07-09, 07-10
+```
+
+Half-days are kept: the Friday after Thanksgiving closes early but a price prints, so it is
+scoreable and belongs in the horizon. Only full closures are removed.
+
+Both consequences the ticket named are addressed by the one change, because PYQ-115 had
+already made this helper the single source of truth: the appended decoder rows get correct
+`dow` values, and the table / JSON / PNG follow automatically — `cli/charts.py` reads
+`Forecast.forecast_dates`, which delegates here, so it needed no edit. That is the PYQ-115
+design paying off, and `test_extend_for_prediction_appends_exactly_the_dates_the_forecast_
+reports` now pins it so the two cannot drift.
+
+Covered by `test_future_business_dates_skips_an_observed_exchange_holiday` (the ticket's
+2026-07-02 case), `test_future_business_dates_skips_thanksgiving_but_keeps_the_half_day`,
+`test_future_business_dates_skips_good_friday`, and `tests/test_trading_calendar.py` —
+which asserts the full 2026 list, that Columbus and Veterans Day remain sessions, that
+Juneteenth is absent before 2022, and that a requested horizon returns exactly that many
+sessions across a holiday run. The first three failed against `pd.bdate_range` with the
+holiday present in the returned index.
+
+Changes model inputs: `dow` for decoder rows that previously fell on a holiday now
+describes a real session, so a forecast issued within 5 sessions of a holiday differs from
+one issued by the old code. Training rows are untouched — they only ever existed for days
+that traded, which is precisely why the skew existed.
+
+Known limitations, recorded in the module rather than left implicit: US equities only (a
+non-US ticker gets the NYSE calendar — the same assumption `data/sentiment.py` makes about
+the 16:00 America/New_York close after PYQ-129, so the two are at least consistent), and
+one-off closures such as Hurricane Sandy or a national day of mourning are not rules and
+are not modelled. Making the exchange configurable is the point at which
+`exchange_calendars` would earn its place; until a second exchange is actually needed, it
+does not.
+
+---
+
+## [PYQ-131]
+`predict_quantiles` returns `out[0]` without checking which group it is
+Status: Open
+Priority: Medium
+Files: `pyquant/models/tft.py` (`predict_quantiles`, `interpret`)
+
+Problem: both functions take the first element of the prediction output
+(`out[0]`, `raw.output`) with no assertion about which `symbol` group that row belongs
+to. Today this is correct **by accident**: `generate_forecast()` and `explain_forecast()`
+each build a single-symbol panel via `panel_to_long(panel, symbol)`, so the dataset has
+exactly one group and index 0 is unambiguous.
+
+It stops being correct the moment anything hands these functions a multi-symbol frame,
+and there are two such paths already contemplated:
+
+- `docs/api-design.md` proposes a `POST /scan` endpoint; batching several symbols into one
+  `predict()` call is the obvious optimisation and would silently return the first
+  group's forecast for every symbol.
+- A pooled-bundle `scan` that reuses one loaded bundle across symbols (an obvious
+  performance follow-up to PYQ-204) has the same shape.
+
+The failure is silent and plausible-looking — a wrong-but-reasonable price path — which
+is the worst failure mode for a number that drives a BUY/SELL signal.
+
+Suggested fix: have `predict_quantiles`/`interpret` take the symbol they are asked about,
+locate its row via the decoder's `groups`/`decoder_cat` output rather than positionally,
+and raise if it is absent. Alternatively assert `df["symbol"].nunique() == 1` at entry
+with a message naming the constraint — cheaper, and it converts a future silent bug into
+an immediate error.
+
+Acceptance criteria: a test passing a two-symbol frame and asserting the returned array
+corresponds to the requested symbol (or that a clear error is raised naming the
+limitation), not merely that *an* array of the right shape came back.
+
+---
+
+## [PYQ-132]
+EMA/MACD warm-up rows survive `dropna()` — the still-live half of PYQ-121
+Status: Resolved — 2026-07-26
+Priority: Medium
+Files: `pyquant/data/prices.py` (`add_technical_indicators`)
+
+Problem: PYQ-121 correctly identified that `min_periods=1` produced non-NaN warm-up
+garbage which survived `build_panel()`'s `dropna()`, and that it was removed only because
+`SMA_50` happened to cut the first 49 rows — "an accidental dependency between two
+unrelated indicators." That fix landed for `RSI_14`. The identical problem is still live
+for three more columns:
+
+```python
+df["EMA_12"] = close.ewm(span=12, adjust=False).mean()
+df["EMA_26"] = close.ewm(span=26, adjust=False).mean()
+```
+
+`ewm(adjust=False)` with no `min_periods` emits a value from **row 1** — which is just
+`close[0]`, not an average of anything. `MACD`, `MACD_Signal` and `MACD_Hist` are all
+derived from these. An EMA with span *s* needs roughly 3–4× *s* observations before the
+initial-value bias decays below noise, so an EMA-26 is meaningfully biased for ~78 rows.
+`SMA_50` cuts only the first 49. **Rows 50–78 of every panel therefore carry four
+systematically biased feature columns**, and the bias is largest at the start of the
+training window, where a positional split makes them pure training data.
+
+`Realized_Vol_20` and the Bollinger columns are fine (`rolling` defaults to
+`min_periods=window`), which is what makes the EMA pair the odd one out rather than a
+uniform convention.
+
+Suggested fix: pass `min_periods=span` to both `ewm` calls so the warm-up is genuinely
+NaN and gets dropped on its own merit, exactly as PYQ-121 did for RSI. Note this changes
+model inputs, so previously trained bundles are not directly comparable — the same caveat
+PYQ-121 recorded, and another argument for PYQ-133.
+
+Acceptance criteria: a test asserting `add_technical_indicators` leaves the first 26 rows
+of `EMA_26`/`MACD`/`MACD_Signal`/`MACD_Hist` as NaN, extending the existing
+`test_add_technical_indicators_leaves_warmup_rows_genuinely_nan` rather than adding a
+parallel one; and a test asserting the panel's first surviving row is decided by the
+longest warm-up window rather than by `SMA_50` specifically.
+
+Resolution: both `ewm` calls in `add_technical_indicators` and all three in `compute_macd`
+now pass `min_periods` equal to their own span, so each column's warm-up is genuinely NaN
+and is dropped on its own merit rather than because `SMA_50` happens to cut 49 rows.
+
+The exact warm-up lengths, now pinned by test rather than assumed: `EMA_12` 11 rows,
+`EMA_26` 25, `MACD` 25, `MACD_Signal` and `MACD_Hist` 33. Note the ticket's "first 26 rows"
+is off by one — `ewm(min_periods=26)` emits its first value at row *index* 25, which is the
+26th observation. And the signal line is NaN for 33 rows, not 26: it needs 9 defined `MACD`
+values, which only exist from row 25 onward.
+
+**What this changes in a trained model's inputs, measured rather than assumed.** On a
+400-row seeded random walk, comparing old vs. new over the rows that actually survive
+`build_panel()` (SMA_50 still binds at row 49, so the panel's length is unchanged):
+
+```
+MACD         max|Δ| = 0.000000   (identical)
+MACD_Signal  max|Δ| = 0.000406   mean|Δ| = 0.000006   mean|MACD_Signal| = 0.764
+MACD_Hist    max|Δ| = 0.000406   mean|Δ| = 0.000006
+```
+
+`EMA_12`, `EMA_26` and `MACD` are *bit-identical* past their warm-up: `min_periods` only
+masks the leading output, it does not alter the `adjust=False` recursion. Only the signal
+line moves, because its recursion now seeds on the first defined `MACD` value (row 25)
+instead of on row 0 — a 0.05% shift at the first surviving row, decaying to nothing within
+a few rows. So unlike PYQ-121, **this does not invalidate previously trained bundles**;
+the earlier caveat about comparability does not apply at a material scale here.
+
+Covered by `test_add_technical_indicators_leaves_warmup_rows_genuinely_nan` (extended to
+assert the exact warm-up of all nine windowed indicators, not just `SMA_50`) and
+`test_panel_warmup_is_decided_by_the_longest_window_not_by_sma_50`, which drops `SMA_50`
+and asserts the MACD signal line — not an accident — is what then binds.
+
+Left open: the fix removes the *fabricated* warm-up but not the EMA's residual **seed
+bias**, which is what the ticket's "meaningfully biased for ~78 rows" estimate actually
+describes. `adjust=False` seeds at `close[0]` regardless of `min_periods`, so 14.6% of the
+seed's weight survives at row 25 and 2.3% at row 49. Measured against an unbiased
+`adjust=True` reference that is 0.129% of price at row 25 and 0.075% at row 49, falling to
+0.012% by row 78. Small, but real, and not something `min_periods` can reach — filed as
+PYQ-137 rather than fixed here, because removing it means changing MACD away from the
+definition every charting package plots, which is a decision and not a patch.
+
+---
+
+## [PYQ-133]
+Cache entries and pins record no code version, so a pin outlives a feature redefinition
+Status: Open
+Priority: High
+Files: `pyquant/data/cache.py` (`write_cache`, `write_pin`, `read_pin`), `pyquant/data/dataset.py` (`_cache_fingerprint`)
+
+Problem: `_cache_fingerprint()` covers symbol, date range, period, the four `use_*`
+toggles, the ETF list, and key *presence*. It does not cover **which code computed the
+columns**. `write_pin()` stores a bare pickle with no metadata at all; the TTL entry's
+`.meta.json` holds only `cached_at`.
+
+PYQ-121 redefined what `RSI_14` means. PYQ-123 changed which rows survive `build_panel`.
+PYQ-132 (above) will change four more columns. Each of those changes the *content* of a
+panel without changing anything in the fingerprint. Consequences:
+
+- **TTL cache**: bounded to one hour, so the exposure is a single stale run after an
+  upgrade. Annoying, survivable.
+- **Pins**: TTL-exempt and permanent by design. A pin created before PYQ-121 replays the
+  *old* RSI definition forever, under the same name, into a bundle whose `provenance`
+  block faithfully records the **new** git sha. The bundle's own metadata then asserts a
+  reproducibility claim that is false, and it is false in the one direction that is
+  undetectable — everything looks consistent.
+
+This directly undermines PYQ-225, whose stated thesis is "seed + pinned data + code
+version is what actually reproduces a run." Two of those three legs are recorded on the
+bundle; the third is recorded on the bundle but *not* on the data it points at, so they
+can disagree.
+
+Suggested fix: add `pyquant_version` (and git sha when available) to the cache
+fingerprint so a code change invalidates TTL entries automatically. For pins, write a
+sibling `<name>.meta.json` recording version, sha, creation time and the column list;
+`read_pin()` warns loudly (or refuses without `--force`) when the recorded version differs
+from the running one. A column-list comparison is the cheap high-value half — it catches a
+*renamed or added* column immediately, even if it cannot catch a silently *redefined* one.
+
+Acceptance criteria: a test asserting two `_cache_fingerprint` calls differing only in
+package version produce different keys; a test asserting `read_pin` warns when the pin's
+recorded version differs from the current one; a test asserting a pin's metadata records
+the panel's column list.
+
+---
+
+## [PYQ-134]
+`_git_sha()` resolves against the installed package directory, not the working tree
+Status: Open
+Priority: Low
+Files: `pyquant/models/tft.py` (`_git_sha`)
+
+Problem: `_git_sha()` runs `git rev-parse --short HEAD` with
+`cwd=Path(__file__).resolve().parent`. Running from a source checkout that is the
+intended case and works. But for a `pip install`ed / containerised deployment —
+which is the whole point of PYQ-217 and PYQ-213 — `__file__` is inside `site-packages`,
+and one of two things happens:
+
+- `site-packages` is not in a repo → `git rev-parse` fails → `None` is recorded. Correct
+  outcome, arrived at accidentally.
+- `site-packages` *is* inside some git repo (a vendored dependency tree, a Nix/conda env
+  under version control, a monorepo with a committed venv) → **the sha of an unrelated
+  repository is recorded as PyQuant's provenance.** Silently wrong is worse than absent.
+
+Suggested fix: prefer the installed distribution's recorded version and only consult git
+when the package is an editable/source install; or resolve the repo root explicitly and
+verify the result actually contains this project (e.g. `git rev-parse --show-toplevel`
+matching a known marker) before trusting the sha.
+
+Acceptance criteria: a test running `_git_sha()` with a monkeypatched `__file__` inside a
+temporary unrelated git repo, asserting it returns `None` rather than that repo's sha.
+
+---
+
+## [PYQ-135]
+`Volume_Change` yields `inf` on a zero-volume session
+Status: Open
+Priority: Low
+Files: `pyquant/data/prices.py` (`add_technical_indicators`)
+
+Problem: `df["Volume_Change"] = volume.pct_change()`. A session with zero reported volume
+— a trading halt, a thin ADR, a data-feed gap that yfinance reports as 0 rather than NaN
+— makes the *next* row's percent change divide by zero, producing `inf`. `inf` is not NaN,
+so it survives `build_panel()`'s `dropna()` and is fed to `GroupNormalizer`, where it
+poisons the fitted scale for that group and can propagate NaN through the loss.
+
+Every other indicator in the file guards its denominator (`sma + 1e-10`,
+`upper - lower + 1e-10`); this one does not. `Price_Change` has the same shape but is safe
+in practice, since a zero close does not occur.
+
+Suggested fix: replace `inf`/`-inf` with NaN after computing the change (letting the
+existing row-drop handle it), or use a log-volume difference with a `+1` offset, which is
+better behaved and is closer to how volume is usually modelled anyway. Consider a general
+`replace([np.inf, -np.inf], np.nan)` at the end of `add_technical_indicators` as a
+belt-and-braces guard for the whole indicator block.
+
+Acceptance criteria: a test with a zero-volume row asserting no `inf` survives into the
+built panel.
+
+---
+
+## [PYQ-136]
+`aggregate_metrics()` sums sample counts but unweighted-averages the rates they describe
+Status: Resolved — 2026-07-26
+Priority: Medium
+Files: `pyquant/analysis/metrics.py` (`aggregate_metrics`)
+
+Problem: PYQ-117 correctly changed `n_samples`/`n_points` to **sum** across windows,
+reasoning that "five windows of five points is 25 points of evidence." But the rate and
+error metrics are still combined with a plain unweighted `np.mean`:
+
+```python
+directional_accuracy=float(np.mean([r.directional_accuracy for r in results])),
+n_points=int(sum(r.n_points for r in results)),
+```
+
+So the aggregate reports a denominator computed one way and a numerator computed another.
+A reader who takes the table at face value — "57.5% over 280 predictions" — is reading a
+figure that is only the true pooled rate when every window has an identical sample count.
+
+Today every backtest window does, because `_window_validation_dataset` uses `predict=True`
+(one sample per window), so the two definitions coincide numerically and this is latent
+rather than live. It becomes reachable as soon as anything produces unequal windows —
+PYQ-250's embargo will drop different numbers of samples per origin, a pooled backtest
+would give each symbol a different count, and a variable-step walk-forward would too.
+Filing it now because the misreading it invites is already possible: the *aggregate row*
+already implies a pooling that the arithmetic does not perform.
+
+Suggested fix: weight each rate by that window's `n_points` (a true pooled rate), or keep
+the unweighted mean and rename the field to say so (`mean_directional_accuracy`) while
+adding a separate pooled figure. The first is almost certainly what a reader expects;
+either is defensible, but the current pairing is not.
+
+Acceptance criteria: a unit test aggregating two windows with deliberately unequal
+`n_points` and different rates, asserting the aggregate equals the point-weighted pooled
+rate rather than the arithmetic mean of the two rates.
+
+Resolution: chose the first of the two options — `aggregate_metrics()` now weights every
+rate and error metric by that window's `n_points`, so the aggregate is the true rate *over
+the denominator it reports*. The field names keep their meaning ("57.5% over 280
+predictions" is now arithmetically that) rather than being renamed to advertise an
+unweighted mean, because the pooled figure is what every consumer of the aggregate row —
+the Rich table, `--format json`, `meta.json` — is already read as stating.
+
+Windows with no point count at all fall back to an unweighted mean rather than dividing by
+zero: `EvaluationMetrics` still has `n_points=0` defaults, so a caller constructing metrics
+without PYQ-117's counts must still aggregate. `test_aggregate_metrics_falls_back_to_
+unweighted_mean_without_point_counts` pins that path.
+
+**No reported number changes.** Every backtest window today has an identical point count
+(`_window_validation_dataset` uses `predict=True`, one sample per window), so pooled and
+unweighted means coincide exactly — verified by
+`test_aggregate_metrics_sums_sample_counts_rather_than_averaging_them`, which still asserts
+`directional_accuracy == 0.5` across five equal windows and passes unchanged. The README's
+−23.5% skill / 57.5% directional accuracy figures are therefore unaffected; this fix makes
+them *stay* correct once PYQ-250's embargo or a pooled backtest produces unequal windows.
+
+Covered by `test_aggregate_metrics_weights_rates_by_each_window_point_count` (25-point and
+5-point windows with rates 1.0 and 0.0, asserting the pooled 25/30 rather than the 0.5
+midpoint) and the fallback test above.
+
+---
+
+## [PYQ-137]
+EMA seed bias survives `min_periods`: the first surviving panel rows are still ~0.08% off
+Status: Open
+Priority: Low
+Files: `pyquant/data/prices.py` (`add_technical_indicators`, `compute_macd`)
+
+Problem: found while resolving PYQ-132, whose analysis and whose proposed fix do not quite
+meet. PYQ-132 argued — correctly — that "an EMA with span *s* needs roughly 3–4× *s*
+observations before the initial-value bias decays below noise, so an EMA-26 is meaningfully
+biased for ~78 rows," and then proposed `min_periods=span` as the fix. `min_periods` does
+not do that. It masks the first *s* outputs; it does not change the recursion, which
+`adjust=False` seeds at `close[0]` no matter what `min_periods` says.
+
+So after PYQ-132 the warm-up is honest — no value is emitted off a one-row window — but the
+first values that *are* emitted still carry the seed. Measured against `adjust=True` (the
+exact normalised weighted average, which has no seed) on a 400-row seeded random walk:
+
+```
+row  25:  seed weight 14.60%   |EMA_26 bias| = 0.1288% of price   <- first emitted row
+row  49:  seed weight  2.30%   |EMA_26 bias| = 0.0751% of price   <- first surviving row
+row  78:  seed weight  0.25%   |EMA_26 bias| = 0.0115% of price
+row 104:  seed weight  0.03%   |EMA_26 bias| = 0.0004% of price
+```
+
+Only the first surviving row is affected at ~0.08% of price, because `SMA_50` cuts to row
+49 and the bias is ~0.01% by row 78. On a ~1200-row panel that is one row at 0.08% and a
+handful at less — which is why this is Low and not a re-open of PYQ-132.
+
+Three options, none free:
+
+- `adjust=True` on the EMAs. Removes the bias exactly, and is what a "mean of the last *s*
+  observations, exponentially weighted" should mean. But it changes MACD away from the
+  definition every charting package plots, which is precisely the argument PYQ-121 used in
+  the *other* direction when it adopted Wilder's smoothing for RSI to match reference
+  implementations. Taking it here would make MACD internally principled and externally
+  non-standard.
+- `min_periods=4*span` (104 rows). Keeps the standard definition and drops the biased rows,
+  at the cost of ~104 rows off the front of every panel — and it would become the binding
+  warm-up, roughly doubling what `SMA_50` costs today.
+- Do nothing, and record the magnitude. Defensible on the numbers above.
+
+The reason to keep the ticket rather than close it "won't fix" is that the choice becomes
+material if PYQ-247 lands: on a log-return target the price-level scale disappears, and a
+0.08% level bias in a feature is a different size relative to a ~1% daily return than it is
+relative to price.
+
+Acceptance criteria: a decision recorded here with its reasoning, and — if either fix is
+taken — a test asserting the emitted EMA matches an unbiased reference to a stated
+tolerance from the first surviving row onward.

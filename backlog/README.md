@@ -40,27 +40,45 @@ edit lands.
 
 A hand-curated shortlist, not auto-generated — re-pick this after every
 review pass. Full context for each is in its file. (Re-picked 2026-07-26 after
-the third closeout pass below. Every bug is closed; what remains needs
-hardware, real API keys, or a product decision.)
+the external review pass below, which argued the prior #1 pick (PYQ-211)
+optimises inside a formulation that may be near-unbeatable by construction —
+see PYQ-247. Weighted toward what needs no GPU sweep and no product decision,
+since that's what actually blocked most of the old list.)
 
-1. **PYQ-211** (feature, Medium) — learning-rate tuning. Now the most
-   valuable open ticket rather than a nice-to-have: PYQ-117 showed the default
-   config scores −23.5% skill against a persistence baseline on 280 real
-   validation points, and PYQ-127 made the walk-forward actually walk, so an
-   lr sweep can finally be judged on trustworthy numbers. Needs real data +
-   GPU.
-2. **PYQ-227** (feature, Medium) — per-quantile calibration + pinball loss.
-   Directly motivated by what PYQ-117 exposed: 99.3% coverage on a nominal 80%
-   band says the interval is far too wide, and a single band-coverage number
-   cannot say *which* side is at fault.
-3. **PYQ-220** (feature, Medium) — absolute bundle/cache paths; a stated
-   prerequisite in the PYQ-213 design note before anything server-side. Needs
-   a location decision (platformdirs XDG vs. project-root anchor).
-4. **PYQ-301** (investigation, Medium) — how much of the training window has
-   non-neutral sentiment? The last open question about whether a feature the
-   model is being fed is worth its place. Needs a `FINNHUB_API_KEY`.
-5. **PYQ-217** (feature, Medium) — Dockerfile; pairs with the PYQ-213 design
-   note for deploying the eventual API.
+1. **PYQ-238** (feature, High) — `tests/test_invariants.py`. Six leaks found
+   so far (PYQ-101/103/115/116/123/127) share one shape: correct in every file,
+   wrong across files. `backlog/README.md`'s own recorded lesson after the
+   third pass was that this backlog "optimised local correctness ticket by
+   ticket while the invariants that span the pipeline went unstated" — this is
+   the structural fix. No hardware, no keys, no product decision.
+2. **PYQ-247** (feature, High) — forecast log-returns instead of price levels.
+   `TARGET = "Close"` means the baseline (predict the last close) is
+   near-optimal by construction for a near-random-walk level series, which
+   means PYQ-117's −23.5% skill may be close to what this formulation predicts
+   *a priori*, largely independent of hyperparameters. The change most likely
+   to move the headline number, and — unlike LR tuning — needs no GPU sweep to
+   try.
+3. **PYQ-129** (bug, Critical) — sentiment is joined to the UTC calendar date
+   a headline was published on, so post-close headlines (the most
+   market-moving ones) leak into the same day's training row. Same class as
+   PYQ-101, small and self-contained, and the last known member of that leak
+   family.
+4. **PYQ-248** (feature, High) — conformal calibration of the quantile band.
+   PYQ-117 measured 99.3% coverage on a nominal 80% band — the interval is so
+   wide it is close to uninformative, and nothing currently fixes that
+   (PYQ-227 only diagnoses it). Split-conformal is distribution-free, needs no
+   retraining, and is roughly 80 lines.
+5. **PYQ-232** (feature, High) — Sphinx + autodoc site. 79% docstring
+   coverage already exists and is unusually good (cites ticket IDs, explains
+   *why*); none of it is rendered anywhere. The expensive part is done.
+6. **PYQ-301** (investigation, Medium) — how much of the training window has
+   non-neutral sentiment? Was blocked on a `FINNHUB_API_KEY`; both that key
+   and a `FRED_API_KEY` are now configured locally (2026-07-26), so this and
+   any other key-gated ticket can actually be run rather than just reasoned
+   about. Promoted from "blocked" rather than ranked purely on value.
+
+**PYQ-211** (LR tuning) is demoted out of Now — see its 2026-07-26 update for
+why, and PYQ-253 for the ticket likely to supersede it.
 
 ## History
 
@@ -141,3 +159,37 @@ The change added 47 tests (122 → 169 passing), still `check`-clean and
 `ruff`-clean. Nine tickets remain open — PYQ-211/214/217/220/227/228/229/230
 and investigation PYQ-301 — every one needing real API keys, GPU hardware,
 Docker, or a product decision to close responsibly.
+
+An external review pass (2026-07-26, same day, separate session) audited the repo cold —
+full source read, backlog audit, git-history audit, partial test execution, and ecosystem
+research — and scored it 7.5/10 overall: "a 9/10 software-engineering artifact wrapped
+around a 5/10 quantitative result." Its output landed as three root-level files
+(`backlog_adds.md`, `review.md`, `systems_research.md`) and was merged wholesale into this
+structure as **49 new tickets** — PYQ-129..136 (bugs), PYQ-232..263 (features), PYQ-312..320
+(investigations) — bringing the total to **119**, still `check`-clean.
+
+The headline finding: `dataset.TARGET = "Close"` predicts the price **level**, and for a
+near-random-walk series the persistence baseline is close to unbeatable on that
+formulation by construction — so PYQ-117's −23.5% skill may be largely explained by the
+target choice rather than by hyperparameters. That reframes PYQ-211 (learning-rate tuning,
+the previous #1 "Now" pick) as optimising inside a near-uninformative formulation, and
+promotes PYQ-247 (log-return target) above it; PYQ-211 is downgraded to Low in place and
+cross-referenced to PYQ-253 (Optuna search, which proposes absorbing its scope) rather than
+closed outright, since nobody has actually run the comparison yet. Other recurring threads:
+the six-times-repeated "correct in one file, wrong across files" leak shape now has a
+proposed structural fix (PYQ-238) instead of a seventh regression test; the 99.3%-on-80%
+coverage figure has a proposed direct fix (PYQ-248, conformal calibration) rather than only
+a diagnosis (PYQ-227); and one more look-ahead leak was found in the one source PYQ-305's
+convention was never extended to (PYQ-129, sentiment joined by UTC calendar date rather
+than publication time).
+
+Also during this session: `FRED_API_KEY` and `FINNHUB_API_KEY` were both configured
+locally for the first time, which is why PYQ-301 moved from "blocked" to the re-picked
+`## Now` list above — it was the one existing open ticket whose stated blocker (a Finnhub
+key) is now gone. Neither key's *value* was read or logged anywhere, per this file's own
+non-negotiable on secrets; only presence was checked.
+
+No ticket content from the external review was filtered out in the merge — all 49 are
+recorded as proposed (`Open`), to be triaged and worked in priority order like PYQ-115..128
+were, not treated as already-decided. The one substantive edit to an existing ticket was
+PYQ-211's priority/cross-reference, above.

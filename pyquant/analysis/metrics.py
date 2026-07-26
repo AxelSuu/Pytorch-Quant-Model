@@ -128,18 +128,36 @@ def evaluate_predictions(
 
 
 def aggregate_metrics(results: list[EvaluationMetrics]) -> EvaluationMetrics:
-    """Average metrics across multiple windows (e.g. a walk-forward backtest).
+    """Pool metrics across multiple windows (e.g. a walk-forward backtest).
 
-    The rate/error metrics average; the sample counts *sum* -- five windows of
-    five points is 25 points of evidence, and averaging them back down to 5
-    would throw away the only thing that makes an aggregate worth more than a
-    single window (PYQ-117).
+    The sample counts *sum* -- five windows of five points is 25 points of
+    evidence, and averaging them back down to 5 would throw away the only thing
+    that makes an aggregate worth more than a single window (PYQ-117).
+
+    Every rate and error metric is therefore weighted by its window's
+    ``n_points``, so the aggregate is the true rate *over the reported
+    denominator*. An unweighted mean paired with a summed denominator computes
+    numerator and denominator two different ways, and reads as a pooled figure
+    it is not (PYQ-136). The two coincide only when every window has the same
+    point count -- which is true of today's ``predict=True`` backtest and stops
+    being true the moment windows differ in size (PYQ-250's embargo, a pooled
+    multi-symbol backtest).
+
+    Windows carrying no point count at all (metrics built without PYQ-117's
+    counts) cannot be weighted, so they fall back to an unweighted mean.
     """
+    weights = np.array([r.n_points for r in results], dtype=float)
+    if weights.sum() == 0:
+        weights = np.ones(len(results), dtype=float)
+
+    def pooled(values: list[float]) -> float:
+        return float(np.average(np.asarray(values, dtype=float), weights=weights))
+
     return EvaluationMetrics(
-        model_mae=float(np.mean([r.model_mae for r in results])),
-        baseline_mae=float(np.mean([r.baseline_mae for r in results])),
-        directional_accuracy=float(np.mean([r.directional_accuracy for r in results])),
-        calibration_coverage=float(np.mean([r.calibration_coverage for r in results])),
+        model_mae=pooled([r.model_mae for r in results]),
+        baseline_mae=pooled([r.baseline_mae for r in results]),
+        directional_accuracy=pooled([r.directional_accuracy for r in results]),
+        calibration_coverage=pooled([r.calibration_coverage for r in results]),
         n_samples=int(sum(r.n_samples for r in results)),
         n_points=int(sum(r.n_points for r in results)),
     )

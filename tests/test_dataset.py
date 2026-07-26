@@ -1,15 +1,26 @@
 """Tests for panel assembly and TimeSeriesDataSet construction."""
 
-import pandas as pd
+import datetime as dt
 
-from pyquant.data import dataset
+import pandas as pd
+import pytest
+
+from pyquant import provenance
+from pyquant.data import cache, dataset, sentiment
 from pyquant.data.prices import add_technical_indicators
+from pyquant.data.sentiment import _EXCHANGE_TZ
 
 
 def _patch_prices(monkeypatch, df):
     monkeypatch.setattr(
         dataset, "fetch_prices", lambda *a, **k: add_technical_indicators(df)
     )
+
+
+def _epoch_et(date: pd.Timestamp, hour: int) -> int:
+    """Epoch seconds for ``hour`` exchange-local time on ``date``."""
+    local = dt.datetime.combine(date.date(), dt.time(hour), tzinfo=_EXCHANGE_TZ)
+    return int(local.timestamp())
 
 
 def test_build_panel_baseline_ohlcv(monkeypatch, sample_ohlcv_df, settings):
@@ -57,6 +68,42 @@ def test_build_panel_drops_target_symbols_own_sector_column(monkeypatch, sample_
     panel = dataset.build_panel("SPY", settings)
     assert "SEC_SPY" not in panel.columns
     assert "SEC_XLK" in panel.columns
+
+
+def test_build_panel_lands_post_close_news_on_the_next_trading_row(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """The leak PYQ-129 fixed was only visible across two files.
+
+    fetch_sentiment picks the session; build_panel does the join. Each was
+    self-consistent while the pair attached post-close headlines to the row
+    whose target is that day's close -- so the invariant is asserted here, on
+    the assembled panel, not on either half.
+    """
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    settings.data.use_sentiment = True
+    settings.finnhub_api_key = "dummy"
+
+    sessions = sample_ohlcv_df.index
+    friday, monday = sessions[104], sessions[105]
+    assert friday.day_name() == "Friday" and monday.day_name() == "Monday"
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    monkeypatch.setattr(
+        sentiment,
+        "fetch_news",
+        lambda *a, **k: [
+            {"headline": "midday", "datetime": _epoch_et(friday, 11)},
+            {"headline": "after the bell", "datetime": _epoch_et(friday, 17)},
+        ],
+    )
+    monkeypatch.setattr(sentiment, "score_headlines", lambda h: [0.6, -0.9])
+
+    panel = dataset.build_panel("AAPL", settings)
+
+    assert panel.loc[friday, "Sentiment"] == pytest.approx(0.6)
+    assert panel.loc[friday, "HeadlineCount"] == 1
+    assert panel.loc[monday, "Sentiment"] == pytest.approx(-0.9)
+    assert panel.loc[monday, "HeadlineCount"] == 1
 
 
 def test_feature_columns_excludes_identifiers_and_target(monkeypatch, sample_ohlcv_df, settings):
@@ -138,6 +185,38 @@ def test_make_dataset_builds_timeseries_dataset(monkeypatch, sample_ohlcv_df, se
     assert params["max_encoder_length"] == settings.training.max_encoder_length
 
 
+# --- PYQ-133: the fingerprint must cover which code computed the columns -----
+
+
+def test_cache_fingerprint_changes_with_the_package_version(monkeypatch, settings):
+    """PYQ-121 redefined RSI_14 and PYQ-123 changed which rows survive, neither
+    of which altered anything the fingerprint covered -- so an upgraded install
+    happily served a panel built by the previous definition."""
+    monkeypatch.setattr(provenance, "package_version", lambda: "1.0.0")
+    before = dataset._cache_fingerprint("AAPL", settings, None, None)
+
+    monkeypatch.setattr(provenance, "package_version", lambda: "1.1.0")
+    after = dataset._cache_fingerprint("AAPL", settings, None, None)
+
+    assert before != after
+    assert cache.fingerprint_key(before) != cache.fingerprint_key(after)
+
+
+def test_cache_fingerprint_is_stable_for_identical_inputs(settings):
+    a = dataset._cache_fingerprint("AAPL", settings, None, None)
+    b = dataset._cache_fingerprint("AAPL", settings, None, None)
+    assert cache.fingerprint_key(a) == cache.fingerprint_key(b)
+
+
+def test_cache_fingerprint_records_no_secret_values(settings):
+    """Key *presence* is fingerprinted; key values never are."""
+    settings.fred_api_key = "super-secret-fred"
+    settings.finnhub_api_key = "super-secret-finnhub"
+    fingerprint = dataset._cache_fingerprint("AAPL", settings, None, None)
+    assert "super-secret-fred" not in str(fingerprint)
+    assert "super-secret-finnhub" not in str(fingerprint)
+
+
 # --- PYQ-115: prediction rows must cover the future, not observed days -------
 
 
@@ -147,6 +226,68 @@ def test_future_business_dates_starts_after_last_observed_date():
     assert dates[0] > pd.Timestamp("2024-10-07")
     # Business days only -- no weekend rows.
     assert all(d.dayofweek < 5 for d in dates)
+
+
+# --- PYQ-130: the forecast dates must be sessions the exchange actually holds -
+
+
+def test_future_business_dates_skips_an_observed_exchange_holiday():
+    """2026-07-04 is a Saturday, so NYSE closes Friday 2026-07-03.
+
+    pd.bdate_range returns Mon-Fri and knows nothing about market holidays, so
+    it labelled a forecast step for a day on which no price will ever exist --
+    unscoreable against reality, and a decoder row whose `dow` never occurs in
+    training data (PYQ-130).
+    """
+    dates = dataset.future_business_dates(pd.Timestamp("2026-07-02"), 5)
+
+    assert pd.Timestamp("2026-07-03") not in dates
+    assert list(dates) == [
+        pd.Timestamp("2026-07-06"),
+        pd.Timestamp("2026-07-07"),
+        pd.Timestamp("2026-07-08"),
+        pd.Timestamp("2026-07-09"),
+        pd.Timestamp("2026-07-10"),
+    ]
+
+
+def test_future_business_dates_skips_thanksgiving_but_keeps_the_half_day():
+    """The Friday after Thanksgiving trades (early close); the Thursday does not."""
+    dates = dataset.future_business_dates(pd.Timestamp("2026-11-25"), 3)
+
+    assert pd.Timestamp("2026-11-26") not in dates  # Thanksgiving
+    assert list(dates) == [
+        pd.Timestamp("2026-11-27"),  # half day, but a session
+        pd.Timestamp("2026-11-30"),
+        pd.Timestamp("2026-12-01"),
+    ]
+
+
+def test_future_business_dates_skips_good_friday():
+    """Good Friday is an NYSE holiday and not a US federal one -- the two calendars differ."""
+    dates = dataset.future_business_dates(pd.Timestamp("2026-04-02"), 2)
+
+    assert pd.Timestamp("2026-04-03") not in dates
+    assert list(dates) == [pd.Timestamp("2026-04-06"), pd.Timestamp("2026-04-07")]
+
+
+def test_extend_for_prediction_appends_exactly_the_dates_the_forecast_reports(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """One set of dates across the appended rows, the table, the JSON and the PNG.
+
+    PYQ-115 made one helper the single source of truth for the forecast dates;
+    this asserts the model's decoder rows and that helper cannot drift apart
+    when the helper's definition changes (PYQ-130).
+    """
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    df = dataset.panel_to_long(dataset.build_panel("AAPL", settings), "AAPL")
+    last_date = df["Date"].iloc[-1]
+
+    extended = dataset.extend_for_prediction(df, 5)
+    appended = list(extended.tail(5)["Date"])
+
+    assert appended == list(dataset.future_business_dates(last_date, 5))
 
 
 def test_extend_for_prediction_appends_horizon_future_rows(monkeypatch, sample_ohlcv_df, settings):

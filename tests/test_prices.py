@@ -30,11 +30,55 @@ def test_add_technical_indicators_adds_all_columns(sample_ohlcv_df):
 
 
 def test_add_technical_indicators_leaves_warmup_rows_genuinely_nan(sample_ohlcv_df):
-    """SMA_50 needs 49 real days of history -- those rows must stay NaN so
-    build_panel() can drop them, instead of being fabricated via bfill."""
+    """Every indicator's warm-up must stay NaN so build_panel() can drop it,
+    instead of being fabricated via bfill or emitted off a one-row window.
+
+    SMA_50 needs 49 real days. The EMA pair used to emit a value from row 1 --
+    literally ``close[0]``, an average of nothing -- and MACD inherited it
+    (PYQ-132), which is the same defect PYQ-121 fixed for RSI_14.
+    """
     out = prices.add_technical_indicators(sample_ohlcv_df)
-    assert out["SMA_50"].iloc[:49].isna().all()
-    assert out["SMA_50"].iloc[49:].notna().all()
+
+    # (column, number of leading rows that are genuinely undefined)
+    warmups = {
+        "SMA_10": 9,
+        "SMA_20": 19,
+        "SMA_50": 49,
+        "EMA_12": 11,
+        "EMA_26": 25,
+        "RSI_14": 14,
+        # MACD needs the slow EMA; the signal line then needs 9 MACD values.
+        "MACD": 25,
+        "MACD_Signal": 33,
+        "MACD_Hist": 33,
+    }
+    for column, warmup in warmups.items():
+        assert out[column].iloc[:warmup].isna().all(), f"{column} fabricates warm-up values"
+        assert out[column].iloc[warmup:].notna().all(), f"{column} is NaN past its warm-up"
+
+
+def test_panel_warmup_is_decided_by_the_longest_window_not_by_sma_50(sample_ohlcv_df):
+    """Each indicator must cut its own warm-up, not rely on SMA_50 cutting it.
+
+    PYQ-121 called that "an accidental dependency between two unrelated
+    indicators": SMA_50 happens to drop the first 49 rows, so a shorter
+    indicator emitting garbage before its window filled was masked. Dropping
+    SMA_50 must therefore still exclude the MACD warm-up (PYQ-132).
+    """
+    out = prices.add_technical_indicators(sample_ohlcv_df)
+    positions = {
+        c: out.index.get_loc(out[c].first_valid_index()) for c in prices.INDICATOR_COLUMNS
+    }
+
+    first_kept = out.index.get_loc(out.dropna().index[0])
+    assert first_kept == max(positions.values())
+
+    without_sma_50 = out.drop(columns=["SMA_50"])
+    first_kept_reduced = out.index.get_loc(without_sma_50.dropna().index[0])
+    expected = max(v for c, v in positions.items() if c != "SMA_50")
+    assert first_kept_reduced == expected
+    # The MACD signal line, not SMA_50, is what binds once SMA_50 is gone.
+    assert expected == positions["MACD_Signal"]
 
 
 def test_add_technical_indicators_does_not_mutate_input(sample_ohlcv_df):
