@@ -12,17 +12,7 @@ feature attributions behind them, from a Rich terminal UI or an HTTP API.
 architecture, leakage invariants, methodology, CLI and HTTP references, and the full API
 reference. Rebuilt on every push to `main`, and nightly against live upstream inventories.
 
-```
-                  NVO — 5-day forecast
-┏━━━━━┳━━━━━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━┳━━━━━━━━━┓
-┃ Day ┃       Date ┃    p10 ┃    p50 ┃    p90 ┃  vs now ┃
-┡━━━━━╇━━━━━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━╇━━━━━━━━━┩
-│   1 │ 2026-07-24 │ $43.81 │ $45.43 │ $49.14 │ ▼ 5.70% │
-│  …  │      …     │    …   │    …   │    …   │    …    │
-│   5 │ 2026-07-30 │ $43.66 │ $45.62 │ $49.62 │ ▼ 5.31% │
-└─────┴────────────┴────────┴────────┴────────┴─────────┘
-Options: put/call 0.54 (bullish), ATM IV 42%, skew +3.12%
-```
+![nvo.png](nvo.png)
 
 ## Does it beat a benchmark?
 
