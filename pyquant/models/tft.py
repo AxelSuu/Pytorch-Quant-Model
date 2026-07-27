@@ -16,10 +16,8 @@ from __future__ import annotations
 import datetime as dt
 import json
 import logging
-import subprocess
 import tempfile
 from dataclasses import dataclass
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
 import pandas as pd
@@ -29,6 +27,12 @@ from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
 from pytorch_forecasting import TemporalFusionTransformer, TimeSeriesDataSet
 from pytorch_forecasting.metrics import QuantileLoss
 
+from pyquant import provenance
+from pyquant.analysis.calibrate import (
+    ConformalOffset,
+    apply_conformal_offset,
+    fit_conformal_offset,
+)
 from pyquant.analysis.metrics import EvaluationMetrics, aggregate_metrics, evaluate_predictions
 from pyquant.config import Settings
 from pyquant.data.dataset import (
@@ -38,6 +42,7 @@ from pyquant.data.dataset import (
     feature_columns,
     make_dataset,
     panel_to_long,
+    target_column,
 )
 
 logger = logging.getLogger(__name__)
@@ -165,26 +170,11 @@ def _build_pooled_long_df(
     return align_time_index(pd.concat([f[ordered_cols] for f in frames], ignore_index=True))
 
 
-def _package_version() -> str:
-    try:
-        return version("pyquant")
-    except PackageNotFoundError:  # running from a source tree without an install
-        return "unknown"
-
-
-def _git_sha() -> str | None:
-    """Best-effort short git sha of the working tree, or None outside a repo."""
-    try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=Path(__file__).resolve().parent,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    return result.stdout.strip() or None if result.returncode == 0 else None
+# These were duplicated here so data/cache.py could stamp a pin without importing
+# the ML stack. Two copies meant PYQ-134's "an unrelated repo's sha is recorded as
+# PyQuant's provenance" had to be fixed twice; delegate instead so it cannot drift.
+_package_version = provenance.package_version
+_git_sha = provenance.git_sha
 
 
 def _provenance(pin: str | None) -> dict:
@@ -196,6 +186,32 @@ def _provenance(pin: str | None) -> dict:
     bundle (PYQ-225).
     """
     return {"pyquant_version": _package_version(), "git_sha": _git_sha(), "pin": pin}
+
+
+def purged_training_cutoff(cutoff: int, settings: Settings) -> int:
+    """Last ``time_idx`` a *training* sample may decode, given purge + embargo.
+
+    ``cutoff`` is where the held-out period begins minus one. Left alone, the
+    last training samples decode the days immediately before it -- and a
+    validation sample starting at ``cutoff + 1`` reads exactly those days
+    through its own encoder. Training and evaluation therefore share target
+    days across the boundary, which biases reported out-of-sample performance
+    optimistically. The financial-ML standard treatment (López de Prado,
+    *Advances in Financial Machine Learning*) is to **purge** one label horizon
+    either side of the split and then **embargo** a further buffer, because
+    serial correlation carries information across the boundary even where no
+    literal overlap remains (PYQ-250).
+
+    This is the last known member of the leak family PYQ-101/103/115/116/123/127
+    belong to, and the one the literature considers table stakes.
+
+    Returns the reduced cutoff; callers keep using the original for the
+    validation window, which must not move.
+    """
+    horizon = settings.training.max_prediction_length
+    purge = settings.training.purge_horizon
+    purge = horizon if purge is None else int(purge)
+    return cutoff - max(0, purge) - max(0, settings.training.embargo_days)
 
 
 def _warn_on_stale_symbols(df: pd.DataFrame, cutoff: int) -> list[str]:
@@ -259,23 +275,38 @@ def train(
     # scored instead of one (PYQ-117). Never shorter than one horizon, or there
     # would be no complete validation window at all.
     validation_days = max(settings.training.validation_days, horizon)
+    calibration_days = max(0, settings.training.calibration_days)
     max_idx = int(df["time_idx"].max())
-    cutoff = max_idx - validation_days
-    if cutoff <= encoder_len:
+    # Geometry, left to right:
+    #   [ training .. train_cutoff ][ purge+embargo ][ calibration ][ validation ]
+    # `cutoff` is the last index before the *held-out* region; the calibration
+    # slice (PYQ-248) sits between it and the scored validation window so the
+    # conformal offset is fitted on data that is out-of-sample for training and
+    # disjoint from what it is later judged on.
+    validation_start = max_idx - validation_days + 1
+    cutoff = validation_start - calibration_days - 1
+    train_cutoff = purged_training_cutoff(cutoff, settings)
+    if train_cutoff <= encoder_len:
         raise ValueError(
             f"Not enough history for {bundle_name}: need more than "
-            f"{encoder_len + validation_days} rows (a {encoder_len}-day encoder plus a "
-            f"{validation_days}-day validation holdout), got {len(df)}."
+            f"{encoder_len + validation_days + calibration_days + (cutoff - train_cutoff)} rows "
+            f"(a {encoder_len}-day encoder, a {validation_days}-day validation holdout, "
+            f"{calibration_days} calibration day(s) and {cutoff - train_cutoff} purged/embargoed "
+            f"day(s)), got {len(df)}."
         )
 
-    _warn_on_stale_symbols(df, cutoff)
+    # Staleness is about whether a symbol has any data left to *validate* on, so
+    # it is measured against the start of the scored window -- not against the
+    # purged training cutoff, which sits earlier and would let a symbol whose
+    # data stops inside the purge gap pass unflagged.
+    _warn_on_stale_symbols(df, validation_start - 1)
 
-    training = make_dataset(df, settings, training_cutoff=cutoff)
+    training = make_dataset(df, settings, training_cutoff=train_cutoff)
     # Every window whose decoder starts after the cutoff, rather than predict=True's
     # single last window -- this is what gives the metrics and early stopping a
     # usable sample size (PYQ-117).
     validation = TimeSeriesDataSet.from_dataset(
-        training, df, min_prediction_idx=cutoff + 1, stop_randomization=True
+        training, df, min_prediction_idx=validation_start, stop_randomization=True
     )
 
     batch_size = settings.training.batch_size
@@ -322,14 +353,41 @@ def train(
     # stops training several epochs past the best one without rewinding the live
     # weights, so reporting on `model` measures a worse, already-discarded
     # checkpoint than the one that gets deployed (PYQ-109).
-    evaluation = _evaluate_best_checkpoint(
-        bundle_dir / "model.ckpt", model, val_loader, settings.tft.quantiles
+    best_model = _load_best_checkpoint(bundle_dir / "model.ckpt", model)
+    target = target_column(settings)
+
+    # Fit the conformal offset on the calibration slice -- disjoint from both the
+    # training data and the validation window the metrics come from, so the
+    # widening/narrowing it implies is not read off the same points it is later
+    # judged on (PYQ-248).
+    conformal = None
+    if calibration_days > 0:
+        calibration = TimeSeriesDataSet.from_dataset(
+            training,
+            df[df["time_idx"] < validation_start],
+            min_prediction_idx=cutoff + 1,
+            stop_randomization=True,
+        )
+        cal_loader = calibration.to_dataloader(
+            train=False, batch_size=batch_size, num_workers=num_workers
+        )
+        cal_pred, cal_actual, _ = _raw_validation_arrays(best_model, cal_loader)
+        conformal = fit_conformal_offset(cal_actual, cal_pred, settings.tft.quantiles)
+        logger.info(
+            "Conformal offset %.6g fitted on %d calibration point(s)",
+            conformal.offset,
+            conformal.n_calibration,
+        )
+
+    evaluation = _evaluate_validation(
+        best_model, val_loader, settings.tft.quantiles, target, conformal=conformal
     )
     meta = {
         "symbol": bundle_name,
         "symbols": symbols,
         "trained_at": dt.datetime.now().isoformat(timespec="seconds"),
         "features": feature_columns(df),
+        "target": target_column(settings),
         "val_loss": val_loss,
         "epochs_run": trainer.current_epoch,
         "seed": settings.training.seed,
@@ -347,6 +405,9 @@ def train(
         },
         "provenance": _provenance(pin),
         "evaluation": vars(evaluation),
+        # Persisted so `forecast` applies the same band correction the metrics
+        # above were computed under, without refitting it (PYQ-248).
+        "conformal": conformal.to_dict() if conformal else None,
     }
     (bundle_dir / "meta.json").write_text(json.dumps(meta, indent=2))
     # meta.json reflects only the deployable (latest) bundle; runs.jsonl is an
@@ -411,10 +472,15 @@ def walk_forward_backtest(
 
     latest_cutoff = max_idx - horizon
     earliest_cutoff = latest_cutoff - (n_windows - 1) * step
-    if earliest_cutoff <= encoder_len:
+    # Purge + embargo eat into the *earliest* origin's training slice, so the
+    # history check has to account for them or the first window fails mid-run
+    # rather than up front (PYQ-250).
+    if purged_training_cutoff(earliest_cutoff, settings) <= encoder_len:
+        gap = earliest_cutoff - purged_training_cutoff(earliest_cutoff, settings)
         raise ValueError(
             f"Not enough history for {n_windows} walk-forward window(s) of {symbol}: "
-            f"need more than {encoder_len + horizon + (n_windows - 1) * step} rows, got {len(df)}."
+            f"need more than {encoder_len + horizon + (n_windows - 1) * step + gap} rows "
+            f"({gap} of them purged/embargoed before each origin), got {len(df)}."
         )
 
     cutoffs = sorted(latest_cutoff - i * step for i in range(n_windows))
@@ -424,7 +490,7 @@ def walk_forward_backtest(
     num_workers = settings.training.num_workers
     per_window: list[EvaluationMetrics] = []
     for cutoff in cutoffs:
-        training = make_dataset(df, settings, training_cutoff=cutoff)
+        training = make_dataset(df, settings, training_cutoff=purged_training_cutoff(cutoff, settings))
         validation = _window_validation_dataset(training, df, cutoff, horizon)
         train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
         val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
@@ -457,7 +523,11 @@ def walk_forward_backtest(
             trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
             per_window.append(
                 _evaluate_best_checkpoint(
-                    ckpt_cb.best_model_path, model, val_loader, settings.tft.quantiles
+                    ckpt_cb.best_model_path,
+                    model,
+                    val_loader,
+                    settings.tft.quantiles,
+                    target_column(settings),
                 )
             )
 
@@ -469,13 +539,10 @@ def walk_forward_backtest(
     )
 
 
-def _evaluate_best_checkpoint(
-    best_model_path: str | Path | None,
-    live_model: TemporalFusionTransformer,
-    val_loader,
-    quantiles: list[float],
-) -> EvaluationMetrics:
-    """Evaluate the best-epoch checkpoint, falling back to the live model.
+def _load_best_checkpoint(
+    best_model_path: str | Path | None, live_model: TemporalFusionTransformer
+) -> TemporalFusionTransformer:
+    """The best-epoch checkpoint, falling back to the live model.
 
     EarlyStopping does not rewind the live model's weights to the best epoch --
     ModelCheckpoint does, and it must be reloaded explicitly (as tft.load() does
@@ -485,30 +552,68 @@ def _evaluate_best_checkpoint(
     """
     best_model_path = Path(best_model_path) if best_model_path else None
     if best_model_path and best_model_path.exists():
-        model = TemporalFusionTransformer.load_from_checkpoint(
+        return TemporalFusionTransformer.load_from_checkpoint(
             str(best_model_path), map_location="cpu"
         )
-    else:
-        logger.warning("No best checkpoint found; evaluating the live post-fit model instead.")
-        model = live_model
-    return _evaluate_validation(model, val_loader, quantiles)
+    logger.warning("No best checkpoint found; evaluating the live post-fit model instead.")
+    return live_model
 
 
-def _evaluate_validation(
-    model: TemporalFusionTransformer, val_loader, quantiles: list[float]
+def _evaluate_best_checkpoint(
+    best_model_path: str | Path | None,
+    live_model: TemporalFusionTransformer,
+    val_loader,
+    quantiles: list[float],
+    target: str = "Close",
+    conformal: ConformalOffset | None = None,
 ) -> EvaluationMetrics:
-    """Score the held-out validation window vs. a persistence baseline."""
+    """Evaluate the best-epoch checkpoint (PYQ-109), applying any conformal offset."""
+    model = _load_best_checkpoint(best_model_path, live_model)
+    return _evaluate_validation(model, val_loader, quantiles, target, conformal=conformal)
+
+
+def _raw_validation_arrays(model: TemporalFusionTransformer, loader):
+    """(predictions, actuals, last_observed) for a loader, all in target units.
+
+    PYQ-313 verified against pytorch-forecasting 1.7.0 that these three come back
+    in the target's own space rather than the normalizer's; PYQ-240's test pins
+    it. Extracted so the calibration slice and the validation window are read
+    exactly the same way.
+    """
     result = model.predict(
-        val_loader,
+        loader,
         mode="quantiles",
         return_x=True,
         return_y=True,
         trainer_kwargs={"enable_progress_bar": False, "logger": False},
     )
-    predictions = result.output.cpu().numpy()
-    actuals = result.y[0].cpu().numpy()
-    last_observed = result.x["encoder_target"][:, -1].cpu().numpy()
-    return evaluate_predictions(predictions, actuals, last_observed, quantiles)
+    return (
+        result.output.cpu().numpy(),
+        result.y[0].cpu().numpy(),
+        result.x["encoder_target"][:, -1].cpu().numpy(),
+    )
+
+
+def _evaluate_validation(
+    model: TemporalFusionTransformer,
+    val_loader,
+    quantiles: list[float],
+    target: str = "Close",
+    conformal: ConformalOffset | None = None,
+) -> EvaluationMetrics:
+    """Score the held-out validation window vs. a persistence baseline."""
+    predictions, actuals, last_observed = _raw_validation_arrays(model, val_loader)
+    # Score the band the user will actually be shown. Reporting coverage for an
+    # uncalibrated band while `forecast` prints a calibrated one would make the
+    # published number describe something nobody sees (PYQ-248).
+    predictions = apply_conformal_offset(predictions, conformal)
+    return evaluate_predictions(
+        predictions,
+        actuals,
+        last_observed,
+        quantiles,
+        target="log_return" if target == "LogReturn" else "close",
+    )
 
 
 def _check_feature_schema(bundle: ModelBundle, df: pd.DataFrame) -> None:
@@ -546,6 +651,12 @@ def _prediction_dataset(bundle: ModelBundle, df) -> TimeSeriesDataSet:
     observations, which is what makes interpret()'s attention line up with the
     last panel dates.
     """
+    symbols = sorted(str(symbol) for symbol in df["symbol"].unique())
+    if len(symbols) != 1:
+        raise ValueError(
+            "predict_quantiles and interpret currently require exactly one symbol; "
+            f"received {symbols}. Build one panel per symbol before predicting."
+        )
     _check_feature_schema(bundle, df)
     horizon = int(bundle.dataset_params["max_prediction_length"])
     return TimeSeriesDataSet.from_parameters(
@@ -556,12 +667,23 @@ def _prediction_dataset(bundle: ModelBundle, df) -> TimeSeriesDataSet:
     )
 
 
+def bundle_conformal_offset(bundle: ModelBundle) -> ConformalOffset | None:
+    """The conformal band correction recorded at train time, if any (PYQ-248)."""
+    recorded = bundle.meta.get("conformal")
+    return ConformalOffset.from_dict(recorded) if recorded else None
+
+
 def predict_quantiles(bundle: ModelBundle, df):
-    """Return a (horizon, n_quantiles) array of quantile forecasts."""
+    """Return a (horizon, n_quantiles) array of quantile forecasts.
+
+    The band carries whatever conformal correction the bundle was calibrated
+    with, so what a user is shown is the same band the bundle's reported
+    coverage describes (PYQ-248).
+    """
     ds = _prediction_dataset(bundle, df)
     dl = ds.to_dataloader(train=False, batch_size=1, num_workers=0)
     out = bundle.model.predict(dl, mode="quantiles")
-    return out[0].cpu().numpy()
+    return apply_conformal_offset(out[0].cpu().numpy(), bundle_conformal_offset(bundle))
 
 
 def interpret(bundle: ModelBundle, df) -> dict:

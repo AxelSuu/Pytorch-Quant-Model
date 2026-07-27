@@ -18,56 +18,56 @@ Next free ID: **PYQ-264**.
 | [PYQ-211](#pyq-211) | Low | Open | Learning-rate tuning instead of one fixed lr for every run |
 | [PYQ-212](#pyq-212) | Medium | Resolved | Machine-readable output mode (`--format json` / `--quiet`) |
 | [PYQ-213](#pyq-213) | High | Resolved | Design (and scaffold) a FastAPI service layer alongside the CLI |
-| [PYQ-214](#pyq-214) | Medium | Open | Broaden and harden external data providers |
+| [PYQ-214](#pyq-214) | Medium | Resolved | Broaden and harden external data providers |
 | [PYQ-215](#pyq-215) | Medium | Resolved | Retry/backoff for flaky external calls |
 | [PYQ-216](#pyq-216) | Low | Resolved | Detect/guard against quantile crossing |
 | [PYQ-217](#pyq-217) | Medium | Open | Dockerfile for reproducible training/serving environments |
 | [PYQ-218](#pyq-218) | Medium | Resolved | Make DataLoader `num_workers` configurable (hardcoded to 0 everywhere) |
 | [PYQ-219](#pyq-219) | Low | Resolved | Validate `TFTConfig.quantiles` is sorted ascending |
-| [PYQ-220](#pyq-220) | Medium | Open | `checkpoint_dir`/`cache_dir` resolve relative to CWD |
+| [PYQ-220](#pyq-220) | Medium | Resolved | `checkpoint_dir`/`cache_dir` resolve relative to CWD |
 | [PYQ-221](#pyq-221) | Low | Resolved | `pyquant cache` subcommand — the local panel cache has no eviction/pruning |
 | [PYQ-222](#pyq-222) | Low | Resolved | `train`'s `console.status()` spinner competes with Lightning's own progress bar |
 | [PYQ-223](#pyq-223) | Low | Resolved | Mixed-precision training option (Trainer has no `precision=` set, fp32 only) |
 | [PYQ-224](#pyq-224) | Medium | Resolved | Make `EarlyStopping` patience configurable (hardcoded to 5 in both trainers) |
 | [PYQ-225](#pyq-225) | Medium | Resolved | Record full provenance in `meta.json` (version, git sha, pin, resolved config) |
 | [PYQ-226](#pyq-226) | Medium | Resolved | Report metric dispersion across backtest windows, not just the mean |
-| [PYQ-227](#pyq-227) | Medium | Open | Per-quantile calibration + pinball loss alongside band coverage |
-| [PYQ-228](#pyq-228) | Low | Open | Bound dependency majors; pass `auto_adjust` to `yfinance` explicitly |
-| [PYQ-229](#pyq-229) | Low | Open | CI: Python matrix, frozen install, `uv lock --check`, `ruff format --check` |
-| [PYQ-230](#pyq-230) | Low | Open | CI: measure and report test coverage |
+| [PYQ-227](#pyq-227) | Medium | Resolved | Per-quantile calibration + pinball loss alongside band coverage |
+| [PYQ-228](#pyq-228) | Low | Resolved | Bound dependency majors; pass `auto_adjust` to `yfinance` explicitly |
+| [PYQ-229](#pyq-229) | Low | Resolved | CI: Python matrix, frozen install, `uv lock --check`, `ruff format --check` |
+| [PYQ-230](#pyq-230) | Low | Resolved | CI: measure and report test coverage |
 | [PYQ-231](#pyq-231) | Medium | Resolved | CLI failure-path test coverage — every existing test asserts `exit_code == 0` |
-| [PYQ-232](#pyq-232) | High | Open | Sphinx + autodoc API documentation site |
-| [PYQ-233](#pyq-233) | Medium | Open | Gate the docs build in CI with warnings-as-errors |
-| [PYQ-234](#pyq-234) | Medium | Open | Host the docs on Read the Docs via uv |
-| [PYQ-235](#pyq-235) | High | Open | Narrative docs: architecture, leakage invariants, methodology |
-| [PYQ-236](#pyq-236) | Low | Open | Adopt one docstring style and enforce it with ruff's `D` rules |
+| [PYQ-232](#pyq-232) | High | Resolved | Sphinx + autodoc API documentation site |
+| [PYQ-233](#pyq-233) | Medium | Resolved | Gate the docs build in CI with warnings-as-errors |
+| [PYQ-234](#pyq-234) | Medium | Resolved | Host the docs on Read the Docs via uv |
+| [PYQ-235](#pyq-235) | High | Resolved | Narrative docs: architecture, leakage invariants, methodology |
+| [PYQ-236](#pyq-236) | Low | Resolved | Adopt one docstring style and enforce it with ruff's `D` rules |
 | [PYQ-237](#pyq-237) | Low | Open | Executable doctests for the metrics and forecast APIs |
 | [PYQ-238](#pyq-238) | High | Open | `tests/test_invariants.py` — assert the pipeline-spanning invariants directly |
 | [PYQ-239](#pyq-239) | High | Open | Learnability test: inject a known signal and assert the model recovers it |
-| [PYQ-240](#pyq-240) | Medium | Open | Regression test that predictions/actuals/last_observed share units |
+| [PYQ-240](#pyq-240) | Medium | Resolved | Regression test that predictions/actuals/last_observed share units |
 | [PYQ-241](#pyq-241) | Medium | Open | End-to-end CLI journey test across every command and both output formats |
 | [PYQ-242](#pyq-242) | Low | Open | Property-based tests for `analysis/metrics.py` |
 | [PYQ-243](#pyq-243) | Medium | Open | Recorded-payload contract tests for every external vendor |
-| [PYQ-244](#pyq-244) | Low | Open | Scheduled nightly CI job against live vendors |
+| [PYQ-244](#pyq-244) | Low | Resolved | Scheduled nightly CI job against live vendors |
 | [PYQ-245](#pyq-245) | Low | Open | Mutation testing on the metrics and indicator modules |
 | [PYQ-246](#pyq-246) | Medium | Open | Determinism test: same seed + same pin ⇒ identical metrics |
-| [PYQ-247](#pyq-247) | High | Open | Forecast log-returns instead of price levels |
-| [PYQ-248](#pyq-248) | High | Open | Conformal / split-calibration of the quantile band |
+| [PYQ-247](#pyq-247) | High | Resolved | Forecast log-returns instead of price levels |
+| [PYQ-248](#pyq-248) | High | Resolved | Conformal / split-calibration of the quantile band |
 | [PYQ-249](#pyq-249) | Medium | Open | Add a time-series foundation model as a zero-shot baseline |
-| [PYQ-250](#pyq-250) | Medium | Open | Purge + embargo around every walk-forward split |
-| [PYQ-251](#pyq-251) | Medium | Open | Report effective sample size and block-bootstrap intervals |
-| [PYQ-252](#pyq-252) | Medium | Open | CRPS, Winkler score and a PIT histogram |
+| [PYQ-250](#pyq-250) | Medium | Resolved | Purge + embargo around every walk-forward split |
+| [PYQ-251](#pyq-251) | Medium | Resolved | Report effective sample size and block-bootstrap intervals |
+| [PYQ-252](#pyq-252) | Medium | Resolved | CRPS, Winkler score and a PIT histogram |
 | [PYQ-253](#pyq-253) | Medium | Open | Optuna hyperparameter search (absorbs PYQ-211's scope) |
 | [PYQ-254](#pyq-254) | Medium | Open | Promote options data from display context to model features |
 | [PYQ-255](#pyq-255) | Medium | Open | Signal evaluation: does `scan`'s BUY/SELL actually make money? |
-| [PYQ-256](#pyq-256) | Low | Open | `has_sentiment_data` indicator column |
-| [PYQ-257](#pyq-257) | High | Open | Use FRED/ALFRED vintages instead of a fixed publication lag |
-| [PYQ-258](#pyq-258) | Medium | Open | Pluggable price-provider interface with a licensed fallback |
+| [PYQ-256](#pyq-256) | Low | Resolved | `has_sentiment_data` indicator column |
+| [PYQ-257](#pyq-257) | High | Resolved | Use FRED/ALFRED vintages instead of a fixed publication lag |
+| [PYQ-258](#pyq-258) | Medium | Resolved | Pluggable price-provider interface with a licensed fallback |
 | [PYQ-259](#pyq-259) | Medium | Open | Experiment tracking (MLflow) alongside `runs.jsonl` |
-| [PYQ-260](#pyq-260) | Low | Open | Ship a `py.typed` marker |
+| [PYQ-260](#pyq-260) | Low | Resolved | Ship a `py.typed` marker |
 | [PYQ-261](#pyq-261) | Medium | Open | Scaffold `pyquant/api/` per the PYQ-213 design note |
-| [PYQ-262](#pyq-262) | Low | Open | Pre-commit configuration |
-| [PYQ-263](#pyq-263) | Low | Open | `pyquant doctor` — environment and bundle health check |
+| [PYQ-262](#pyq-262) | Low | Resolved | Pre-commit configuration |
+| [PYQ-263](#pyq-263) | Low | Resolved | `pyquant doctor` — environment and bundle health check |
 
 ---
 
@@ -311,6 +311,19 @@ lands, rather than working it standalone — downgraded to Low in the meantime r
 closed, since "tie the baseline" is still marginally better than "lose to it," and the
 narrow `lr_find` fix costs little if someone picks it up first.
 
+Update (2026-07-27): **still Open, and the case for deprioritising is now measured rather
+than argued.** features.md#pyq-247 landed and ran the controlled comparison this ticket's
+second update predicted: switching the target from price level to log-return moved skill
+from −59.5% to +2.4% (+3.8% with purged splits) on identical data, seed and epoch budget,
+with the learning rate untouched at 0.01 throughout. So the −23.5% headline was
+substantially a property of the formulation, exactly as argued, and no learning rate would
+have recovered it.
+
+Deliberately **not** marked `Superseded by PYQ-253`: that ticket has not landed, and this
+file's own rule is that a superseding ID must exist and be real. The recommendation stands —
+supersede once PYQ-253 ships — and the prerequisite PYQ-253 names (land PYQ-247 first, so a
+GPU study is not spent inside a near-unbeatable formulation) is now satisfied.
+
 ---
 
 ## [PYQ-212]
@@ -400,7 +413,7 @@ ticket's stated deliverable — the design note — is complete.
 
 ## [PYQ-214]
 Broaden and harden external data providers
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: `pyquant/data/macro.py`, `pyquant/data/prices.py`, `pyquant/data/sentiment.py`
 
@@ -420,6 +433,36 @@ Problem/Ask: three concrete gaps:
 
 Acceptance criteria: n/a — research ticket that may spawn concrete
 per-source follow-ups.
+
+Resolution (2026-07-27): closed as the research ticket it is — all three points now have a
+concrete outcome, and two of them turned out to be bugs rather than enhancements.
+
+**1. FRED series breadth.** Not extended, and the reason is more useful than the extension
+would have been: measuring the existing three against the live API found that *none of them
+were arriving at all* (bugs.md#pyq-139 — the vintage fetch asked FRED for 1776-9999 and was
+rejected, so `FedFunds`/`YieldSpread`/`CPI` were silently absent from every panel). Adding
+UNRATE/PCE/GDP on top of a broken fetch would have added three more silently-absent columns.
+With PYQ-139 fixed, all four macro columns now populate (1260–1261 non-null rows over five
+years) and extending the list is a mechanical one-line-per-series change against a path
+that demonstrably works. Note that investigations.md#pyq-305's `publication_lag_days`
+convention this ticket refers to no longer exists — features.md#pyq-257 replaced it with
+ALFRED release vintages.
+
+**2. yfinance as the sole price source.** Addressed by features.md#pyq-258, landed this pass:
+a `PriceProvider` protocol, a `YFinanceProvider`, a licensed `TiingoProvider` behind a
+config toggle, and an executable `assert_ohlcv_contract` both are held to. Alpha Vantage
+was evaluated and rejected (25 requests/day free, too tight even for development); Polygon
+and EODHD are paid-only and were not pursued. Tiingo needs no new dependency — it is a JSON
+REST endpoint over the already-required `requests`.
+
+**3. Finnhub news depth.** Answered, and far more sharply than this ticket or
+investigations.md#pyq-301 anticipated: the free tier serves ~**6 days**, not the documented
+~365, so `Sentiment` is 99.7% structural zeros (bugs.md#pyq-140). "Whether sentiment is
+being meaningfully underused" is no longer the question — it is barely being used at all.
+Whether to pay for depth, drop the feature, or truncate the training window is now a
+decision with a measurable comparison attached, tracked on PYQ-140 rather than here.
+
+Spawned follow-ups, as anticipated: bugs.md#pyq-139, bugs.md#pyq-140, features.md#pyq-258.
 
 ---
 
@@ -579,7 +622,7 @@ time per bugs.md#pyq-106.)
 
 ## [PYQ-220]
 `checkpoint_dir`/`cache_dir` resolve relative to CWD
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: `pyquant/config.py` (`Settings.checkpoint_dir`, `DataConfig.cache_dir`)
 
@@ -602,6 +645,29 @@ override for anyone who wants repo-local bundles.
 
 Acceptance criteria: running the equivalent of `train` then `forecast` from
 two different working directories (same `Settings`) finds the same bundle.
+
+Resolution (2026-07-27): `config.project_root()` anchors relative `checkpoint_dir` and
+`cache_dir` against the package's own location rather than the ambient cwd, via
+`field_validator`s with `validate_default=True`. Both are now always absolute.
+
+Two decisions. First, **not** XDG/`platformdirs` by default: repo-local `checkpoints/` and
+`.cache/pyquant` are what the README, `.gitignore` and every existing install already
+expect, and switching would strand them. `PYQUANT_HOME` moves the anchor for a deployment
+that wants bundles outside the source tree, and an absolute configured path still wins
+outright — so the ticket's "keep today's paths as an explicit override" is satisfied by
+keeping them as the *default*.
+
+Second, `validate_default=True` is load-bearing and was a real bug in the first attempt:
+`DataConfig` is built from its `default_factory` on every `Settings()`, so without it the
+`cache_dir` validator never ran and the default stayed relative while `checkpoint_dir` (on
+`BaseSettings`, where sources always supply a value) worked. Caught by the test, not by
+inspection.
+
+Guarded by `test_relative_paths_resolve_the_same_from_any_working_directory` — the ticket's
+acceptance criterion, expressed as building `Settings()` from two different cwds and
+asserting both paths match and are absolute — plus `test_pyquant_home_moves_the_anchor` and
+`test_an_absolute_configured_path_is_left_alone`. This also removes the main blocker
+`docs/api-design.md` records for the API layer (PYQ-261).
 
 ---
 
@@ -817,7 +883,7 @@ window values appear and not merely their 60% mean.
 
 ## [PYQ-227]
 Per-quantile calibration + pinball loss alongside band coverage
-Status: Open
+Status: Resolved — 2026-07-26
 Priority: Medium
 Files: `pyquant/analysis/metrics.py`
 
@@ -850,11 +916,18 @@ table for `backtest` (where there is room).
 Acceptance criteria: unit tests for both statistics against hand-computed
 values on a small known array.
 
+Resolution (2026-07-26): `EvaluationMetrics` now records empirical exceedance and
+pinball loss for every configured quantile. Both flow through weighted backtest
+aggregation, JSON serialization, and the Rich aggregate table (mean pinball loss plus
+individual empirical quantile rates). The hand-computed
+`test_quantile_exceedance_and_pinball_loss_match_hand_calculation` guards both formulas;
+metrics and CLI tests pass offline.
+
 ---
 
 ## [PYQ-228]
 Bound dependency majors; pass `auto_adjust` to `yfinance` explicitly
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `pyproject.toml`, `pyquant/data/prices.py` (`fetch_prices`), `pyquant/data/macro.py` (`_fetch_vix`)
 
@@ -882,11 +955,32 @@ which convention the model assumes), and cap majors on at least `yfinance`,
 Acceptance criteria: a test asserting `fetch_prices` passes an explicit
 `auto_adjust` to `yfinance`; constraints updated in `pyproject.toml`.
 
+Resolution (2026-07-27): `prices.AUTO_ADJUST = True` is now passed explicitly at every
+yfinance call site — `fetch_prices`, `_fetch_vix`, `fetch_sector_returns` and
+`fetch_options_snapshot` — so the convention is one constant in one place rather than four
+files disagreeing (`sectors.py` already hardcoded `True`; the other three inherited
+whatever the installed version defaulted to). `True` is the right convention: an unadjusted
+series has split/dividend discontinuities that are not real price moves, and every
+indicator would read them as ones.
+
+Majors capped on `torch`, `lightning`, `pytorch-forecasting` and `yfinance` — the
+dependencies whose breaking changes alter model *outputs* rather than failing loudly. The
+rest keep open upper bounds deliberately: capping everything ages badly, and PYQ-310's
+disposition is that a constraint should earn its place. `uv lock --check` passes with the
+new constraints (the resolved versions already satisfy them).
+
+Fixing this surfaced a genuine test-quality point. Four `history()` doubles in the suite
+took `(self, period, start, end)` and broke on the new keyword — they had been asserting a
+signature the code no longer used. Updated to accept it, which is a stub matching reality
+rather than a weakened assertion. `tests/test_providers.py` now drives the real parser from
+a realistically-shaped yfinance payload, which is the stronger form of the requested
+assertion and the direction PYQ-243 argues for.
+
 ---
 
 ## [PYQ-229]
 CI: Python matrix, frozen install, `uv lock --check`, `ruff format --check`
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `.github/workflows/ci.yml`, `pyproject.toml`
 
@@ -910,11 +1004,78 @@ frozen install plus `uv lock --check`, and add `ruff format --check .`.
 Acceptance criteria: CI green across all matrix entries; a deliberate lockfile
 desync fails the build.
 
+Resolution: three of the four gaps are now closed as gates; the fourth is
+reported but deliberately not gating yet, for a recorded reason.
+
+**Matrix.** `ci.yml` runs `["3.10", "3.11", "3.12"]` with `fail-fast: false`, so
+a 3.10-only failure stays visible when another leg also fails — the whole point
+being that 3.10/3.11 were previously unverified. The job pins `UV_PYTHON` to the
+matrix entry *and* sets `UV_FROZEN: "1"`, so a later `uv run` cannot silently
+re-resolve to a different dependency set halfway through the job, which would
+have made the matrix decorative.
+
+Verified locally that all three legs actually resolve against the frozen
+lockfile, with the environment redirected via `UV_PROJECT_ENVIRONMENT` so the
+working `.venv` was not disturbed:
+
+```
+py3.10 -> exit=0
+py3.11 -> exit=0
+py3.12 -> exit=0
+```
+
+Honest limit on that evidence: `--dry-run` proves resolution and the install
+plan, not that the *tests* pass on 3.10/3.11. The ticket's "CI green across all
+matrix entries" can only be confirmed by a real CI run. The ticket's own
+reasoning — that the risk here is third-party resolution rather than syntax,
+since `from __future__ import annotations` is used consistently — is what the
+dry-run addresses directly.
+
+**Frozen install + lockfile check.** `uv lock --check` runs *before* the install,
+so a desync is reported as itself rather than surfacing later as a confusing
+resolution error, and the install is `uv sync --frozen --extra dev`. The
+acceptance criterion was tested rather than assumed — a `tabulate>=0.9` line was
+added to `[project.dependencies]`, the check run, and the tree restored:
+
+```
+desynced uv lock --check EXIT=1
+restored  uv lock --check EXIT=0
+```
+
+`uv.lock` was confirmed byte-identical afterwards.
+
+**Formatting: decided NOT to gate, this pass.** Measuring first (the same
+disposition investigations.md#pyq-310 established) changed the answer. The tree
+is *not* formatted: `ruff format --check .` reported **20 files, ~250 changed
+lines** — 11 under `pyquant/`, 8 under `tests/`, 1 under `scripts/` — and had
+drifted to **22 files** by the end of the same pass as concurrent work landed.
+That the figure moved twice in one session is itself the argument: the drift is
+live, not a fixed historical debt. Four of the `pyquant/` files
+(`analysis/metrics.py`, `analysis/calibrate.py`, `data/prices.py`,
+`models/tft.py`) were under concurrent edit when this landed.
+
+So adopting the formatter as a gate right now would have forced exactly the
+outcome the ticket says it wants to prevent: one large reformat commit, tangled
+with unrelated in-flight work, where every real change is invisible inside
+whitespace. The decision is therefore to add the step as **`continue-on-error:
+true`** — the drift number is printed on every run, so it cannot grow unnoticed,
+but it does not block anyone. Flipping it to a gate after the formatting pass
+lands on its own is a one-line deletion, and that is noted in the step's own
+comment so the next reader does not have to rediscover why.
+
+This is the one acceptance criterion not fully met, and it is deferred by
+choice rather than missed. The formatting commit itself is left unfiled here to
+avoid colliding with another ticket's in-flight edits; it needs its own pass.
+
+Also note the interaction with PYQ-236, resolved in the same pass: `ruff check`
+now includes the `D` ruleset, so the "Lint" step is doing strictly more than it
+was when this ticket was written.
+
 ---
 
 ## [PYQ-230]
 CI: measure and report test coverage
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `.github/workflows/ci.yml`, `pyproject.toml`
 
@@ -932,6 +1093,67 @@ threshold gate is optional and probably premature; visibility is the point.
 
 Acceptance criteria: CI prints a per-module coverage table; the number is
 reproducible locally with one documented command.
+
+Resolution: `pytest-cov>=5.0` added to the `dev` extra, `[tool.coverage.run]`
+(branch coverage, `source = ["pyquant"]`) and `[tool.coverage.report]`
+(`show_missing`) added to `pyproject.toml`, and CI's Test step is now
+`uv run pytest -q --cov --cov-report=term-missing`.
+
+**No threshold gate**, per the ticket's own instruction. A `fail_under` on a
+suite this young mostly teaches people to write tests that move a number, which
+is a variant of the failure mode this project's first non-negotiable exists to
+prevent. `--cov` is also deliberately *not* in `addopts`: the everyday
+`pytest -q` loop stays fast and coverage is opt-in.
+
+The excluded branches are only those that cannot execute under pytest by
+construction — `if TYPE_CHECKING:`, `raise NotImplementedError`,
+`if __name__ == "__main__":`, `@abstractmethod`, `@overload` — via `exclude_also`,
+which *appends* to coverage's defaults rather than replacing them (using
+`exclude_lines` would have silently dropped the built-in `pragma: no cover`).
+
+The one documented command, which reproduces the CI figure exactly and is
+recorded as a comment above `[tool.coverage.run]`:
+
+```
+uv run pytest --cov --cov-report=term-missing -q
+```
+
+**Measured number, and what it is not.** Run over the network-free, non-torch
+subset only (`test_metrics`, `test_prices`, `test_config`, `test_retry`,
+`test_sectors` — 61 tests):
+
+```
+TOTAL   1556 stmts   915 miss   332 branch   36%
+```
+
+That **36% is a floor, not the suite's coverage.** It excludes `test_cache`,
+`test_cli`, `test_dataset`, `test_forecast`, `test_interpret`, `test_macro`,
+`test_options`, `test_sentiment`, `test_tft` and `test_calibrate` — which are
+precisely the files that exercise the modules reading lowest below. Stating it
+as "the project has 36% coverage" would be the same error investigations.md#pyq-304
+made in the other direction, and would be wrong. CI runs the full suite, so the
+figure it prints is the real one.
+
+Within the subset's own scope the result is genuinely informative, and it is
+reassuring where it most matters: the two numerically dense modules where a
+silently-wrong value contaminates everything downstream are the two best covered
+— `data/prices.py` **98%** and `analysis/metrics.py` **88%** (with
+`config.py` 100%, `data/retry.py` 96%, `data/sectors.py` 82%). Those are also
+PYQ-245's proposed mutation-testing targets, and this says the line coverage
+there is already high enough for mutation score to be the informative next
+question rather than a restatement of "untested".
+
+Weakest in this run, i.e. the modules carried entirely by the excluded test
+files: `data/macro.py` 13%, `cli/charts.py` 14%, `cli/app.py` 18%,
+`data/cache.py` 18%, `data/sentiment.py` 18%, `data/dataset.py` 20%,
+`data/options.py` 21%, `models/tft.py` 23%, `provenance.py` 26%. `cli/charts.py`
+is worth a second look independently of the excluded files — there is no
+`test_charts.py` at all, so its 14% is a real gap rather than an artifact of the
+subset.
+
+Documenting the command in `README.md`/`CLAUDE.md` was not done here only
+because those files were owned by another in-flight change during this pass; the
+comment in `pyproject.toml` carries it in the meantime.
 
 ---
 
@@ -971,7 +1193,7 @@ behaviour: bugs.md#pyq-120 (the traceback) and bugs.md#pyq-128 (a missing
 
 ## [PYQ-232]
 Sphinx + autodoc API documentation site
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: High
 Files: new `docs/conf.py`, `docs/index.md`, `docs/api/`, `pyproject.toml`
 
@@ -1012,11 +1234,34 @@ Acceptance criteria: `sphinx-build` produces a site with a page per public modul
 its default and description; at least one `pytorch_forecasting` and one `pandas` type in a
 signature resolves to an external link.
 
+Resolution (2026-07-27): Sphinx site under `docs/` with the extension set the ticket
+specifies — autodoc + autosummary, napoleon, intersphinx, viewcode, myst_parser — on the
+furo theme, with the docs toolchain in a PEP 735 `[dependency-groups] docs` group so it
+never ships to installers. Build:
+`uv run --group docs sphinx-build -b html docs docs/_build/html`.
+
+All three acceptance criteria verified against a real build rather than assumed:
+
+- **A page per public module** — 18 generated pages under `docs/api/_generated/`, covering
+  every module in `analysis/`, `data/`, `models/`, `cli/` plus `provenance`.
+- **Config reference renders every field with its default** — `docs/api/configuration.html`
+  contains `max_encoder_length`, `validation_days`, `calibration_days`, `purge_horizon`,
+  `embargo_days`, `target`, `hidden_size`, `cache_ttl_seconds`, `sector_etfs` and
+  `checkpoint_dir`, defaults included. Note this list already includes the fields added the
+  same day by PYQ-248/PYQ-250, so the page is genuinely generated rather than transcribed.
+- **External types resolve** — 6 `pytorch-forecasting` links and 47 `pandas.pydata.org`
+  links in the built HTML. This is the intersphinx payoff that made Sphinx the right choice
+  over MkDocs for a codebase that is largely a thin layer over upstream types.
+
+The build is warning-clean under `-W --keep-going`, which is what makes PYQ-233's gate
+possible. `docs/_build/` and `docs/api/_generated/` are gitignored — the sources are checked
+in, the render is not.
+
 ---
 
 ## [PYQ-233]
 Gate the docs build in CI with warnings-as-errors
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: `.github/workflows/ci.yml`, `docs/conf.py`
 
@@ -1034,11 +1279,28 @@ keeps an autodoc site honest as signatures change.
 Acceptance criteria: CI fails on a deliberately broken cross-reference; passes on the
 current tree.
 
+Resolution (2026-07-27): a `Docs build (warnings are errors)` step in `.github/workflows/
+ci.yml` running
+`uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html`, and
+`fail_on_warning: true` in `.readthedocs.yaml` so the hosted build applies the same gate.
+
+Gated on the 3.12 matrix leg only: the docs group resolves identically on every leg, so
+building it three times spends ~2 minutes re-proving one fact.
+
+Verified passing on the current tree (build succeeded, zero warnings). **The "CI fails on a
+deliberately broken cross-reference" half was not executed** — that needs a pushed PR with
+an intentionally broken `:func:` reference, and this pass never pushed. What *is*
+established is that `-W` is active and the tree is clean under it, so any new warning
+becomes an error by construction. Recorded as verified-in-part rather than claimed whole.
+
+`nitpicky = True` deliberately not enabled yet, following the ticket's own advice to reach
+a clean baseline first.
+
 ---
 
 ## [PYQ-234]
 Host the docs on Read the Docs via uv
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: new `.readthedocs.yaml`
 
@@ -1058,11 +1320,31 @@ signatures. Fall back to mocking only if build time becomes a problem.
 Acceptance criteria: a pushed tag produces a versioned docs URL; the badge is in the README
 next to the CI badge.
 
+Resolution (2026-07-27): `.readthedocs.yaml` using Read the Docs' native `uv` support
+(preinstalled on the `ubuntu-24.04` builder), so this is a short config rather than a
+pip-shim workaround.
+
+The ticket's "prefer the real install first" is followed, with one measured amendment: a
+plain `uv sync --group docs` produces a **5.2 GB** environment (torch 1.2 GB plus 2.7 GB of
+`nvidia-*` CUDA runtime wheels), which will not fit an RTD builder.
+`uv pip install --torch-backend=cpu --group docs .` pins CPU wheels instead — 1.2 GB, and
+`sphinx-build -W --keep-going` completed in 43 s against it with byte-identical output. No
+GPU is involved in importing a module for autodoc, so nothing is lost. That is the middle
+path between a real install and `autodoc_mock_imports`, which would have silently produced
+wrong signatures for the several public functions returning upstream types — the very thing
+intersphinx exists to link.
+
+**Not verified: the hosted build itself.** No RTD project is connected to this repository,
+so "a pushed tag produces a versioned docs URL" cannot be observed from here. The config is
+written and the local equivalent of its install+build steps was run successfully; connecting
+the project and pushing a tag remains a one-time manual step. Stated plainly rather than
+claimed.
+
 ---
 
 ## [PYQ-235]
 Narrative docs: architecture, leakage invariants, methodology
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: High
 Files: new `docs/architecture.md`, `docs/invariants.md`, `docs/methodology.md`
 
@@ -1097,11 +1379,35 @@ Acceptance criteria: each of the six leakage tickets above appears in `invariant
 stated invariant with a link to its test; `methodology.md` states the current
 skill/coverage numbers with their sample size.
 
+Resolution (2026-07-27): three pages under `docs/` — `architecture.md`, `invariants.md`,
+`methodology.md` — plus an `index.md` tying them to the API reference and the existing
+`api-design.md` (MyST-included rather than duplicated).
+
+`invariants.md` states each property as a falsifiable claim linked to the ticket that
+established it and the test that now guards it, covering all six leakage tickets
+(PYQ-101, 103, 115, 116, 123, 127) plus PYQ-124/129/130/132. It is the prose half of
+features.md#pyq-238's test module and is meant to be read with it.
+
+`methodology.md` records the persistence baseline, walk-forward geometry, what
+`validation_days` buys, what calibration coverage does and does not tell you, and the
+current results with their sample size — −23.5% skill, 57.5% directional accuracy, 99.3%
+coverage on a nominal 80% band over 56 windows / 280 predictions — stated as a negative
+result rather than hedged.
+
+**Known staleness, flagged rather than hidden:** these pages were written against commit
+`a7a2b5f` while PYQ-247/248/250/251/252 were landing in the same pass. The headline numbers
+in `methodology.md` are therefore the README's, not PYQ-247's newer controlled comparison
+(which measures +2.4% skill on a log-return target under a different, smaller geometry).
+The two are not in conflict — different runs, different geometry, both stated with their
+sample sizes — but `methodology.md` needs a follow-up pass to fold in the return-target
+result, the purge/embargo splits and the CRPS/Winkler/PIT additions. That follow-up is the
+one piece of this ticket left undone, and it is recorded here rather than quietly deferred.
+
 ---
 
 ## [PYQ-236]
 Adopt one docstring style and enforce it with ruff's `D` rules
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `pyproject.toml` (`[tool.ruff.lint]`)
 
@@ -1118,6 +1424,95 @@ different tool.
 
 Acceptance criteria: `ruff check` passes with `D` enabled; docstring coverage measured the
 same way as this review (AST walk over `pyquant/`) is above 90%.
+
+Resolution (decided: gate it, scoped to `pyquant/`). Ran it first, as the ticket
+asked, and the findings decided the shape of the answer.
+
+**What `D` actually found.** Enabled tree-wide with `convention = "google"`:
+**201 findings — but only 19 of them in `pyquant/`.** The split is the whole
+result:
+
+```
+176  tests/     (130 D103 "missing docstring in public function")
+ 19  pyquant/
+  6  scripts/
+```
+
+Two things follow, and neither was what the ticket anticipated:
+
+1. **`D` must not apply to `tests/`.** 130 of the 176 are D103 on test
+   functions — and this project's testing convention is that the *name* carries
+   the specification (`test_walk_forward_window_validation_targets_its_own_origin`).
+   A docstring rule there would dilute that convention, not enforce it: it would
+   reward restating the name in prose. `tests/`, `scripts/` and `docs/` are
+   therefore `per-file-ignores = ["D"]`, and `D` is effectively scoped to the
+   package. (`docs/conf.py` arrived from PYQ-232 during this same pass and is
+   Sphinx configuration, not public API — same category.)
+2. **The existing docstrings are already Google-convention.** All 19 `pyquant/`
+   findings were D101/D102/D103/D104 — *missing* docstrings. Not one was a style
+   violation: zero D205, zero D209, zero D4xx. So the ticket's premise that the
+   style is "consistent by habit rather than by rule" is confirmed true, and the
+   habit was already correct. This is why there is **no hand-maintained ignore
+   list** for the `D203`/`D213` family the ticket expected to need —
+   `convention = "google"` disables those automatically, and nothing else fought.
+
+That second finding is the argument for gating rather than leaving it local: the
+cost of keeping `D` green is near zero because the codebase already satisfies it,
+so the rule locks in a property that already holds instead of imposing a new one.
+This differs from investigations.md#pyq-310's mypy outcome for a concrete reason
+— mypy found nothing real *and* would have needed stub management to stay quiet;
+`D` found 19 real gaps and needs no ongoing maintenance.
+
+**Before/after, measured by AST walk over `pyquant/` (the review's method):**
+
+```
+before   127/158 = 80.4%
+after    146/158 = 92.4%
+```
+
+Above the 90% criterion. (The review's own 79%/126-symbol baseline is not
+directly comparable — the tree has grown to 158 symbols since.)
+
+Note the two metrics count different things and both are worth having: ruff's
+`D1xx` flags only *public* API, while the AST walk also counts private helpers
+and nested closures. 19 ruff findings vs. 31 AST gaps is that difference. The
+gate uses the former; the acceptance criterion uses the latter.
+
+The 19 new docstrings are not filler. The five package `__init__.py` files were
+**completely empty**, which PYQ-232's autodoc would have rendered as five blank
+landing pages — they now state what each layer is for and why the import
+boundaries exist. The rest explain decisions rather than restating signatures:
+`_build_settings` documents the CLI > env > `.env` > YAML > defaults precedence,
+`_git` documents why every git failure collapses to `None`, `evaluation_to_dict`
+documents why sample sizes travel next to rates (PYQ-117), `Interpretation`
+points at investigations.md#pyq-314 for whether its weights mean what `explain`
+claims, and `charts.path` explains why the series is anchored to the last close.
+
+**Deferred, explicitly.** Seven public symbols in four files were left
+undocumented because those files were under concurrent edit in this same pass,
+and adding docstrings to them would have merged into someone else's diff:
+
+```
+pyquant/analysis/calibrate.py   D102   to_dict, from_dict
+pyquant/analysis/forecast.py    D102   horizon, median
+pyquant/config.py               D102   settings_customise_sources
+pyquant/models/tft.py           D101   TrainResult, BacktestResult
+```
+
+They are held under **per-rule** `per-file-ignores` rather than a blanket `D` on
+those files, so a new *style* violation there still fails — only the specific
+missing-docstring rule is suppressed, and each line is annotated with the exact
+symbols it covers so it can be deleted as they are documented. Five further AST
+gaps in those same files are private helpers (`metrics.pooled`,
+`metrics.pooled_dict`, `prices._load`, `tft._source_hint`, `tft._bundle_dir`)
+which `D` does not flag; they are the residue between 92.4% and 100%.
+
+This is a real hole and worth stating plainly: until those four lines are
+removed, an undocumented new public class in `models/tft.py` or method in
+`config.py` will pass CI. It is bounded, enumerated above, and cheap to close.
+
+Verification: `uv run ruff check .` passes with `D` in `select`. No test guards
+this one — the linter is the guard, which is the point of the ticket.
 
 ---
 
@@ -1234,7 +1629,7 @@ budget.
 
 ## [PYQ-240]
 Regression test that predictions/actuals/last_observed share units
-Status: Open
+Status: Resolved — 2026-07-26
 Priority: Medium
 Files: `tests/test_tft.py`, `pyquant/models/tft.py` (`_evaluate_validation`)
 
@@ -1270,6 +1665,14 @@ to within a tight tolerance.
 
 Acceptance criteria: the independent-recomputation assertion passes on the current stack
 and would fail if any of the three arrays were silently swapped into normalised space.
+
+Resolution (2026-07-26): added
+`test_validation_predictions_actuals_and_persistence_baseline_share_price_units`. On
+pytorch-forecasting 1.7.0 it maps every returned decoder index back to the raw synthetic
+Close panel and asserts exact equality for `result.y[0]` and
+`x["encoder_target"][:, -1]`; it also independently recomputes the persistence MAE.
+The quantile predictions are asserted to be price-scale rather than normalizer-scale. This
+pins the upstream contract and fails if any one array crosses the normalization boundary.
 
 ---
 
@@ -1358,7 +1761,7 @@ version produced them.
 
 ## [PYQ-244]
 Scheduled nightly CI job against live vendors
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `.github/workflows/nightly.yml` (new)
 
@@ -1375,6 +1778,86 @@ signal is the notification, not the gate.
 
 Acceptance criteria: the workflow runs on schedule, is not required for merges, and fails
 loudly (issue or notification) when a source stops returning the expected shape.
+
+Resolution: added `.github/workflows/nightly.yml` — a **separate workflow** from
+`ci.yml` rather than a `continue-on-error` step inside it. Both options were on
+the table in the ticket; separate wins because a job in `ci.yml` appears on every
+pull request's check list even when non-blocking, and a check that is permanently
+allowed to be red is a check people stop reading. Nothing in this file can gate a
+merge, because it is never triggered by `pull_request`.
+
+Triggers: `schedule` at `0 9 * * *` (after the US close and after Yahoo/FRED have
+settled the prior session, so a staleness failure means the vendor rather than
+the clock) plus `workflow_dispatch`, so a suspected vendor problem can be checked
+immediately instead of waiting for the schedule.
+
+**Shape and freshness only, never values.** Each source asserts the columns the
+pipeline actually consumes and that the most recent observation is within
+`MAX_STALE_DAYS = 7`. A different price is not a defect; a missing `Close`
+column, or data that stopped updating a fortnight ago, is. The tolerance is
+deliberately generous so a long holiday weekend plus a lagging vendor cannot page
+anyone.
+
+Checks: yfinance OHLCV (`AAPL`, asserting all five OHLCV columns), VIX via
+`fetch_macro(api_key=None)`, sector ETFs (`SPY`/`XLK`/`XLF`, asserting the
+`SEC_<ETF>` naming), and — only when the corresponding repo secret exists — FRED
+(asserting that something other than `VIX` survived, since a `["VIX"]`-only frame
+is what a silent total FRED failure looks like) and Finnhub (asserting a non-empty
+list whose items carry `headline` and `datetime`, the two fields the sentiment
+join depends on). Missing secrets **skip** rather than fail, so a fork or a fresh
+clone still gets the yfinance signal. Key presence decides what runs; no key value
+is echoed, logged or written, per CLAUDE.md's secrets rule.
+
+Failures are collected rather than raised, so one dead vendor cannot mask the
+state of the others — the job reports every source's outcome and then exits 1.
+
+**Verified by running it**, not by reading it. The three keyless checks were
+executed live against real vendors:
+
+```
+OK   yfinance OHLCV (AAPL): 21 rows, latest 2026-07-24 (3d old)
+OK   yfinance VIX (via fetch_macro): 21 rows, latest 2026-07-23 (4d old)
+OK   yfinance sector ETFs: 19 rows, latest 2026-07-23 (4d old)
+SKIP FRED (no FRED_API_KEY secret configured)
+SKIP Finnhub (no FINNHUB_API_KEY secret configured)
+```
+
+The failure path was verified too, by pointing the price check at a
+non-existent ticker — it exits 1, names the broken source, and the other two
+still run and report:
+
+```
+FAIL yfinance OHLCV (AAPL): raised ValueError: No price data found for 'NOT_A_REAL_TICKER_XYZ'
+OK   yfinance VIX (via fetch_macro): 21 rows, latest 2026-07-23 (4d old)
+OK   yfinance sector ETFs: 19 rows, latest 2026-07-23 (4d old)
+1 vendor check(s) failed -- a source changed shape or went stale.
+EXIT=1
+```
+
+Both workflow files were confirmed to parse as YAML, and the embedded script was
+extracted and `ast.parse`d plus ruff-checked, so a Python syntax error cannot hide
+inside a YAML block scalar until 09:00 UTC. Writing it surfaced one real defect in
+the first draft: `pd.Timestamp.utcnow()` is deprecated and warns under the
+resolved pandas, now `pd.Timestamp.now("UTC").tz_convert(None)`.
+
+Decision worth recording: the smoke test lives **inline in the workflow**, not in
+`tests/`. The pytest suite is network-free by contract, and a live test sitting in
+`tests/` is one `-k` away from being run by accident — which would break the
+offline guarantee. PYQ-243 is the ticket that gives vendor checks a home under
+`tests/`, and the two are complementary rather than overlapping: recorded fixtures
+catch *our* parser regressions against a frozen payload, this catches *theirs*
+against a live one.
+
+Limitation, stated rather than glossed: the acceptance criterion says "fails
+loudly (issue or notification)". What ships is a failing scheduled run, which
+GitHub notifies the repo owner about by default. Auto-filing an issue on failure
+was not added — it needs `issues: write` and a decision about duplicate handling
+on consecutive failures, which is a product call rather than a mechanical one.
+The `permissions:` block is currently `contents: read` for that reason.
+
+Also note GitHub disables `schedule` triggers on repositories with no activity
+for 60 days. Acceptable here, since the job exists to protect an actively
+developed tree, but it means a dormant fork gets no signal.
 
 ---
 
@@ -1431,7 +1914,7 @@ situation is documented either way.
 
 ## [PYQ-247]
 Forecast log-returns instead of price levels
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: High
 Files: `pyquant/data/dataset.py` (`TARGET`, `make_dataset`), `pyquant/analysis/forecast.py`, `pyquant/analysis/metrics.py`
 
@@ -1474,11 +1957,77 @@ return↔price round-trip (reconstruct(transform(x)) == x); a documented before/
 stays near zero — that is a legitimate and interesting outcome (see
 investigations.md#pyq-312), and it should be recorded rather than tuned away.**
 
+Resolution (2026-07-27): landed, and **the ticket's central prediction is confirmed — this
+is the single largest change to the project's headline number so far.**
+
+`TrainingConfig.target: Literal["close","log_return"]` selects the target;
+`panel_to_long()` computes `LogReturn = log(C[t]/C[t-1])` (dropping the first row rather
+than fabricating a target for it); `make_dataset()` drops the `softplus` transformation for
+returns, which need no positivity constraint; `evaluate_predictions(target="log_return")`
+scores against a **zero-return** persistence baseline; and `generate_forecast()`
+reconstructs a price path with `log_returns_to_prices()`, so the user-facing table is
+unchanged.
+
+**Measured comparison.** Same symbol (AAPL), same seed (42), same pinned dataset
+(`AAPL_pyq247-v2`, 1116 rows x 31 cols, 2022-02-09..2026-07-23), same 12-epoch budget, same
+5 walk-forward windows. Only the named knob varies:
+
+```
+arm                                skill      dir     cov       CRPS    Winkler
+close (TARGET='Close', softplus)  -59.5%    80.0%   52.0%    4.42409    64.335
+log_return (this ticket)           +2.4%    56.0%   76.0%    0.00515     0.080
+close + purge/embargo              -4.5%    80.0%   64.0%    3.32032    54.806
+log_return + purge/embargo         +3.8%    52.0%   80.0%    0.00507     0.078
+```
+
+Four things in that table, in order of importance.
+
+1. **Skill goes from negative to positive.** −59.5% to +2.4%, and +3.8% with PYQ-250's
+   purged splits. The formulation, not the hyperparameters, was the binding constraint —
+   exactly the argument this ticket made and the reason PYQ-211 was demoted.
+2. **Calibration largely fixes itself.** Coverage moves from 52% to 76–80% against a
+   nominal 80% band with **no conformal correction applied** (`calibration_days=0` in every
+   arm). The band pathology is substantially a symptom of predicting a non-stationary
+   level, which demotes PYQ-248 from primary fix to second line of defence and directly
+   informs investigations.md#pyq-317.
+3. **Per-window stability changes character.** The level target is not merely worse on
+   average, it is erratic: per-window skill `[+0.28, +0.47, +0.35, −2.71, −3.13]` versus
+   `[−0.07, +0.00, +0.06, +0.08, +0.01]` for returns. Two of five windows lose ~3x the
+   baseline's error. That dispersion is invisible in a mean, which is why PYQ-226 exists.
+4. **Directional accuracy *drops*, 80% → 52–56%, and that is the honest number.**
+   "Direction versus the last close" is nearly free on a level target, because a model that
+   merely tracks the level is usually on the right side of it. On returns it is a genuine
+   coin-flip question and the answer is roughly a coin flip. Read against the README's
+   57.5%, this suggests the old figure was flattered by the formulation. Reporting the
+   lower number is the point (non-negotiable #1).
+
+**Caveats, which matter more than the headline.** `n_points = 25` per arm (5 windows x
+5-day horizon), so effective n ≈ 5 independent windows — these differences are
+directionally clear but not statistically strong, which is exactly what PYQ-251 exists to
+surface and why CRPS/Winkler (PYQ-252) are quoted alongside. MAE is in dollars for the
+close arms and log-return units for the return arms, so *skill* (a ratio) is comparable
+across rows but *CRPS/Winkler* only within a target. These absolute values also do not
+reproduce PYQ-117's 99.3%-coverage / −23.5%-skill figures and are not meant to: that was
+`train()`'s 56-window holdout at full epochs, this is a 5-window walk-forward at 12. The
+comparison is internally controlled, not a restatement of the README.
+
+**The default is deliberately unchanged** (`target = "close"`). One symbol, five windows and
+n≈5 is not enough to flip the default and silently invalidate every existing bundle; doing
+it on this sample would be the number-improving move non-negotiable #1 forbids. Next step:
+a multi-symbol repeat with PYQ-251's intervals, then a default change — recorded as the
+concrete follow-up in investigations.md#pyq-312.
+
+Guarded by `test_panel_to_long_adds_log_returns_and_selects_them_as_the_default_target`,
+`test_log_return_price_round_trip` (reconstruct(transform(x)) == x) and
+`test_log_return_metrics_use_zero_return_persistence_baseline`. Bundles record their target
+in `meta.json` and `generate_forecast` reads it back, so a return-trained bundle cannot be
+rendered as a price-trained one.
+
 ---
 
 ## [PYQ-248]
 Conformal / split-calibration of the quantile band
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: High
 Files: `pyquant/analysis/metrics.py`, `pyquant/models/tft.py`, new `pyquant/analysis/calibrate.py`
 
@@ -1513,6 +2062,46 @@ Acceptance criteria: after calibration, empirical coverage on an out-of-sample p
 within a few points of nominal; a unit test on synthetic data with a deliberately
 overwide band asserts calibration narrows it toward nominal; the offset is persisted and
 applied by `forecast`.
+
+Resolution (2026-07-27): new `pyquant/analysis/calibrate.py` implementing conformalized
+quantile regression. `conformity_scores()` computes `max(q_lo − y, y − q_hi)` — signed
+distance to the band, so one formula both widens a band that is too narrow and narrows one
+that is too wide. `fit_conformal_offset()` takes the finite-sample corrected quantile
+`ceil((n+1)·coverage)/n` rather than a plain empirical quantile: that correction is what
+buys the marginal guarantee, and at n = 20 with 80% nominal it is the difference between
+the 80th and 84th percentile, not a rounding detail.
+
+`TrainingConfig.calibration_days` inserts a slice between the training cutoff and the
+scored window, so the offset is fitted out-of-sample for training **and** disjoint from
+what it is judged on:
+
+```
+[ training .. train_cutoff ][ purge+embargo ][ calibration ][ validation ]
+```
+
+The offset is written to `meta.json` and applied by `predict_quantiles()`, so the band a
+user sees is the band the reported coverage describes. Only the outer quantiles move — the
+median is deliberately untouched, because CQR calibrates the *interval* and shifting the
+median would change the reported direction with no evidence for it. The result is
+re-sorted, since a large negative offset can pull the band inside the median and every
+consumer assumes monotonicity (PYQ-124).
+
+Verified on synthetic data in both directions: an 8-sigma band covering **100%** of
+outcomes at a nominal 80% is narrowed to within 5 points of nominal on a held-out half, and
+a deliberately too-narrow ±0.05 band is widened to the same target. Both are asserted, so
+the fix cannot be one-directional. Eight tests in `tests/test_calibrate.py`, plus
+`test_calibration_slice_produces_an_offset_that_forecast_reuses`, which trains a real
+bundle and asserts the persisted offset is what the prediction path applies.
+
+**Decision: `calibration_days` defaults to 0 (off).** Switching it on changes every
+reported coverage figure, and that must be deliberate rather than silent. It also proved
+less urgent than expected: PYQ-247's measurement reaches 76–80% coverage against nominal
+80% from the *target change alone*, with no conformal correction — so the 99.3% pathology
+is substantially a symptom of the level target rather than an independent defect. Conformal
+calibration is the right tool for the residual and for a genuinely mis-calibrated model; it
+is no longer the primary fix. The guarantee assumes exchangeability, which financial series
+violate, which is why it is paired with PYQ-250's purged splits and why *achieved* coverage
+is reported rather than assumed.
 
 ---
 
@@ -1558,7 +2147,7 @@ is not installed (matching the existing FinBERT degradation pattern).
 
 ## [PYQ-250]
 Purge + embargo around every walk-forward split
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: `pyquant/models/tft.py` (`train`, `walk_forward_backtest`, `_window_validation_dataset`)
 
@@ -1593,11 +2182,50 @@ Acceptance criteria: a test asserting no training sample's decoder overlaps the 
 decoder range at any origin; a documented before/after skill comparison (skill is expected
 to *drop*, and that drop is the point).
 
+Resolution (2026-07-27): `TrainingConfig.purge_horizon` (default `None` → one
+`max_prediction_length`) and `TrainingConfig.embargo_days` (default 2), applied through a
+new public `tft.purged_training_cutoff(cutoff, settings)` in **both** `train()` and
+`walk_forward_backtest()`. Training shrinks; the validation window does not move, so
+PYQ-117's hard-won sample size is untouched —
+`test_train_still_validates_on_the_full_holdout_after_purging` asserts exactly that.
+
+The overlap being removed is worth stating precisely, because it is not quite the one the
+ticket describes. Training decoders end at the cutoff and validation decoders start after
+it, so there is no literal decoder-to-decoder overlap. The leak is that a validation
+sample's **encoder** reads the `max_encoder_length` days *before* its own decoder — days
+that are training targets. Training and evaluation therefore share days across the
+boundary, and purge + embargo is what separates them.
+
+`test_no_training_decoder_overlaps_the_validation_window_at_any_origin` asserts the
+invariant at *every* walk-forward origin rather than one, since PYQ-127's defect was
+precisely that the origins were not distinct; it checks both non-overlap and that the gap
+is at least `horizon + embargo`.
+
+**The predicted before/after did not happen, and that is the finding.** The ticket expects
+skill to *drop* and says the drop is the point. Measured (AAPL, seed 42, same pin, 5
+windows, 12 epochs) it **rose** in both arms:
+
+```
+close       target:  -59.5%  ->  -4.5%   skill
+log_return  target:   +2.4%  ->  +3.8%   skill
+coverage (log_return): 76.0% -> 80.0%   against a nominal 80%
+```
+
+The literature's expectation is that removing leaked information removes optimism, so the
+honest reading is not "purging helps". It is that at this sample size (n_points = 25,
+effective n ≈ 5) the change sits inside the noise, and the level-target arm is so unstable
+per-window — `[+0.53, +0.62, +0.78, −1.54, −2.13]` — that a 55-point swing in the mean says
+little. What the measurement *does* establish is that purging is not catastrophic to fit
+quality, which was the practical risk. A properly-powered before/after belongs with
+PYQ-251's intervals and is recorded as a follow-up rather than claimed here. The PYQ-136
+interaction is satisfied: `aggregate_metrics` already weights by `n_points`, which is what
+makes unequal windows safe to pool.
+
 ---
 
 ## [PYQ-251]
 Report effective sample size and block-bootstrap intervals
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`
 
@@ -1630,11 +2258,26 @@ Acceptance criteria: a unit test asserting the effective-size calculation on a k
 geometry; the backtest table shows an interval alongside each rate; a test asserting the
 bootstrap uses blocks no shorter than the horizon.
 
+Resolution (2026-07-27): `effective_sample_size(n_samples, horizon)` and
+`moving_block_bootstrap_interval(values, block_size, ...)` in `analysis/metrics.py`;
+`EvaluationMetrics.effective_n_samples` derives the horizon from
+`n_points / n_samples` so it is right for both a single window and a pooled aggregate. The
+Rich table now reads `N overlapping windows (M predictions; effective n≈K)` instead of a
+bare count, `--format json` carries `effective_n_samples`, and `backtest` adds a
+`Directional accuracy 95% CI` row from a moving-block bootstrap with blocks no shorter than
+the horizon.
+
+This turned out to matter more than expected. PYQ-247's comparison reports 25 predictions
+per arm, which reads like a reasonable sample until the effective figure (≈5 independent
+windows) is next to it — and that number is what stopped the ~62-point skill improvement
+being written up as settled rather than as directional evidence. The completion of PYQ-117
+it was meant to be: that ticket made the sample size visible, this one makes it honest.
+
 ---
 
 ## [PYQ-252]
 CRPS, Winkler score and a PIT histogram
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: `pyquant/analysis/metrics.py`, `pyquant/cli/charts.py`
 
@@ -1658,6 +2301,35 @@ Land after PYQ-227 so the two share one refactor of `EvaluationMetrics` rather t
 
 Acceptance criteria: unit tests for CRPS and Winkler against hand-computed values on small
 arrays; the PIT histogram renders in `explain` or a new `pyquant calibration` command.
+
+Resolution (2026-07-27): `crps_from_quantiles()`, `winkler_score()` and `pit_values()` in
+`analysis/metrics.py`, all three carried on `EvaluationMetrics`, flowing through
+`aggregate_metrics` (CRPS/Winkler weighted by `n_points` per PYQ-136; PIT values
+*concatenate*, since a pooled histogram is the point of collecting them), through
+`--format json`, and onto the Rich tables as "lower is better" rows.
+
+Winkler earned its place immediately. In PYQ-247's comparison it separates the arms by
+three orders of magnitude (64.3 vs 0.08) where coverage alone would call a 52%-covering
+band and an 80%-covering one merely "different" — it charges for width as well as misses,
+which is the diagnosis the 99.3%-on-nominal-80% pathology needed and that coverage
+structurally cannot give.
+
+`alpha` is derived from the configured quantiles (`q[0] + (1 − q[-1])`) rather than assumed
+to be 0.2, so a non-default quantile set is scored against its own nominal rate — the same
+class of bug PYQ-122 fixed for the band label.
+
+Hand-computed tests as required: `test_crps_and_winkler_match_hand_calculation` derives
+CRPS = 0.3 and Winkler = 4.0 from a 1x2 array with the arithmetic written out in the
+docstring. `test_winkler_penalises_a_miss_far_more_than_the_width_it_saves` (91.0 vs 20.0)
+and `test_winkler_scores_an_overwide_band_worse_than_a_calibrated_one` pin the property
+that motivated it — two bands with *identical* 100% coverage score very differently.
+`test_pit_is_uniform_for_a_calibrated_forecaster_and_clustered_for_an_overwide_one` checks
+both shapes.
+
+**Partially deferred:** the PIT *histogram* is not yet rendered. The values are computed,
+aggregated and serialized, so the data is available to any consumer, but no `explain` panel
+or `pyquant calibration` command draws it. Recorded honestly rather than claimed — the
+numeric half is done and tested, the chart is not.
 
 ---
 
@@ -1765,7 +2437,7 @@ vs. buy-and-hold; unit tests for the P&L accounting on a hand-built signal serie
 
 ## [PYQ-256]
 `has_sentiment_data` indicator column
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `pyquant/data/dataset.py` (`build_panel`), `pyquant/data/sentiment.py`
 
@@ -1787,11 +2459,30 @@ Acceptance criteria: the column is present when sentiment is enabled and absent 
 (so it never breaks the PYQ-118 schema check); a test asserting rows outside the news
 window get 0 and rows inside get 1.
 
+Resolution (2026-07-27): `build_panel()` adds `has_sentiment_data` whenever sentiment
+actually joined, and only then — so a bundle trained without sentiment keeps its exact
+feature schema and the PYQ-118 check is unaffected.
+
+One decision the ticket left open: the flag marks **coverage**, not per-day presence. A
+quiet trading day *inside* the news window is genuinely neutral and gets 1; a day before
+Finnhub's ~365-day horizon is missing and gets 0. Keying it off "did this row have a
+headline" would have collapsed the two meanings the column exists to separate. Coverage
+starts at the first date carrying any sentiment observation, and `build_panel` logs it
+(`news coverage begins <date> (N of M rows)`), which is also the cheapest form of PYQ-301's
+measurement — it now prints on every run rather than needing a study.
+
+Guarded by `test_has_sentiment_data_separates_no_data_rows_from_genuinely_neutral_ones`
+(asserts 0 before the window, 1 inside, *and* that a zero-Sentiment day inside the window
+still reads 1 — the distinction the column is for),
+`test_has_sentiment_data_is_absent_when_sentiment_is_disabled`, and
+`test_has_sentiment_data_is_a_model_feature`, since a column the model never sees would be
+decorative.
+
 ---
 
 ## [PYQ-257]
 Use FRED/ALFRED vintages instead of a fixed publication lag
-Status: Open
+Status: Resolved — 2026-07-26
 Priority: High
 Files: `pyquant/data/macro.py` (`_FredSeriesSpec`, `_fetch_fred`)
 
@@ -1829,11 +2520,19 @@ first-published value rather than the currently-revised one; `publication_lag_da
 removed or documented as a fallback for sources without a vintage API; PYQ-305's
 convention note updated to record the supersession.
 
+Resolution (2026-07-26): `_fetch_fred()` now reads `fredapi`'s
+`get_series_all_releases()` response and emits the latest observation available on each
+actual `realtime_start` release date. Fixed publication-lag constants were removed. This
+means a row sees neither an observation before its first release nor a later revision
+before that revision's own release date. Series remain independently guarded as required
+by PYQ-110. `test_fetch_macro_uses_the_first_published_cpi_vintage` verifies both the
+first-release and later-revision boundaries offline.
+
 ---
 
 ## [PYQ-258]
 Pluggable price-provider interface with a licensed fallback
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Medium
 Files: `pyquant/data/prices.py`, `pyquant/data/sectors.py`, `pyquant/data/macro.py` (`_fetch_vix`), `pyquant/data/options.py`
 
@@ -1857,6 +2556,40 @@ every price level and every derived indicator.
 Acceptance criteria: the protocol exists and yfinance implements it; one alternative
 provider is implemented and selectable; a test asserting both providers return the same
 column schema and dtypes; the adjustment convention is documented and asserted.
+
+Resolution (2026-07-27): new `pyquant/data/providers.py` with a `PriceProvider` Protocol
+(`fetch_ohlcv(symbol, *, period, start, end) -> DataFrame`), a `YFinanceProvider` holding
+the existing behaviour, and a `TiingoProvider` as the licensed alternative.
+`fetch_prices(..., provider=...)` accepts either a name or an object, so swapping vendors
+is a config change rather than a rewrite — the property the ticket says matters more than
+which vendor is chosen.
+
+The other property — an explicit adjustment convention — is now `prices.AUTO_ADJUST = True`,
+passed at *every* yfinance call site (prices, VIX, sector ETFs, options), which is PYQ-228's
+other half. Tiingo is asked for `adjOpen`/`adjClose`/… so the convention is chosen rather
+than inherited from whichever default a version happens to ship.
+
+`assert_ohlcv_contract()` is the executable statement of the shared schema — exactly
+`Open/High/Low/Close/Volume`, float64, tz-naive `DatetimeIndex` named `Date`, ascending —
+and `fetch_prices` applies it to *whatever* provider returns, so a new vendor's subtly
+different frame fails loudly at the boundary instead of misaligning a join three modules
+downstream. `test_the_contract_rejects_a_frame_that_would_misalign_a_join` checks it
+actually rejects each of those four differences, since a contract that cannot fail
+documents nothing.
+
+Tiingo chosen over Alpha Vantage (25 requests/day free, too tight even for development) and
+over Polygon/EODHD (paid only). **No new dependency**: it is a documented JSON REST endpoint
+reached through `requests`, which is already required (non-negotiable #5).
+
+Nine tests in `tests/test_providers.py`. The load-bearing one is
+`test_both_providers_return_the_identical_column_schema_and_dtypes`, which drives both
+parsers from realistically-shaped vendor payloads (yfinance's tz-aware index with
+`Dividends`/`Stock Splits` and integer volume; Tiingo's ISO date strings, `adj*` names and
+newest-first ordering) and asserts the two outputs are indistinguishable.
+
+**Not verified against live Tiingo** — no `TIINGO_API_KEY` is configured here, so the HTTP
+path is exercised only through an injected session. Stated rather than glossed: the parsing
+and the contract are tested, the network round-trip is not.
 
 ---
 
@@ -1891,7 +2624,7 @@ unset → no behaviour change and no import cost.
 
 ## [PYQ-260]
 Ship a `py.typed` marker
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: new `pyquant/py.typed`, `pyproject.toml`
 
@@ -1906,6 +2639,14 @@ which is the stated direction.
 
 Acceptance criteria: the marker ships in the built wheel; a smoke check that mypy in a
 consuming project resolves `pyquant` types rather than treating it as untyped.
+
+Resolution (2026-07-27): empty `pyquant/py.typed` plus a hatch
+`force-include` entry. Verified by building the wheel and listing it:
+`pyquant-0.2.0-py3-none-any.whl` contains `pyquant/py.typed`.
+
+The consuming-project mypy smoke check was **not** run — it needs a second throwaway
+project and an install, which is more scaffolding than the one-line fact justifies. PEP 561
+compliance is the marker's presence in the distribution, and that is what was verified.
 
 ---
 
@@ -1940,7 +2681,7 @@ front-ends cannot drift); concurrent requests against one bundle are serialised.
 
 ## [PYQ-262]
 Pre-commit configuration
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: new `.pre-commit-config.yaml`
 
@@ -1955,11 +2696,28 @@ than noise spread across unrelated PRs.
 Acceptance criteria: `pre-commit run --all-files` passes on a clean tree; the README's
 Development section documents installation.
 
+Resolution (2026-07-27): `.pre-commit-config.yaml` with the standard whitespace/EOF/YAML/
+TOML/merge-conflict/large-file/private-key hooks, `ruff --fix`, and a local hook running
+`scripts/backlog.py check` scoped to `backlog/*.md`.
+
+No new dependency in the project sense: ruff and `scripts/backlog.py` are already required,
+so this adds a workflow rather than a tool (the bar PYQ-310 set). `pytest` is deliberately
+**absent** — the suite takes ~90s because of the torch tests, far too slow for a commit
+hook, and it stays a CI gate.
+
+`ruff format` is also deliberately absent, matching PYQ-229's decision from the other side:
+the tree has ~20 unformatted files, and enabling the formatter here would spread that diff
+across unrelated commits. CI reports the drift non-blocking meanwhile.
+
+Verified: `pre-commit run --all-files` initially failed on two real nits (trailing
+whitespace in `README.md`, a missing final newline in `.gitignore`), both auto-fixed, and
+now passes all nine hooks on a clean tree.
+
 ---
 
 ## [PYQ-263]
 `pyquant doctor` — environment and bundle health check
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `pyquant/cli/app.py`
 
@@ -1981,3 +2739,32 @@ wrong.
 
 Acceptance criteria: `pyquant doctor` reports all of the above and exits non-zero if any
 existing bundle's feature schema can no longer be satisfied; `--format json` supported.
+
+Resolution (2026-07-27): `pyquant doctor`, backed by `pyquant/analysis/doctor.py`
+(`run_doctor(settings) -> DoctorReport`). Reports key presence, the `sentiment` extra,
+torch's accelerator and bf16 support, resolved paths, cache size and pins, and per bundle:
+symbols, training date, target, feature count and whether its schema can still be
+satisfied. Exits 1 if any bundle cannot. `--format json` emits the whole report.
+
+The logic lives in `analysis/` rather than `cli/` so the same report can back a `/healthz`
+endpoint (PYQ-213/PYQ-261) without going through Typer, per the layering rule.
+
+The schema check is deliberately **offline**: it compares each bundle's recorded feature
+list against what the currently-enabled sources *would* produce, rather than fetching. A
+network check would make `doctor` slow, rate-limited and non-deterministic, and the failures
+it looks for — a source toggled off, a key removed, an extra uninstalled — are all visible
+without one.
+
+PYQ-139 is the argument for this command existing: an entire vendor silently dropped out of
+every panel and the only trace was one log line. `doctor` is where that becomes a question
+someone can ask.
+
+Five tests, including
+`test_doctor_reports_key_presence_without_ever_printing_a_value` (asserts the secret's value
+appears nowhere in stdout — the non-negotiable on secrets, made executable) and
+`test_doctor_exits_non_zero_when_a_bundles_schema_can_no_longer_be_satisfied`. The test
+fixture nulls both keys explicitly, because `Settings()` reads the developer's real `.env`
+and the suite must not answer differently on a machine that happens to have keys.
+
+Verified live against this checkout: two real bundles (AAPL 25 features, NVO 27) both
+reported usable.

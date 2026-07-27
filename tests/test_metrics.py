@@ -47,6 +47,46 @@ def test_calibration_coverage_half_outside_band():
     assert metrics.calibration_coverage(actuals, lower, upper) == 0.5
 
 
+def test_quantile_exceedance_and_pinball_loss_match_hand_calculation():
+    actuals = np.array([[1.0, 3.0]])
+    predictions = np.array([[[0.0, 0.0, 2.0], [2.0, 4.0, 4.0]]])
+    quantiles = [0.1, 0.5, 0.9]
+
+    assert metrics.quantile_exceedance(actuals, predictions, quantiles) == {
+        0.1: 0.0,
+        0.5: 0.5,
+        0.9: 1.0,
+    }
+    losses = metrics.pinball_loss(actuals, predictions, quantiles)
+    assert losses[0.1] == pytest.approx(0.1)
+    assert losses[0.5] == pytest.approx(0.5)
+    assert losses[0.9] == pytest.approx(0.1)
+
+
+def test_log_return_metrics_use_zero_return_persistence_baseline():
+    predictions = np.array([[[0.0, 0.01, 0.02]]])
+    actuals = np.array([[0.01]])
+    result = metrics.evaluate_predictions(
+        predictions, actuals, np.array([123.0]), [0.1, 0.5, 0.9], target="log_return"
+    )
+    assert result.baseline_mae == pytest.approx(0.01)
+    assert result.model_mae == pytest.approx(0.0)
+
+
+def test_effective_sample_size_accounts_for_overlapping_horizons():
+    assert metrics.effective_sample_size(56, 5) == 12
+    assert metrics.EvaluationMetrics(1, 2, 0.5, 0.8, n_samples=56, n_points=280).effective_n_samples == 12
+
+
+def test_moving_block_bootstrap_interval_uses_contiguous_blocks_deterministically():
+    values = [0.0, 0.0, 1.0, 1.0]
+    interval = metrics.moving_block_bootstrap_interval(values, block_size=2, n_resamples=100, seed=7)
+    assert interval == metrics.moving_block_bootstrap_interval(values, 2, n_resamples=100, seed=7)
+    assert 0.0 <= interval[0] <= interval[1] <= 1.0
+    with pytest.raises(ValueError, match="positive"):
+        metrics.moving_block_bootstrap_interval(values, block_size=0)
+
+
 def test_evaluate_predictions_combines_all_metrics():
     # 2 samples, horizon 2, quantiles [0.1, 0.5, 0.9]
     predictions = np.array(
@@ -190,3 +230,94 @@ def test_aggregate_metrics_falls_back_to_unweighted_mean_without_point_counts():
 
     assert agg.directional_accuracy == pytest.approx(0.6)
     assert agg.model_mae == pytest.approx(2.0)
+
+
+# --- PYQ-252: CRPS, Winkler and PIT -------------------------------------------
+
+
+def test_crps_and_winkler_match_hand_calculation():
+    """Hand-computed on a 1x2 array so the constants are derived, not copied.
+
+    quantiles p10/p50/p90; predictions [[8,10,12],[18,20,22]]; actuals [11,19].
+      pinball(0.1) = mean(0.1*3, 0.9*1)      = 0.2
+      pinball(0.5) = mean(0.5*1, 0.5*1)      = 0.5
+      pinball(0.9) = mean(0.9*1, 0.1*9)/...  = 0.2
+      CRPS = mean(0.2, 0.5, 0.2)             = 0.3
+    Both actuals are inside [p10, p90], so Winkler is pure width:
+      mean(12-8, 22-18) = 4.0
+    """
+    quantiles = [0.1, 0.5, 0.9]
+    predictions = np.array([[[8.0, 10.0, 12.0], [18.0, 20.0, 22.0]]])
+    actuals = np.array([[11.0, 19.0]])
+
+    assert metrics.crps_from_quantiles(actuals, predictions, quantiles) == pytest.approx(0.3)
+    assert metrics.winkler_score(
+        actuals, predictions[:, :, 0], predictions[:, :, -1], alpha=0.2
+    ) == pytest.approx(4.0)
+
+
+def test_winkler_penalises_a_miss_far_more_than_the_width_it_saves():
+    """The whole point of the interval score: a band cannot buy a good score by
+    being narrow if it then misses, nor by being enormous (PYQ-252)."""
+    tight_and_wrong = metrics.winkler_score(
+        np.array([[10.0]]), np.array([[0.0]]), np.array([[1.0]]), alpha=0.2
+    )
+    wide_and_right = metrics.winkler_score(
+        np.array([[10.0]]), np.array([[0.0]]), np.array([[20.0]]), alpha=0.2
+    )
+    # width 1 + 2/0.2 * 9 = 91  vs  width 20 + no penalty = 20
+    assert tight_and_wrong == pytest.approx(91.0)
+    assert wide_and_right == pytest.approx(20.0)
+    assert tight_and_wrong > wide_and_right
+
+
+def test_winkler_scores_an_overwide_band_worse_than_a_calibrated_one():
+    """PYQ-117's 99.3%-on-a-nominal-80% band looks perfect by coverage and is
+    nearly uninformative. Winkler must say so; coverage alone cannot."""
+    actuals = np.array([[10.0], [11.0], [9.0]])
+    calibrated_lo, calibrated_hi = np.full((3, 1), 8.0), np.full((3, 1), 12.0)
+    overwide_lo, overwide_hi = np.full((3, 1), -100.0), np.full((3, 1), 100.0)
+
+    assert metrics.calibration_coverage(actuals, calibrated_lo, calibrated_hi) == 1.0
+    assert metrics.calibration_coverage(actuals, overwide_lo, overwide_hi) == 1.0  # identical
+    assert metrics.winkler_score(actuals, calibrated_lo, calibrated_hi, 0.2) < metrics.winkler_score(
+        actuals, overwide_lo, overwide_hi, 0.2
+    )
+
+
+def test_pit_is_uniform_for_a_calibrated_forecaster_and_clustered_for_an_overwide_one():
+    """PIT is uniform when calibrated and hump-shaped when underconfident --
+    the shape expected here given a band covering 99.3% of a nominal 80%."""
+    rng = np.random.default_rng(0)
+    quantiles = [0.1, 0.5, 0.9]
+    actuals = rng.normal(0, 1, (400, 1))
+
+    calibrated = np.tile(
+        np.array([np.percentile(rng.normal(0, 1, 100_000), [10, 50, 90])]), (400, 1, 1)
+    )
+    overwide = np.tile(np.array([[-50.0, 0.0, 50.0]]), (400, 1, 1))
+
+    pit_calibrated = metrics.pit_values(actuals, calibrated, quantiles)
+    pit_overwide = metrics.pit_values(actuals, overwide, quantiles)
+
+    # Calibrated: PIT spreads across the unit interval.
+    assert pit_calibrated.std() > 0.25
+    # Over-wide: every outcome lands near the middle of a vastly-too-large band.
+    assert pit_overwide.std() < 0.05
+    assert abs(pit_overwide.mean() - 0.5) < 0.05
+
+
+def test_crps_and_winkler_survive_weighted_aggregation_across_windows():
+    """Both must flow through aggregate_metrics weighted by n_points (PYQ-136),
+    and PIT values concatenate rather than average -- a pooled histogram is the
+    point of collecting them."""
+    quantiles = [0.1, 0.5, 0.9]
+    preds = np.array([[[8.0, 10.0, 12.0], [18.0, 20.0, 22.0]]])
+    a = metrics.evaluate_predictions(preds, np.array([[11.0, 19.0]]), np.array([10.0]), quantiles)
+    b = metrics.evaluate_predictions(preds, np.array([[9.0, 21.0]]), np.array([10.0]), quantiles)
+
+    pooled = metrics.aggregate_metrics([a, b])
+
+    assert pooled.crps == pytest.approx((a.crps + b.crps) / 2)
+    assert pooled.winkler_score == pytest.approx((a.winkler_score + b.winkler_score) / 2)
+    assert len(pooled.pit) == len(a.pit) + len(b.pit) == 4

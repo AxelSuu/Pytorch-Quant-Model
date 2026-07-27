@@ -22,6 +22,11 @@ def fan_chart(forecast: Forecast, history_tail: int = 60) -> None:
     last = float(hist.values[-1])
 
     def path(q):
+        """Quantile ``q``'s plot series, anchored to the last observed close.
+
+        Prepending ``last`` is what joins the forecast line to the history line;
+        without it the chart shows a visual gap at the forecast origin.
+        """
         return [last] + forecast.quantile_series(q).tolist()
 
     if 0.5 in forecast.quantiles:

@@ -12,6 +12,8 @@ import logging
 import pandas as pd
 import yfinance as yf
 
+from pyquant.data.prices import AUTO_ADJUST
+
 logger = logging.getLogger(__name__)
 
 
@@ -36,7 +38,7 @@ def fetch_sector_returns(
             # to period when neither is set (PYQ-112).
             period=None if (start or end) else period,
             progress=False,
-            auto_adjust=True,
+            auto_adjust=AUTO_ADJUST,  # PYQ-228: one convention, one place
         )
     except Exception as exc:
         logger.warning("Could not fetch sector ETFs: %s", exc)

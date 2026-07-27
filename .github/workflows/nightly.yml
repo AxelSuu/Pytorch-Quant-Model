@@ -1,0 +1,187 @@
+name: Nightly vendor smoke
+
+# A separate workflow from ci.yml on purpose (PYQ-244): nothing here is a merge
+# gate. The PR suite is deliberately network-free, which means no automated check
+# ever talks to a real vendor -- and yfinance is an unofficial scraper of Yahoo's
+# internal endpoints with no SLA. The signal this job produces is a notification
+# that a source changed shape, not a red X on someone's pull request.
+#
+# It asserts SHAPE and FRESHNESS only, never values. A vendor returning a
+# different price is not a defect; a vendor returning no `Close` column, or data
+# that stopped updating a fortnight ago, is.
+
+on:
+  schedule:
+    # 09:00 UTC daily -- after the US close and after Yahoo/FRED have settled the
+    # previous session, so a "stale data" failure means the vendor, not the clock.
+    - cron: "0 9 * * *"
+  # Manual trigger so the job can be run on demand when a vendor is suspected,
+  # without waiting for the schedule.
+  workflow_dispatch:
+
+# GitHub disables scheduled workflows on repos with no activity for 60 days; that
+# is acceptable here, since the job protects an actively-developed tree.
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      UV_FROZEN: "1"
+      # Key *presence* decides which sources are exercised; the values are never
+      # echoed, logged, or written anywhere, per CLAUDE.md's secrets rule. Absent
+      # secrets degrade the job to the keyless sources rather than failing it, so
+      # a fork or a fresh clone still gets the yfinance signal.
+      FRED_API_KEY: ${{ secrets.FRED_API_KEY }}
+      FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Live vendor smoke test
+        # Inline rather than a file under tests/, deliberately: the pytest suite is
+        # network-free by contract and a live test living there is one `-k` away
+        # from being run by accident. features.md#pyq-243 (recorded-payload
+        # fixtures) is the ticket that gives vendor checks a home in tests/; the
+        # two are complementary -- fixtures catch *our* regressions against a
+        # frozen payload, this catches *theirs* against a live one.
+        run: |
+          uv run python - <<'PY'
+          import os
+          import sys
+
+          import pandas as pd
+
+          # Freshness tolerance in calendar days. Generous on purpose: a long
+          # holiday weekend plus a vendor lagging a session must not page anyone.
+          # Anything staler than this is a real outage, not a calendar artifact.
+          MAX_STALE_DAYS = 7
+          OHLCV = ["Open", "High", "Low", "Close", "Volume"]
+
+          failures: list[str] = []
+          skipped: list[str] = []
+
+          def check(name: str):
+              """Record a source's outcome without letting one failure hide the rest."""
+              def run(fn):
+                  try:
+                      detail = fn()
+                  except Exception as exc:
+                      failures.append(f"{name}: raised {type(exc).__name__}: {exc}")
+                  else:
+                      print(f"  OK   {name}: {detail}")
+                  return fn
+              return run
+
+          def assert_fresh(index: pd.DatetimeIndex, name: str) -> str:
+              last = pd.Timestamp(index.max()).tz_localize(None)
+              age = (pd.Timestamp.now("UTC").tz_convert(None) - last).days
+              if age > MAX_STALE_DAYS:
+                  raise AssertionError(f"last observation {last.date()} is {age}d stale")
+              return f"{len(index)} rows, latest {last.date()} ({age}d old)"
+
+          print("Live vendor smoke test -- asserting shape and freshness only.\n")
+
+          @check("yfinance OHLCV (AAPL)")
+          def _prices():
+              from pyquant.data.prices import fetch_prices
+
+              df = fetch_prices("AAPL", period="1mo", use_indicators=False)
+              missing = [c for c in OHLCV if c not in df.columns]
+              if missing:
+                  raise AssertionError(f"missing columns {missing}; got {list(df.columns)}")
+              if df.empty:
+                  raise AssertionError("empty frame")
+              return assert_fresh(df.index, "prices")
+
+          @check("yfinance VIX (via fetch_macro)")
+          def _vix():
+              from pyquant.data.macro import fetch_macro
+
+              df = fetch_macro(api_key=None, period="1mo")
+              if df.empty:
+                  raise AssertionError("empty frame -- VIX unavailable")
+              if "VIX" not in df.columns:
+                  raise AssertionError(f"no VIX column; got {list(df.columns)}")
+              return assert_fresh(df.index, "vix")
+
+          @check("yfinance sector ETFs")
+          def _sectors():
+              from pyquant.data.sectors import fetch_sector_returns
+
+              etfs = ["SPY", "XLK", "XLF"]
+              df = fetch_sector_returns(etfs, period="1mo")
+              if df.empty:
+                  raise AssertionError("empty frame -- yf.download returned nothing")
+              missing = [f"SEC_{e}" for e in etfs if f"SEC_{e}" not in df.columns]
+              if missing:
+                  raise AssertionError(f"missing columns {missing}; got {list(df.columns)}")
+              return assert_fresh(df.index, "sectors")
+
+          if os.environ.get("FRED_API_KEY"):
+              @check("FRED macro series")
+              def _fred():
+                  from pyquant.data.macro import fetch_macro
+
+                  df = fetch_macro(api_key=os.environ["FRED_API_KEY"], period="1y")
+                  if df.empty:
+                      raise AssertionError("empty frame")
+                  # VIX alone means every FRED series silently dropped out.
+                  if list(df.columns) == ["VIX"]:
+                      raise AssertionError("only VIX returned -- no FRED series survived")
+                  return f"columns {list(df.columns)}"
+          else:
+              skipped.append("FRED (no FRED_API_KEY secret configured)")
+
+          if os.environ.get("FINNHUB_API_KEY"):
+              @check("Finnhub company news")
+              def _finnhub():
+                  from pyquant.data.sentiment import fetch_news
+
+                  end = pd.Timestamp.now("UTC").tz_convert(None).normalize()
+                  start = end - pd.Timedelta(days=7)
+                  items = fetch_news(
+                      os.environ["FINNHUB_API_KEY"],
+                      "AAPL",
+                      start.date().isoformat(),
+                      end.date().isoformat(),
+                  )
+                  if not isinstance(items, list):
+                      raise AssertionError(f"expected a list, got {type(items).__name__}")
+                  if not items:
+                      raise AssertionError("no headlines in the last 7d for AAPL")
+                  # Shape of the fields the sentiment join actually depends on.
+                  for field in ("headline", "datetime"):
+                      if field not in items[0]:
+                          raise AssertionError(
+                              f"payload missing {field!r}; keys are {sorted(items[0])}"
+                          )
+                  return f"{len(items)} headlines, keys {sorted(items[0])[:5]}..."
+          else:
+              skipped.append("Finnhub (no FINNHUB_API_KEY secret configured)")
+
+          print()
+          for s in skipped:
+              print(f"  SKIP {s}")
+          for f in failures:
+              print(f"  FAIL {f}")
+
+          if failures:
+              print(f"\n{len(failures)} vendor check(s) failed -- a source changed shape or went stale.")
+              sys.exit(1)
+          print(f"\nAll live vendor checks passed ({len(skipped)} skipped).")
+          PY

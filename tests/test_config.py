@@ -1,5 +1,7 @@
 """Tests for typed configuration validation."""
 
+from pathlib import Path
+
 import pytest
 
 from pyquant.config import TFTConfig, TrainingConfig, load_settings
@@ -89,3 +91,41 @@ def test_load_settings_without_a_config_stays_silent(monkeypatch):
     """Absent-by-default is not the same as explicitly-requested-and-missing."""
     monkeypatch.delenv("PYQUANT_CONFIG", raising=False)
     assert load_settings().tft.hidden_size == 32
+
+
+# --- PYQ-220: paths anchor to the project, not the ambient cwd ----------------
+
+
+def test_relative_paths_resolve_the_same_from_any_working_directory(tmp_path, monkeypatch):
+    """`train` from the repo root then `forecast` from elsewhere must find the
+    same bundle. Resolved against the ambient cwd they did not (PYQ-220)."""
+    from pyquant.config import Settings
+
+    monkeypatch.chdir(tmp_path)
+    from_tmp = Settings()
+    monkeypatch.chdir(Path(__file__).resolve().parent.parent)
+    from_root = Settings()
+
+    assert from_tmp.checkpoint_dir == from_root.checkpoint_dir
+    assert from_tmp.data.cache_dir == from_root.data.cache_dir
+    assert from_tmp.checkpoint_dir.is_absolute()
+    assert from_tmp.data.cache_dir.is_absolute()
+
+
+def test_pyquant_home_moves_the_anchor(tmp_path, monkeypatch):
+    """A deployment that wants bundles outside the source tree gets one env var."""
+    from pyquant.config import Settings
+
+    monkeypatch.setenv("PYQUANT_HOME", str(tmp_path))
+    s = Settings()
+    assert s.checkpoint_dir == tmp_path.resolve() / "checkpoints"
+    assert s.data.cache_dir == tmp_path.resolve() / ".cache/pyquant"
+
+
+def test_an_absolute_configured_path_is_left_alone(tmp_path, monkeypatch):
+    """Anchoring must not override an explicit absolute path."""
+    from pyquant.config import Settings
+
+    explicit = tmp_path / "elsewhere"
+    monkeypatch.setenv("CHECKPOINT_DIR", str(explicit))
+    assert Settings().checkpoint_dir == explicit

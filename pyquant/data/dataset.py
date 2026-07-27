@@ -15,10 +15,12 @@ from __future__ import annotations
 
 import logging
 
+import numpy as np
 import pandas as pd
 from pytorch_forecasting import TimeSeriesDataSet
 from pytorch_forecasting.data import GroupNormalizer
 
+from pyquant import provenance
 from pyquant.config import Settings
 from pyquant.data import cache
 from pyquant.data.macro import fetch_macro
@@ -30,6 +32,7 @@ from pyquant.data.trading_calendar import next_sessions
 logger = logging.getLogger(__name__)
 
 TARGET = "Close"
+LOG_RETURN_TARGET = "LogReturn"
 # Columns that are identifiers, never model feature reals.
 _NON_FEATURE = {"Date", "time_idx", "symbol"}
 # Known-in-future calendar reals.
@@ -48,6 +51,10 @@ def _cache_fingerprint(symbol: str, settings: Settings, start: str | None, end: 
         "use_sectors": data.use_sectors,
         "use_sentiment": data.use_sentiment,
         "sector_etfs": sorted(data.sector_etfs),
+        # Feature definitions can change between releases. Include the source
+        # version (and git sha when available) so a TTL entry is never reused
+        # across an incompatible implementation (PYQ-133).
+        "code_version": provenance.code_version(),
         # Key *presence*, not the secret value, is part of what changes the data.
         "has_fred_key": bool(settings.fred_api_key),
         "has_finnhub_key": bool(settings.finnhub_api_key),
@@ -108,12 +115,31 @@ def build_panel(
             # may act on it (PYQ-129); align_to_sessions rolls the weekend and
             # holiday dates that produces onto real trading rows, which a plain
             # reindex would silently drop instead.
-            panel = panel.join(align_to_sessions(sentiment, price_index))
+            aligned = align_to_sessions(sentiment, price_index)
+            panel = panel.join(aligned)
+            # Finnhub's free tier reaches back ~365 days, so at the default
+            # period="5y" roughly 80% of training rows get Sentiment=0 meaning
+            # "no data" -- while at prediction time 0 means "neutral news". The
+            # model cannot tell those apart, and only the second ever occurs
+            # live: a textbook train/serve shift on a feature (PYQ-256/PYQ-301).
+            #
+            # The regime is decided by *coverage*, not by whether a given day had
+            # a headline: a quiet day inside the window is genuinely neutral.
+            covered = aligned.dropna(how="all")
+            coverage_start = covered.index.min() if len(covered) else None
+            panel["has_sentiment_data"] = (
+                0.0 if coverage_start is None else (panel.index >= coverage_start).astype(float)
+            )
             # Days without news are neutral (0 sentiment, 0 headlines).
             panel[["Sentiment", "HeadlineCount"]] = panel[
                 ["Sentiment", "HeadlineCount"]
             ].fillna(0.0)
-            logger.info("Joined sentiment features")
+            logger.info(
+                "Joined sentiment features; news coverage begins %s (%d of %d rows)",
+                coverage_start.date() if coverage_start is not None else "never",
+                int(panel["has_sentiment_data"].sum()),
+                len(panel),
+            )
 
     # Forward-fill gaps from joined sources (e.g. a sector ETF's trading calendar
     # not perfectly matching the target's). Rows *before* a joined source's first
@@ -148,7 +174,17 @@ def panel_to_long(panel: pd.DataFrame, symbol: str) -> pd.DataFrame:
     # Calendar features (known in the future).
     df["dow"] = df["Date"].dt.dayofweek.astype(float)
     df["month_num"] = df["Date"].dt.month.astype(float)
+    # A return at t is observable at t from t's close and t - 1's close. The
+    # first row has no predecessor, so omit it rather than fabricate a target.
+    df[LOG_RETURN_TARGET] = np.log(df["Close"] / df["Close"].shift(1))
+    df = df.dropna(subset=[LOG_RETURN_TARGET]).reset_index(drop=True)
+    df["time_idx"] = range(len(df))
     return df
+
+
+def target_column(settings: Settings) -> str:
+    """Configured model target, retaining ``Close`` for legacy bundles."""
+    return LOG_RETURN_TARGET if settings.training.target == "log_return" else TARGET
 
 
 def align_time_index(df: pd.DataFrame) -> pd.DataFrame:
@@ -232,7 +268,7 @@ def feature_columns(df: pd.DataFrame) -> list[str]:
         for c in df.columns
         if c not in _NON_FEATURE
         and c not in KNOWN_REALS
-        and c != TARGET
+        and c not in {TARGET, LOG_RETURN_TARGET}
         and pd.api.types.is_numeric_dtype(df[c])
     ]
 
@@ -248,20 +284,23 @@ def make_dataset(
     If ``training_cutoff`` is given, only rows with ``time_idx <= cutoff`` are
     used (the rest are held out for validation/prediction).
     """
+    target = target_column(settings)
     unknown_reals = feature_columns(df)
     data = df if training_cutoff is None else df[df["time_idx"] <= training_cutoff]
 
     return TimeSeriesDataSet(
         data,
         time_idx="time_idx",
-        target=TARGET,
+        target=target,
         group_ids=["symbol"],
         max_encoder_length=settings.training.max_encoder_length,
         max_prediction_length=settings.training.max_prediction_length,
         static_categoricals=["symbol"],
         time_varying_known_reals=KNOWN_REALS,
-        time_varying_unknown_reals=[TARGET, *unknown_reals],
-        target_normalizer=GroupNormalizer(groups=["symbol"], transformation="softplus"),
+        time_varying_unknown_reals=[target, *unknown_reals],
+        target_normalizer=GroupNormalizer(
+            groups=["symbol"], transformation="softplus" if target == TARGET else None
+        ),
         add_relative_time_idx=True,
         add_target_scales=True,
         add_encoder_length=True,

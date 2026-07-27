@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import (
@@ -17,6 +18,37 @@ from pydantic_settings import (
     SettingsConfigDict,
     YamlConfigSettingsSource,
 )
+
+
+def project_root() -> Path:
+    """The directory bundles and caches are resolved against.
+
+    ``checkpoint_dir`` and ``cache_dir`` default to relative paths, which used to
+    be resolved against whatever the ambient working directory happened to be.
+    For the CLI that is a paper cut -- `pyquant train AAPL` from the repo root
+    then `pyquant forecast AAPL` from elsewhere fails to find the bundle. For a
+    long-running server (PYQ-213/PYQ-261) it is worse: the process's working
+    directory is not guaranteed, so checkpoints can land somewhere unexpected,
+    and a different cwd per restart means the service cannot find bundles it
+    created itself (PYQ-220).
+
+    Anchoring is deliberately *not* XDG by default. Repo-local `checkpoints/`
+    and `.cache/pyquant` are what the README, `.gitignore` and every existing
+    install already expect, so switching to `platformdirs` would strand them.
+    ``PYQUANT_HOME`` overrides the anchor for a deployment that wants bundles
+    outside the source tree, and an absolute path in config still wins outright.
+    """
+    override = os.environ.get("PYQUANT_HOME")
+    if override:
+        return Path(override).expanduser().resolve()
+    # pyquant/config.py -> pyquant/ -> project root
+    return Path(__file__).resolve().parent.parent
+
+
+def _anchor(path: Path) -> Path:
+    """Resolve ``path`` against the project root unless it is already absolute."""
+    path = Path(path).expanduser()
+    return path if path.is_absolute() else (project_root() / path).resolve()
 
 
 class TFTConfig(BaseModel):
@@ -54,6 +86,10 @@ class TrainingConfig(BaseModel):
     batch_size: int = 64
     max_epochs: int = 30
     learning_rate: float = 0.01
+    # Price levels are non-stationary, making persistence nearly optimal by
+    # construction. Keep the established target until PYQ-247 records a
+    # controlled backtest; ``log_return`` is available for that comparison.
+    target: Literal["close", "log_return"] = "close"
     # Length of the held-out validation tail, in trading days. This must be
     # comfortably longer than max_prediction_length: the number of validation
     # windows scored is (validation_days - max_prediction_length + 1), so a
@@ -61,6 +97,20 @@ class TrainingConfig(BaseModel):
     # every reported metric plus early stopping and checkpoint selection
     # (PYQ-117). 60 days gives ~56 windows at the default 5-day horizon.
     validation_days: int = 60
+    # Trading days held out *between* the training slice and the validation
+    # window, used only to fit the PYQ-248 conformal offset. Zero disables
+    # conformal calibration entirely, which is the default because switching it
+    # on changes every reported coverage figure -- that has to be a measured,
+    # deliberate change, not a silent one. See docs/methodology.md.
+    calibration_days: int = 0
+    # Look-ahead control around every split (PYQ-250). A training sample whose
+    # decoder reaches into the horizon immediately before the validation window
+    # shares target days with the period about to be scored; `purge_horizon`
+    # drops those. `embargo_days` drops a further buffer, because serial
+    # correlation leaks across the boundary even without literal overlap.
+    # Defaults follow López de Prado: purge one horizon, embargo a few days.
+    purge_horizon: int | None = None  # None -> max_prediction_length
+    embargo_days: int = 2
     # Epochs without val_loss improvement before EarlyStopping fires. Worth tuning
     # alongside validation_days: the noisier the selection metric, the less a small
     # patience means (PYQ-224).
@@ -99,7 +149,15 @@ class DataConfig(BaseModel):
     # train/forecast/explain runs and eases pressure on informal rate limits.
     cache_enabled: bool = True
     cache_ttl_seconds: float = 3600.0  # 1 hour
-    cache_dir: Path = Path(".cache/pyquant")
+    # validate_default so the anchoring below runs for the default too, not only
+    # when a value is supplied -- DataConfig is built from its default_factory on
+    # every Settings(), so without it the default stays relative (PYQ-220).
+    cache_dir: Path = Field(default=Path(".cache/pyquant"), validate_default=True)
+
+    @field_validator("cache_dir")
+    @classmethod
+    def _anchor_cache_dir(cls, v: Path) -> Path:
+        return _anchor(v)
 
 
 class Settings(BaseSettings):
@@ -116,8 +174,15 @@ class Settings(BaseSettings):
     fred_api_key: str | None = None
     finnhub_api_key: str | None = None
 
-    # Paths
-    checkpoint_dir: Path = Path("checkpoints")
+    # Paths. Relative values are anchored to the project root rather than the
+    # ambient cwd, so `train` here and `forecast` there find the same bundle
+    # (PYQ-220). Set PYQUANT_HOME, or give an absolute path, to move them.
+    checkpoint_dir: Path = Field(default=Path("checkpoints"), validate_default=True)
+
+    @field_validator("checkpoint_dir")
+    @classmethod
+    def _anchor_checkpoint_dir(cls, v: Path) -> Path:
+        return _anchor(v)
 
     # Nested config sections
     tft: TFTConfig = Field(default_factory=TFTConfig)

@@ -17,6 +17,8 @@ from dataclasses import dataclass
 import numpy as np
 import yfinance as yf
 
+from pyquant.data.prices import AUTO_ADJUST
+
 logger = logging.getLogger(__name__)
 
 
@@ -42,6 +44,11 @@ class OptionsSnapshot:
 
 
 def _spot_price(ticker: yf.Ticker) -> float | None:
+    """Best-effort current price, trying ``fast_info`` before falling back.
+
+    Returns ``None`` rather than raising when every route fails: options data is
+    display-only and must never break a forecast.
+    """
     try:
         fast = ticker.fast_info
         price = fast.get("last_price") if hasattr(fast, "get") else fast["lastPrice"]
@@ -50,7 +57,7 @@ def _spot_price(ticker: yf.Ticker) -> float | None:
     except Exception:
         pass
     try:
-        hist = ticker.history(period="1d")
+        hist = ticker.history(period="1d", auto_adjust=AUTO_ADJUST)  # PYQ-228
         if not hist.empty:
             return float(hist["Close"].iloc[-1])
     except Exception:

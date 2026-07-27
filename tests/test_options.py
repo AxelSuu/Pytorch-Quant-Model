@@ -39,7 +39,7 @@ def _fake_ticker(
         def option_chain(self, expiry):
             return chain
 
-        def history(self, period=None):
+        def history(self, period=None, auto_adjust=None, **kwargs):
             if history_raises:
                 raise RuntimeError("history unavailable")
             return history_df if history_df is not None else pd.DataFrame()

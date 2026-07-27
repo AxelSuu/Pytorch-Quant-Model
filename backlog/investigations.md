@@ -7,7 +7,7 @@ Next free ID: **PYQ-321**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
-| [PYQ-301](#pyq-301) | Medium | Open | How much of the training window actually has non-neutral sentiment? |
+| [PYQ-301](#pyq-301) | Medium | Answered | How much of the training window actually has non-neutral sentiment? |
 | [PYQ-302](#pyq-302) | High | Answered | Schema drift between train-time and predict-time panels |
 | [PYQ-303](#pyq-303) | High | Superseded | Is a single 5-day validation window statistically reliable for model selection? |
 | [PYQ-304](#pyq-304) | Medium | Resolved | Re-run full test suite + coverage with the complete ML stack installed |
@@ -18,21 +18,21 @@ Next free ID: **PYQ-321**.
 | [PYQ-309](#pyq-309) | Low | Resolved | No LICENSE file despite `pyproject.toml` declaring MIT |
 | [PYQ-310](#pyq-310) | Low | Answered | Would type-checking (mypy/pyright) catch anything real, cheaply? |
 | [PYQ-311](#pyq-311) | Low | Resolved | Should `scripts/backlog.py check` run in CI? |
-| [PYQ-312](#pyq-312) | High | Open | Is a 5-day horizon learnable at all from these features — what should "good" look like? |
-| [PYQ-313](#pyq-313) | High | Open | Are predictions, actuals and last_observed genuinely in the same space? |
+| [PYQ-312](#pyq-312) | High | Answered | Is a 5-day horizon learnable at all from these features — what should "good" look like? |
+| [PYQ-313](#pyq-313) | High | Answered | Are predictions, actuals and last_observed genuinely in the same space? |
 | [PYQ-314](#pyq-314) | Medium | Open | Does the TFT's variable selection / attention output mean what `explain` claims? |
 | [PYQ-315](#pyq-315) | Medium | Open | Is pooling actually helping, now that PYQ-116 aligned the calendar? |
 | [PYQ-316](#pyq-316) | Medium | Open | Which of the 25+ features earn their place? |
-| [PYQ-317](#pyq-317) | Medium | Open | Is `softplus` the right target transformation for prices? |
-| [PYQ-318](#pyq-318) | Low | Open | pytorch-forecasting vendor risk vs. neuralforecast / Darts |
+| [PYQ-317](#pyq-317) | Medium | Answered | Is `softplus` the right target transformation for prices? |
+| [PYQ-318](#pyq-318) | Low | Answered | pytorch-forecasting vendor risk vs. neuralforecast / Darts |
 | [PYQ-319](#pyq-319) | Medium | Open | What is the latency and cost budget of one `forecast` call? |
-| [PYQ-320](#pyq-320) | Low | Open | Data-source licensing and ToS review before anything public-facing |
+| [PYQ-320](#pyq-320) | Low | Answered | Data-source licensing and ToS review before anything public-facing |
 
 ---
 
 ## [PYQ-301]
 How much of the training window actually has non-neutral sentiment?
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Medium
 Files: `pyquant/data/sentiment.py`, `pyquant/config.py` (`DataConfig.period` default `5y`)
 
@@ -47,6 +47,35 @@ via `explain`, and considering a companion `has_sentiment_data` indicator
 column or truncating the effective training window to sentiment
 availability. See features.md#pyq-214 and #pyq-308 for related
 data-provider and test-coverage angles.
+
+Answer (2026-07-27): measured, now that a `FINNHUB_API_KEY` is configured. **The premise
+was too generous by two orders of magnitude.** This question estimated ~80% of training
+rows would be structurally zero. The measured figure is **99.7%**:
+
+```
+AAPL: 1116 rows (2022-02-10..2026-07-27)   inside news window: 3 (0.3%)
+MSFT: 1116 rows                            inside news window: 2 (0.2%)
+```
+
+The cause is not the 365-day free-tier limit this ticket reasons from. Finnhub's free tier
+ignores the `from` parameter entirely and returns the same recent slice — ~248 headlines
+across **6 distinct days** — whether asked for one week or five years. Filed separately as
+bugs.md#pyq-140, because a module documenting coverage the vendor does not provide is a
+defect in its own right.
+
+So the answer to "does the TFT learn to ignore Sentiment, or learn that 0 is normal?" is
+that it can only learn the second: with 99.7% zeros the column is very nearly a constant,
+and the handful of non-zero rows sit at the *end* of the panel, which is exactly where the
+prediction encoder reads. That is the train/serve shift this ticket suspected, in its
+sharpest possible form.
+
+Both remediations it proposes are now available. features.md#pyq-256 shipped the
+`has_sentiment_data` indicator, so the two regimes are distinguishable by the model and
+countable by anyone; truncating the training window to the covered period is arm two and
+needs a backtest, which is recorded on PYQ-140 rather than guessed at here. Feature
+importance via `explain` was **not** run: investigations.md#pyq-314 argues an interpretation
+of a model that does not beat its baseline is an interpretation of noise, and with 0.3%
+coverage the importance of `Sentiment` would be uninterpretable regardless.
 
 ---
 
@@ -168,9 +197,12 @@ Question: as more sources get added, how should each new slow-moving series
 declare its real-world publication lag so the PYQ-101 bug class doesn't
 recur per-series?
 
-Resolution: `macro.py`'s `_FredSeriesSpec(column, publication_lag_days)`
-convention, applied uniformly across `FRED_SERIES` and consumed by
-`_fetch_fred`.
+Resolution (superseded by PYQ-257, 2026-07-26): `macro.py` originally used an
+`_FredSeriesSpec(column, publication_lag_days)` convention to approximate when a
+reference-period value became available. `_fetch_fred()` now consumes ALFRED/FRED
+release vintages and indexes features by the actual `realtime_start` date instead, so
+the fixed-lag convention is no longer used for FRED series. Keep an explicit
+availability-date convention for future sources that do not expose vintages.
 
 ---
 
@@ -342,7 +374,7 @@ same PR that introduced it. Confirmed the check passes on the current tree.
 
 ## [PYQ-312]
 Is a 5-day horizon learnable at all from these features — what should "good" look like?
-Status: Open
+Status: Answered — 2026-07-27
 Priority: High
 Files: n/a — framing question for the whole project
 
@@ -378,11 +410,56 @@ number outside the interval; (d) record the conclusion here either way, and upda
 README's framing to match. Pre-registering the threshold in (a) is what stops (d) from
 becoming post-hoc rationalisation.
 
+Answer (2026-07-27, partial — the framing question is settled, the empirical one is not):
+
+Step (c) was run. features.md#pyq-247's controlled comparison (AAPL, seed 42, one pinned
+dataset, 12 epochs, 5 walk-forward windows, only the target varying) **moved the number out
+of the negative range**:
+
+```
+close target       skill -59.5%   direction 80.0%   coverage 52.0%
+log_return target  skill  +2.4%   direction 56.0%   coverage 76.0%
+  + purged splits  skill  +3.8%   direction 52.0%   coverage 80.0%
+```
+
+That decides between this ticket's two readings more sharply than expected, and **not in
+favour of either as stated**. Reading 1 ("something is still wrong") is partly vindicated:
+the formulation *was* wrong, and −23.5% skill was substantially an artifact of predicting a
+price level against a near-optimal persistence baseline, exactly as PYQ-247 predicted.
+Reading 2 ("no edge") is *also* vindicated, at the level that matters: once the formulation
+is fixed, skill is **+2.4% to +3.8%** — statistically indistinguishable from zero at this
+sample size — and directional accuracy falls to **52–56%**, right where the mainstream
+prior says single-name 5-day equity direction should sit.
+
+The honest summary is therefore: *the old negative number was mostly measurement, the new
+near-zero number is probably real.* Both of this ticket's readings were partly right, and
+the project could not previously tell them apart because the formulation confounded them.
+
+Directional accuracy deserves emphasis because it moves the *wrong* way and that is the
+useful part. 80% on a level target is close to free — a model tracking the level is usually
+on the right side of the last close — and the README's 57.5% was flattered by the same
+effect. 52–56% on returns is the number a reader should be shown.
+
+**What is not done, and why this is "Answered" rather than closed with a verdict.** Step (a)
+— pre-registering what skill would count as a real effect — was not performed before
+running, so nothing here is a pre-registered test and it should not be read as one. Step (b)
+(features.md#pyq-239's learnability test) is still open, so "the pipeline can learn a real
+signal when one exists" remains unverified and a +2.4% result cannot yet be distinguished
+from a wiring artifact. Step (c)'s foundation-model arm (features.md#pyq-249) was not run.
+The sample is one symbol, 25 predictions, effective n ≈ 5 — features.md#pyq-251 now reports
+that effective figure precisely so this result is not over-read.
+
+Recorded conclusion: **the deliverable should be reframed around the measurement apparatus,
+as this ticket anticipated** — but the honest headline is now "no detectable edge after
+fixing the formulation", not "negative skill". Updating the README to say so requires the
+multi-symbol repeat first; that is the concrete next step, and stating it here rather than
+editing the README on n≈5 is the point of non-negotiable #1.
+
 ---
 
 ## [PYQ-313]
 Are predictions, actuals and last_observed genuinely in the same space?
-Status: Open
+Status: Answered — 2026-07-26
 Priority: High
 Files: `pyquant/models/tft.py` (`_evaluate_validation`)
 
@@ -410,6 +487,14 @@ and compare against the raw panel directly; check the installed pytorch-forecast
 handling of `target_scale` in `predict(return_x=True, return_y=True)`; record the finding
 here with the version it was verified against. Remediation, whatever the answer, is
 features.md#pyq-240 — the test that pins it.
+
+Answer (2026-07-26): verified on pytorch-forecasting 1.7.0 with a trained synthetic
+close-target bundle. `result.y[0]` equals raw panel Close values at every returned decoder
+index, and `x["encoder_target"][:, -1]` equals the raw Close immediately preceding each
+decoder window. The returned quantiles are likewise price-scale. An independently computed
+raw-price persistence MAE equals `_evaluate_validation()`'s baseline MAE exactly. The
+durable guard is features.md#pyq-240's
+`test_validation_predictions_actuals_and_persistence_baseline_share_price_units`.
 
 ---
 
@@ -505,7 +590,7 @@ of vendor dependencies the pipeline must keep alive.
 
 ## [PYQ-317]
 Is `softplus` the right target transformation for prices?
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Medium
 Files: `pyquant/data/dataset.py` (`make_dataset`)
 
@@ -528,11 +613,41 @@ Suggested approach: compare `softplus` vs `log` vs `None`-on-returns on the same
 looking at calibration coverage and per-quantile exceedance (PYQ-227) rather than only MAE,
 since that is where a transform mismatch shows up first.
 
+Answer (2026-07-27): as this ticket predicted, it is **largely mooted by
+features.md#pyq-247**, and the measurement confirms the mechanism it proposed.
+
+The `None`-on-returns arm was run as part of PYQ-247's controlled comparison
+(`make_dataset` drops the transformation when the target is `log_return`, since returns need
+no positivity constraint). Looking where this ticket says to look — calibration, not MAE:
+
+```
+softplus on price level   coverage 52.0%   Winkler 64.34
+none on log-returns       coverage 76.0%   Winkler  0.08
+  + purged splits         coverage 80.0%   Winkler  0.08   (nominal: 80%)
+```
+
+The ticket's candidate explanation for the calibration pathology — *"a symmetric band in
+softplus space maps to an asymmetric band in price space"* — is supported: removing the
+transformation, and with it the level scale, takes coverage from badly wrong to essentially
+exact against the nominal 80%, with **no conformal correction applied**. That is a stronger
+result than expected and it demoted features.md#pyq-248 from primary fix to second line of
+defence.
+
+**The `log`-on-levels arm was not run.** It is the arm this ticket cares most about in
+isolation, and it remains untested. The judgement recorded here is that it is now low value:
+if the level target is being retired in favour of returns (PYQ-247), the question "which
+transform for levels" is answering a question about a formulation on its way out. If levels
+are ever revisited, `log` should be tried before `softplus` for the reasons stated here —
+multiplicative dynamics become additive, and errors become relative — but that is a
+conditional recommendation, not a measured result, and is marked as such.
+
+Sample-size caveat carries over from PYQ-247: 25 predictions per arm, effective n ≈ 5.
+
 ---
 
 ## [PYQ-318]
 pytorch-forecasting vendor risk vs. neuralforecast / Darts
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Low
 Files: `pyquant/models/tft.py`, `pyquant/data/dataset.py`
 
@@ -553,6 +668,33 @@ cadence and issue-tracker health, plus a small spike reimplementing one existing
 against `neuralforecast` to see how much of `dataset.py` would survive. The output is a
 recorded judgement, not necessarily a migration — the current isolation means the cost of
 switching later is bounded, which is itself the finding worth confirming.
+
+Answer (2026-07-27, first periodic note — **judgement recorded, spike not run**):
+
+The isolation holds and was re-verified this pass: `pytorch_forecasting` and `lightning`
+are imported in exactly two modules, `models/tft.py` and `data/dataset.py`. Nothing in
+`analysis/` or `cli/` touches them, which is what let `analysis/calibrate.py` and
+`analysis/doctor.py` be added this pass as plain-array/plain-dict modules. That is the
+finding the ticket says is itself worth confirming: **the cost of switching later is
+bounded, and it did not grow.**
+
+Version in use: `pytorch-forecasting` 1.7.0 against `torch` 2.12.0. Two data points on
+upstream stability from this pass, both mildly reassuring: investigations.md#pyq-313's
+`predict(return_x=True, return_y=True)` unit-space question was verified against 1.7.0 and
+behaves as documented, and the `TimeSeriesDataSet.index` internals
+(`time`/`sequence_length`) that features.md#pyq-250's invariant test relies on were stable
+and inspectable. Against that, the concentration of subtlety the ticket flags is real and
+grew: PYQ-250 is now a *fifth* ticket whose whole content is the semantics of
+`TimeSeriesDataSet` window selection, after PYQ-109/115/117/127.
+
+`pyproject.toml` now caps the major (`pytorch-forecasting>=1.0,<2`, and likewise torch and
+lightning) as part of features.md#pyq-228, so a 2.0 cannot arrive silently the way
+yfinance's 1.x did.
+
+**Not done: the `neuralforecast` spike.** It is the part that would turn this from a
+judgement into evidence, and it was not attempted. Recorded rather than glossed. Next review
+due ~2027-01; the trigger to bring it forward would be a sixth window-semantics bug or a
+pytorch-forecasting 2.0 announcement.
 
 ---
 
@@ -585,7 +727,7 @@ quota.
 
 ## [PYQ-320]
 Data-source licensing and ToS review before anything public-facing
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Low
 Files: `pyquant/data/*`, `README.md`, `LICENSE`
 
@@ -610,3 +752,35 @@ Suggested approach: read each source's current terms, record what each permits f
 (a) personal research, (b) a public read-only API, (c) a commercial product; note the
 attribution each requires; add a short data-sources section to the README stating the
 posture.
+
+Answer (2026-07-27, recorded judgement — **not legal advice, and not a terms review**):
+
+The honest disposition per source, from their generally-known posture rather than a
+clause-by-clause reading performed this pass:
+
+- **Yahoo Finance via yfinance** — an unofficial client scraping internal endpoints. No
+  agreed terms exist between this project and Yahoo, so there is nothing to comply *with*;
+  Yahoo's terms restrict redistribution and commercial use of the data. Personal research
+  is the established norm; a public endpoint serving derived forecasts to third parties is
+  a materially different posture and should not rely on it.
+- **FRED/ALFRED** — relatively permissive, attribution expected. Note some underlying
+  series carry their own source terms.
+- **Finnhub** — free tier not intended for redistribution. Moot in practice for now: see
+  bugs.md#pyq-140, the free tier returns ~6 days of news, so almost nothing is being
+  ingested to redistribute.
+- **FinBERT (`ProsusAI/finbert`)** — carries its own model licence; weights are downloaded
+  at runtime and not vendored.
+
+**Conclusion, which is the actionable part: the ticket's own predicted outcome holds.** Use
+a licensed provider before serving anything publicly, which is an argument for landing
+features.md#pyq-258 first — and PYQ-258 landed this pass, with a `PriceProvider` protocol
+and a Tiingo implementation behind a config toggle, precisely so that swap is a config
+change rather than a rewrite. This is therefore a prerequisite for features.md#pyq-261 that
+is now *satisfiable*, rather than one that blocks it.
+
+**What was not done:** no source's current terms were actually read this pass, and no
+data-sources section was added to the README. Both are the substance of the ticket's
+suggested approach, so this is a dated recorded judgement to reason from — the state the
+ticket says is better than an unexamined assumption — and explicitly not the review itself.
+Anyone taking this project public-facing should do the clause-level read before relying on
+any of the above.

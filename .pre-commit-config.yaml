@@ -1,0 +1,50 @@
+# Pre-commit hooks (PYQ-262).
+#
+# CI already gates lint, the backlog check and the tests -- but only after a
+# push. These move the cheap ones to commit time. Nothing here is new tooling:
+# ruff and scripts/backlog.py are already dependencies of the project, so this
+# file adds a workflow, not a dependency (the bar PYQ-310 set).
+#
+# Install with:
+#   uv tool install pre-commit && pre-commit install
+# Run over everything once:
+#   pre-commit run --all-files
+#
+# Deliberately NOT here: pytest. The suite takes ~100s because of the torch
+# tests, which is far too slow for a commit hook; it stays a CI gate.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        # Markdown uses two trailing spaces as a hard line break.
+        args: [--markdown-linebreak-ext=md]
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        # Trained bundles are gitignored, but a stray checkpoint is the most
+        # likely accidental large add in this repo.
+        args: [--maxkb=1024]
+      - id: detect-private-key
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.4
+    hooks:
+      - id: ruff
+        args: [--fix]
+      # `ruff format` is intentionally absent until the one-off formatting pass
+      # lands: the tree currently has ~20 unformatted files, and enabling the
+      # formatter here would spread that diff across unrelated commits. CI runs
+      # `ruff format --check` non-blocking meanwhile, so the drift stays visible
+      # (PYQ-229 records the same decision from the other side).
+
+  - repo: local
+    hooks:
+      - id: backlog-check
+        name: backlog consistency (scripts/backlog.py check)
+        entry: python3 scripts/backlog.py check
+        language: system
+        pass_filenames: false
+        files: ^backlog/.*\.md$

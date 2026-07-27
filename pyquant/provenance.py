@@ -26,19 +26,44 @@ def package_version() -> str:
         return "unknown"
 
 
-def git_sha() -> str | None:
-    """Best-effort short git sha of the working tree, or None outside a repo."""
+def _git(args: list[str], cwd: Path) -> str | None:
+    """Run a git command, returning its stdout or ``None`` if it is unusable.
+
+    ``None`` covers every "no git answer" case alike — git absent, not a
+    repository, timed out, or a non-zero exit — because provenance capture must
+    degrade to "unknown" rather than fail a training run.
+    """
     try:
         result = subprocess.run(
-            ["git", "rev-parse", "--short", "HEAD"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            cwd=Path(__file__).resolve().parent,
+            ["git", *args], capture_output=True, text=True, timeout=5, cwd=cwd
         )
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+def git_sha() -> str | None:
+    """Short git sha of *this project's* working tree, or None.
+
+    Resolving ``git rev-parse`` from the package directory is correct for a
+    source checkout and accidentally correct for a wheel installed outside any
+    repo (git fails, None is recorded). It is silently *wrong* for the case in
+    between: ``site-packages`` sitting inside some unrelated repository -- a
+    vendored dependency tree, a conda env under version control, a monorepo with
+    a committed venv -- where it stamps that repo's sha onto PyQuant's
+    provenance (PYQ-134). A wrong provenance is worse than a missing one,
+    because nothing downstream can tell it is wrong.
+
+    So the repo is verified to actually contain this file before its sha is
+    trusted: ``<toplevel>/pyquant/provenance.py`` must be this very module.
+    """
+    here = Path(__file__).resolve()
+    toplevel = _git(["rev-parse", "--show-toplevel"], cwd=here.parent)
+    if toplevel is None:
+        return None
+    if (Path(toplevel) / "pyquant" / here.name).resolve() != here:
+        return None
+    return _git(["rev-parse", "--short", "HEAD"], cwd=here.parent)
 
 
 def code_version() -> str:

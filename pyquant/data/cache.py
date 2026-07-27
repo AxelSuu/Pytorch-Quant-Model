@@ -25,6 +25,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from pyquant import provenance
+
 logger = logging.getLogger(__name__)
 
 
@@ -35,11 +37,19 @@ def fingerprint_key(fingerprint: dict) -> str:
 
 
 def _entry_path(cache_dir: Path, key: str) -> Path:
+    """Path of the pickled panel for ``key``."""
     return cache_dir / f"{key}.pkl"
 
 
 def _meta_path(entry_path: Path) -> Path:
+    """Path of the sidecar metadata file beside a cache entry."""
     return entry_path.with_suffix(".meta.json")
+
+
+def read_pin_metadata(cache_dir: Path, name: str) -> dict | None:
+    """Return a pin's provenance metadata, if it was recorded."""
+    path = _meta_path(_entry_path(cache_dir / "pins", name))
+    return json.loads(path.read_text()) if path.exists() else None
 
 
 def read_cache(
@@ -69,14 +79,56 @@ def write_cache(cache_dir: Path, key: str, panel: pd.DataFrame, now: float | Non
 def read_pin(cache_dir: Path, name: str) -> pd.DataFrame | None:
     """Return a pinned dataset snapshot, ignoring any TTL -- exact reproducibility."""
     path = _entry_path(cache_dir / "pins", name)
-    return pd.read_pickle(path) if path.exists() else None
+    if not path.exists():
+        return None
+
+    panel = pd.read_pickle(path)
+    meta = read_pin_metadata(cache_dir, name)
+    if meta is None:
+        logger.warning("Pin %s has no recorded metadata; it may predate the current code.", name)
+        return panel
+
+    recorded_version = meta.get("pyquant_version")
+    current_version = provenance.package_version()
+    if recorded_version != current_version:
+        logger.warning(
+            "Pin %s was created with PyQuant version %s, but this run uses %s; "
+            "its feature values may not be reproducible.",
+            name,
+            recorded_version,
+            current_version,
+        )
+    recorded_columns = meta.get("columns")
+    columns = list(panel.columns)
+    if recorded_columns != columns:
+        logger.warning(
+            "Pin %s metadata records columns %s, but its panel contains %s; "
+            "the pin may have been created by incompatible code.",
+            name,
+            recorded_columns,
+            columns,
+        )
+    return panel
 
 
 def write_pin(cache_dir: Path, name: str, panel: pd.DataFrame) -> None:
     """Save a named, TTL-exempt dataset snapshot for later exact reuse."""
     pin_dir = cache_dir / "pins"
     pin_dir.mkdir(parents=True, exist_ok=True)
-    panel.to_pickle(_entry_path(pin_dir, name))
+    path = _entry_path(pin_dir, name)
+    panel.to_pickle(path)
+    _meta_path(path).write_text(
+        json.dumps(
+            {
+                "pyquant_version": provenance.package_version(),
+                "git_sha": provenance.git_sha(),
+                "created_at": time.time(),
+                "columns": list(panel.columns),
+                "n_rows": len(panel),
+            },
+            indent=2,
+        )
+    )
 
 
 # --- Management helpers (PYQ-221) -------------------------------------------
@@ -141,5 +193,6 @@ def remove_pin(cache_dir: Path, name: str) -> bool:
     path = _entry_path(cache_dir / "pins", name)
     if path.exists():
         path.unlink()
+        _meta_path(path).unlink(missing_ok=True)
         return True
     return False

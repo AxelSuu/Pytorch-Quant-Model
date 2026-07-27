@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 from pyquant.analysis import forecast as fc_mod
-from pyquant.analysis.forecast import Forecast
+from pyquant.analysis.forecast import Forecast, log_returns_to_prices
 
 
 def _make_forecast():
@@ -43,6 +43,13 @@ def test_expected_return_pct():
     fc = _make_forecast()
     # final median 107 vs current 110 -> ~ -2.7%
     assert abs(fc.expected_return_pct() - (-2.7272)) < 1e-3
+
+
+def test_log_return_price_round_trip():
+    returns = np.log(np.array([[101.0, 102.0, 103.0], [104.0, 105.0, 106.0]]) / 100.0)
+    prices = log_returns_to_prices(returns, 100.0)
+    np.testing.assert_allclose(prices[0], [101.0, 102.0, 103.0])
+    np.testing.assert_allclose(prices[1], [104.0 * 101.0 / 100.0, 105.0 * 102.0 / 100.0, 106.0 * 103.0 / 100.0])
 
 
 def test_median_raises_clear_error_when_0_5_not_configured():

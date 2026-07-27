@@ -497,3 +497,111 @@ def test_train_on_insufficient_history_reports_cleanly(monkeypatch, tmp_path):
     assert isinstance(result.exception, SystemExit), f"leaked {result.exception!r}"
     assert "Not enough history" in result.output
     assert "Traceback" not in result.output
+
+
+# --- PYQ-263: `pyquant doctor` ------------------------------------------------
+
+
+def _bundle(checkpoint_dir, name, features, *, data_cfg=None, target="Close"):
+    """Write a minimal meta.json bundle the way train() would."""
+    d = checkpoint_dir / name
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(
+        json.dumps(
+            {
+                "symbol": name,
+                "symbols": [name],
+                "trained_at": "2026-07-27T10:00:00",
+                "features": features,
+                "target": target,
+                "config": {"data": data_cfg or {}},
+            }
+        )
+    )
+    return d
+
+
+def _doctor_settings(monkeypatch, tmp_path, **overrides):
+    from pyquant.config import Settings
+
+    def fake_load_settings(*a, **k):
+        s = Settings()
+        s.checkpoint_dir = tmp_path / "checkpoints"
+        s.data.cache_dir = tmp_path / "cache"
+        # Settings() reads the developer's real .env, so a machine with keys
+        # configured would answer differently from CI. Start from "nothing set"
+        # and let each test opt in.
+        s.fred_api_key = None
+        s.finnhub_api_key = None
+        for key, value in overrides.items():
+            target, _, attr = key.rpartition("__")
+            setattr(getattr(s, target) if target else s, attr, value)
+        return s
+
+    monkeypatch.setattr(app_mod, "load_settings", fake_load_settings)
+    return fake_load_settings()
+
+
+def test_doctor_reports_key_presence_without_ever_printing_a_value(monkeypatch, tmp_path):
+    """Secrets never enter logs or output -- presence only."""
+    _doctor_settings(monkeypatch, tmp_path, fred_api_key="super-secret-value")
+    (tmp_path / "checkpoints").mkdir()
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["keys"]["FRED_API_KEY"] is True
+    assert payload["keys"]["FINNHUB_API_KEY"] is False
+    assert "super-secret-value" not in result.stdout
+
+
+def test_doctor_exits_non_zero_when_a_bundles_schema_can_no_longer_be_satisfied(
+    monkeypatch, tmp_path
+):
+    """The genuinely useful check (PYQ-263): a bundle trained with sentiment
+    cannot be served with sentiment switched off -- the PYQ-118 mismatch, found
+    by asking rather than by a forecast blowing up later."""
+    _doctor_settings(monkeypatch, tmp_path, data__use_sentiment=False)
+    _bundle(tmp_path / "checkpoints", "AAPL", ["RSI_14", "Sentiment", "HeadlineCount"])
+
+    result = runner.invoke(app_mod.app, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "AAPL" in result.stdout
+
+
+def test_doctor_is_healthy_when_every_bundle_can_still_be_built(monkeypatch, tmp_path):
+    _doctor_settings(monkeypatch, tmp_path)
+    _bundle(tmp_path / "checkpoints", "MSFT", ["RSI_14", "SMA_50", "MACD"])
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "doctor"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["healthy"] is True
+    assert payload["bundles"][0]["name"] == "MSFT"
+    assert payload["bundles"][0]["n_features"] == 3
+
+
+def test_doctor_flags_a_bundle_needing_a_key_that_is_not_set(monkeypatch, tmp_path):
+    """FRED-derived features are unbuildable without the key, whatever the toggle says."""
+    _doctor_settings(monkeypatch, tmp_path, fred_api_key=None)
+    _bundle(tmp_path / "checkpoints", "NVDA", ["RSI_14", "FedFunds", "CPI"])
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "doctor"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.stdout)
+    assert payload["healthy"] is False
+    assert "FRED_API_KEY" in payload["bundles"][0]["problem"]
+
+
+def test_doctor_succeeds_with_no_bundles_at_all(monkeypatch, tmp_path):
+    """A fresh install is healthy, not broken."""
+    _doctor_settings(monkeypatch, tmp_path)
+
+    result = runner.invoke(app_mod.app, ["doctor"])
+
+    assert result.exit_code == 0
+    assert "No trained bundles" in result.stdout

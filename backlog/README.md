@@ -38,47 +38,40 @@ edit lands.
 
 ## Now
 
-A hand-curated shortlist, not auto-generated — re-pick this after every
-review pass. Full context for each is in its file. (Re-picked 2026-07-26 after
-the external review pass below, which argued the prior #1 pick (PYQ-211)
-optimises inside a formulation that may be near-unbeatable by construction —
-see PYQ-247. Weighted toward what needs no GPU sweep and no product decision,
-since that's what actually blocked most of the old list.)
+A hand-curated shortlist, not auto-generated — re-pick this after every review
+pass. Full context for each is in its file. (Re-picked 2026-07-27 after the
+implementation pass below, which closed 28 tickets including PYQ-247. That
+result reshuffles everything: the headline number is no longer negative, so the
+open questions change from "why is it bad" to "is the near-zero real".)
 
-1. **PYQ-238** (feature, High) — `tests/test_invariants.py`. Six leaks found
-   so far (PYQ-101/103/115/116/123/127) share one shape: correct in every file,
-   wrong across files. `backlog/README.md`'s own recorded lesson after the
-   third pass was that this backlog "optimised local correctness ticket by
-   ticket while the invariants that span the pipeline went unstated" — this is
-   the structural fix. No hardware, no keys, no product decision.
-2. **PYQ-247** (feature, High) — forecast log-returns instead of price levels.
-   `TARGET = "Close"` means the baseline (predict the last close) is
-   near-optimal by construction for a near-random-walk level series, which
-   means PYQ-117's −23.5% skill may be close to what this formulation predicts
-   *a priori*, largely independent of hyperparameters. The change most likely
-   to move the headline number, and — unlike LR tuning — needs no GPU sweep to
-   try.
-3. **PYQ-129** (bug, Critical) — sentiment is joined to the UTC calendar date
-   a headline was published on, so post-close headlines (the most
-   market-moving ones) leak into the same day's training row. Same class as
-   PYQ-101, small and self-contained, and the last known member of that leak
-   family.
-4. **PYQ-248** (feature, High) — conformal calibration of the quantile band.
-   PYQ-117 measured 99.3% coverage on a nominal 80% band — the interval is so
-   wide it is close to uninformative, and nothing currently fixes that
-   (PYQ-227 only diagnoses it). Split-conformal is distribution-free, needs no
-   retraining, and is roughly 80 lines.
-5. **PYQ-232** (feature, High) — Sphinx + autodoc site. 79% docstring
-   coverage already exists and is unusually good (cites ticket IDs, explains
-   *why*); none of it is rendered anywhere. The expensive part is done.
-6. **PYQ-301** (investigation, Medium) — how much of the training window has
-   non-neutral sentiment? Was blocked on a `FINNHUB_API_KEY`; both that key
-   and a `FRED_API_KEY` are now configured locally (2026-07-26), so this and
-   any other key-gated ticket can actually be run rather than just reasoned
-   about. Promoted from "blocked" rather than ranked purely on value.
+1. **PYQ-239** (feature, High) — learnability test. Now the *blocking* ticket
+   rather than a nice-to-have: PYQ-247 reports +2.4% skill, and nothing in the
+   suite can distinguish a real +2.4% from a wiring artifact. Its noise-control
+   half is equally load-bearing — a pipeline that finds skill in noise has a
+   leak. investigations.md#pyq-312 cannot be closed without this.
+2. **PYQ-140** (bug, High) — Finnhub's free tier serves ~6 days of news, not the
+   ~365 the module documents, so `Sentiment` is 99.7% structural zeros. One of
+   four advertised data sources is contributing 0.3% coverage.
+3. **PYQ-238** (feature, High) — `tests/test_invariants.py`. Unchanged in
+   rationale and now more urgent: PYQ-250 added purge/embargo to the split
+   geometry, so there is one more pipeline-spanning invariant than there were
+   regression tests for.
+4. **A multi-symbol repeat of PYQ-247's comparison.** The single highest-value
+   piece of work in the backlog and it has no ticket, because it is a *run*
+   rather than a change: one symbol at effective n≈5 is not enough to flip
+   `TrainingConfig.target` to `log_return` by default, and flipping it is what
+   turns the result into the product. Needs PYQ-251's intervals (landed) and
+   ideally PYQ-249's third baseline.
+5. **PYQ-241** (feature, Medium) — end-to-end CLI journey. Six commands, two
+   output formats, one temp directory. The pass below added `doctor`, a provider
+   layer, a conformal offset in `meta.json` and three new metric fields; each is
+   a new way for the write side and the read side to disagree.
+6. **PYQ-261** (feature, Medium) — `pyquant/api/`. Its stated blocker (PYQ-220,
+   absolute paths) landed in the pass below, and PYQ-320 recorded the licensing
+   prerequisite as satisfiable via PYQ-258. Nothing blocks it now.
 
-**PYQ-211** (LR tuning) is demoted out of Now — see its 2026-07-26 update for
-why, and PYQ-253 for the ticket likely to supersede it.
+**PYQ-211** (LR tuning) stays Open but is now measurably deprioritised — see its
+2026-07-27 update. Supersede it when PYQ-253 lands, not before.
 
 ## History
 
@@ -193,3 +186,62 @@ No ticket content from the external review was filtered out in the merge — all
 recorded as proposed (`Open`), to be triaged and worked in priority order like PYQ-115..128
 were, not treated as already-decided. The one substantive edit to an existing ticket was
 PYQ-211's priority/cross-reference, above.
+
+An implementation pass (2026-07-27) worked the 49 open tickets in priority order and closed
+**28**, taking the backlog to 123 tickets with 21 open. It also filed three new bugs, two of
+them found only by running the pipeline against live vendors rather than against its own
+mocks.
+
+The headline is **PYQ-247**. Switching the target from price level to log-return, on one
+pinned dataset with the seed, epoch budget and window count held fixed, moved skill from
+**−59.5% to +2.4%** (+3.8% with PYQ-250's purged splits) and calibration coverage from
+**52% to 76–80%** against a nominal 80% band — the latter with no conformal correction at
+all. The external review's central claim was right: the −23.5% headline was substantially a
+property of the formulation, not of the hyperparameters. Two honest counterweights are
+recorded with it. Directional accuracy *falls* from 80% to 52–56%, because "direction versus
+the last close" is nearly free on a level target and a genuine coin-flip on returns — the
+lower number is the true one, and it suggests the README's 57.5% was flattered the same way.
+And the sample is one symbol, 25 predictions, effective n≈5, so the default target was
+**deliberately left unchanged**; flipping it on this evidence is the move non-negotiable #1
+forbids. investigations.md#pyq-312 records the reframing: the old negative number was mostly
+measurement, the new near-zero number is probably real.
+
+The two live-vendor bugs are the pass's other lesson. **PYQ-139** (Critical): PYQ-257's
+ALFRED vintage fetch, shipped Resolved with a passing test, failed against the real FRED API
+three separate ways — an unbounded realtime window rejected for exceeding 2000 vintages, a
+`NaT` in the value column that took a whole series down on one market holiday, and a
+`realtime_end` in the future whenever the caller's clock is ahead of FRED's. Every FRED
+macro feature had silently vanished from every panel; only `VIX` survived, and graceful
+degradation reduced a total vendor loss to one log line. **PYQ-140** (High, open): Finnhub's
+free tier ignores `from` and returns ~6 days of news, not the ~365 the module documents, so
+`Sentiment` is 99.7% structural zeros — investigations.md#pyq-301 had estimated 80%. Both
+are the case features.md#pyq-243 argues: mocking at our own function boundary verifies our
+logic against our own assumptions, which is half a test. **PYQ-138** (Low) was a third: a CLI
+test that passed or failed depending on whether stdout was a terminal.
+
+Also closed: **PYQ-137** reversed its own ticket's premise on measurement — `adjust=True`
+does *not* remove the EMA seed bias, and against a full-history reference is 1.3–1.6x worse
+than the status quo; truncation rather than the seed is the real error source, so the fix is
+a four-span warm-up (MACD front-of-panel error 5.66% → 0.08% of its own magnitude, for 7.2%
+of rows). **PYQ-248** shipped split-conformal calibration, verified to pull a 100%-coverage
+band to within 5 points of nominal *and* to widen a too-narrow one, but defaulted **off**
+because PYQ-247 showed the pathology was largely a symptom of the target. **PYQ-258** added a
+`PriceProvider` protocol with a licensed Tiingo implementation and an executable schema
+contract. **PYQ-263** added `pyquant doctor`, which exists because PYQ-139 was invisible.
+**PYQ-232/233/234/235** rendered the docs (18 module pages, 47 pandas and 6
+pytorch-forecasting intersphinx links, warning-clean under `-W`). **PYQ-229/230/236/244**
+took CI to a 3.10–3.12 matrix with a frozen install, lockfile check, coverage reporting and
+a nightly live-vendor smoke job.
+
+What did **not** get done is worth stating as plainly. PYQ-238's invariant module, PYQ-239's
+learnability test and PYQ-246's determinism test were all started and abandoned mid-flight;
+PYQ-261 and PYQ-217 likewise. PYQ-252 landed CRPS, Winkler and PIT as numbers but the PIT
+*histogram* is not rendered. PYQ-233's "CI fails on a deliberately broken cross-reference"
+half was never executed, and PYQ-234's hosted build has no connected Read the Docs project.
+PYQ-320 is a dated recorded judgement, not the clause-level terms review it asks for, and
+PYQ-318's `neuralforecast` spike was not run. Each of those is recorded in its own ticket as
+verified-in-part rather than claimed whole.
+
+Final state: 251 tests passing (was 204), `ruff check` clean with the `D` ruleset newly
+enabled, `scripts/backlog.py check` clean, `uv lock --check` clean, `pre-commit run
+--all-files` clean across nine hooks, and the docs building warning-free.

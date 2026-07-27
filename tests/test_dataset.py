@@ -2,6 +2,7 @@
 
 import datetime as dt
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -32,12 +33,23 @@ def test_build_panel_baseline_ohlcv(monkeypatch, sample_ohlcv_df, settings):
 
 
 def test_build_panel_drops_indicator_warmup_rows(monkeypatch, sample_ohlcv_df, settings):
-    """SMA_50 needs 49 real days of history; those rows must be dropped,
-    not silently fabricated via bfill (which borrows the first valid value)."""
+    """Warm-up rows must be dropped, not silently fabricated via bfill (which
+    borrows the first valid value).
+
+    The panel starts where the *longest* indicator warm-up ends -- derived here
+    rather than hardcoded, because which indicator binds is not fixed: it was
+    SMA_50's 49 rows until PYQ-137 lengthened the EMA warm-up past it. Hardcoding
+    the winner is what let PYQ-121/PYQ-132 hide behind SMA_50 in the first place.
+    """
     _patch_prices(monkeypatch, sample_ohlcv_df)
+    indicators = add_technical_indicators(sample_ohlcv_df)
+    expected_start = indicators.dropna().index[0]
+
     panel = dataset.build_panel("AAPL", settings)
-    assert panel.index[0] == sample_ohlcv_df.index[49]
-    assert len(panel) == len(sample_ohlcv_df) - 49
+
+    assert panel.index[0] == expected_start
+    assert len(panel) == len(indicators.dropna())
+    assert panel.notna().all().all()
 
 
 def test_build_panel_joins_enabled_sources(monkeypatch, sample_ohlcv_df, settings):
@@ -84,9 +96,14 @@ def test_build_panel_lands_post_close_news_on_the_next_trading_row(
     settings.data.use_sentiment = True
     settings.finnhub_api_key = "dummy"
 
-    sessions = sample_ohlcv_df.index
-    friday, monday = sessions[104], sessions[105]
-    assert friday.day_name() == "Friday" and monday.day_name() == "Monday"
+    # Pick the first Friday/Monday pair that survives the indicator warm-up,
+    # rather than a fixed index -- the warm-up length moves (PYQ-137).
+    sessions = add_technical_indicators(sample_ohlcv_df).dropna().index
+    friday, monday = next(
+        (a, b)
+        for a, b in zip(sessions, sessions[1:], strict=False)
+        if a.day_name() == "Friday" and b.day_name() == "Monday"
+    )
     monkeypatch.setattr(sentiment, "_finbert", lambda: object())
     monkeypatch.setattr(
         sentiment,
@@ -115,6 +132,22 @@ def test_feature_columns_excludes_identifiers_and_target(monkeypatch, sample_ohl
     assert "symbol" not in feats
     assert "time_idx" not in feats
     assert "RSI_14" in feats
+
+
+def test_panel_to_long_adds_log_returns_and_selects_them_as_the_default_target(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    settings.training.target = "log_return"
+    panel = dataset.build_panel("AAPL", settings)
+    long = dataset.panel_to_long(panel, "AAPL")
+
+    assert dataset.LOG_RETURN_TARGET in long
+    assert long[dataset.LOG_RETURN_TARGET].iloc[0] == pytest.approx(
+        np.log(panel["Close"].iloc[1] / panel["Close"].iloc[0])
+    )
+    assert dataset.target_column(settings) == dataset.LOG_RETURN_TARGET
+    assert dataset.LOG_RETURN_TARGET not in dataset.feature_columns(long)
 
 
 def test_build_panel_uses_cache_on_second_call(monkeypatch, sample_ohlcv_df, settings):
@@ -395,3 +428,70 @@ def test_build_panel_does_not_backfill_a_late_starting_source(
     # the pre-source rows are dropped, not fabricated from a future value.
     assert panel.index.min() >= late_start
     assert (panel["VIX"] == 99.0).all()
+
+
+# --- PYQ-256: has_sentiment_data ---------------------------------------------
+
+
+def test_has_sentiment_data_separates_no_data_rows_from_genuinely_neutral_ones(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """Sentiment=0 means two different things -- "no coverage" for most training
+    rows and "neutral news" at predict time -- and only the second ever occurs
+    live. The indicator column lets the model condition on which (PYQ-256)."""
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    settings.data.use_sentiment = True
+    settings.finnhub_api_key = "dummy"
+
+    sessions = add_technical_indicators(sample_ohlcv_df).dropna().index
+    covered_from = sessions[len(sessions) // 2]
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    monkeypatch.setattr(
+        sentiment,
+        "fetch_news",
+        lambda *a, **k: [{"headline": "news", "datetime": _epoch_et(covered_from, 11)}],
+    )
+    monkeypatch.setattr(sentiment, "score_headlines", lambda h: [0.5])
+
+    panel = dataset.build_panel("AAPL", settings)
+
+    assert "has_sentiment_data" in panel.columns
+    before = panel.loc[panel.index < covered_from, "has_sentiment_data"]
+    after = panel.loc[panel.index >= covered_from, "has_sentiment_data"]
+    assert (before == 0.0).all(), "rows before the news window must be flagged as no-data"
+    assert (after == 1.0).all(), "rows inside the news window must be flagged as covered"
+    # A quiet day *inside* the window is neutral, not missing -- the distinction
+    # the column exists to make.
+    assert (panel.loc[panel.index > covered_from, "Sentiment"] == 0.0).all()
+    assert (panel.loc[panel.index > covered_from, "has_sentiment_data"] == 1.0).all()
+
+
+def test_has_sentiment_data_is_absent_when_sentiment_is_disabled(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """It must not appear when the source is off, or it would break the PYQ-118
+    schema check for every bundle trained without sentiment."""
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    settings.data.use_sentiment = False
+
+    panel = dataset.build_panel("AAPL", settings)
+
+    assert "has_sentiment_data" not in panel.columns
+
+
+def test_has_sentiment_data_is_a_model_feature(monkeypatch, sample_ohlcv_df, settings):
+    """It is only useful if the model actually sees it."""
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    settings.data.use_sentiment = True
+    settings.finnhub_api_key = "dummy"
+    session = add_technical_indicators(sample_ohlcv_df).dropna().index[100]
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    monkeypatch.setattr(
+        sentiment,
+        "fetch_news",
+        lambda *a, **k: [{"headline": "n", "datetime": _epoch_et(session, 11)}],
+    )
+    monkeypatch.setattr(sentiment, "score_headlines", lambda h: [0.5])
+
+    long = dataset.panel_to_long(dataset.build_panel("AAPL", settings), "AAPL")
+    assert "has_sentiment_data" in dataset.feature_columns(long)

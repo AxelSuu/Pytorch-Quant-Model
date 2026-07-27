@@ -4,7 +4,10 @@ Probabilistic time series forecasting app with a [Temporal Fusion Transformer](h
 
 [![CI](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml/badge.svg)](https://github.com/AxelSuu/Pytorch-Quant-Model/actions/workflows/ci.yml)
 
-PyQuant processes api vendor products such as prices, macro, sector, and news-sentiment signals. 
+**Documentation:** [`docs/`](docs/) Build the site locally with
+`uv run --group docs sphinx-build -b html docs docs/_build/html`.
+
+PyQuant processes api vendor products such as prices, macro, sector, and news-sentiment signals.
 Trains a [Temporal Fusion Transformer](https://arxiv.org/abs/1912.09363), and serves 5-day
 p10/p50/p90 forecasts from a Rich terminal UI.
 
@@ -68,6 +71,7 @@ Open bugs, planned features, and investigations live in [`backlog/`](backlog/REA
 uv run pytest                                # full suite (network-free; external APIs are mocked)
 uv run ruff check .                          # lint
 uv run python scripts/backlog.py list        # open tickets, priority-sorted
+uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html   # docs
 ```
 
 ## API keys (optional)

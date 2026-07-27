@@ -3,6 +3,7 @@
 import numpy as np
 import pandas as pd
 import pytest
+import yfinance
 
 from pyquant.data import prices
 
@@ -36,21 +37,29 @@ def test_add_technical_indicators_leaves_warmup_rows_genuinely_nan(sample_ohlcv_
     SMA_50 needs 49 real days. The EMA pair used to emit a value from row 1 --
     literally ``close[0]``, an average of nothing -- and MACD inherited it
     (PYQ-132), which is the same defect PYQ-121 fixed for RSI_14.
+
+    The exponential warm-ups are ``warmup_spans * span`` rather than one span:
+    masking a single span stops a value being emitted off a one-row window but
+    leaves the recursion's seed weighted 2.3% at the first surviving row, worth
+    5.66% of MACD's own magnitude (PYQ-137). These lengths move with
+    ``DEFAULT_EMA_WARMUP_SPANS``.
     """
     out = prices.add_technical_indicators(sample_ohlcv_df)
+    spans = prices.DEFAULT_EMA_WARMUP_SPANS
 
     # (column, number of leading rows that are genuinely undefined)
     warmups = {
         "SMA_10": 9,
         "SMA_20": 19,
         "SMA_50": 49,
-        "EMA_12": 11,
-        "EMA_26": 25,
+        "EMA_12": spans * 12 - 1,
+        "EMA_26": spans * 26 - 1,
         "RSI_14": 14,
-        # MACD needs the slow EMA; the signal line then needs 9 MACD values.
-        "MACD": 25,
-        "MACD_Signal": 33,
-        "MACD_Hist": 33,
+        # MACD needs the slow EMA; the signal line then needs its own warm-up
+        # of MACD values on top.
+        "MACD": spans * 26 - 1,
+        "MACD_Signal": (spans * 26 - 1) + (spans * 9 - 1),
+        "MACD_Hist": (spans * 26 - 1) + (spans * 9 - 1),
     }
     for column, warmup in warmups.items():
         assert out[column].iloc[:warmup].isna().all(), f"{column} fabricates warm-up values"
@@ -92,14 +101,14 @@ def test_fetch_prices_uses_yfinance(monkeypatch, sample_ohlcv_df):
         def __init__(self, symbol):
             pass
 
-        def history(self, period=None, start=None, end=None):
+        def history(self, period=None, start=None, end=None, auto_adjust=None, **kwargs):
             # yfinance returns extra columns + tz-aware index
             df = sample_ohlcv_df.copy()
             df["Dividends"] = 0.0
             df.index = df.index.tz_localize("America/New_York")
             return df
 
-    monkeypatch.setattr(prices.yf, "Ticker", FakeTicker)
+    monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
     out = prices.fetch_prices("AAPL", use_indicators=True)
     assert out.index.tz is None  # normalised to tz-naive
     assert "RSI_14" in out.columns
@@ -115,11 +124,11 @@ def test_fetch_prices_honors_start_without_end(monkeypatch, sample_ohlcv_df):
         def __init__(self, symbol):
             pass
 
-        def history(self, period=None, start=None, end=None):
+        def history(self, period=None, start=None, end=None, auto_adjust=None, **kwargs):
             received.update(period=period, start=start, end=end)
             return sample_ohlcv_df.copy()
 
-    monkeypatch.setattr(prices.yf, "Ticker", FakeTicker)
+    monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
     prices.fetch_prices("AAPL", start="2020-01-01", use_indicators=False)
     assert received["start"] == "2020-01-01"
     assert received["period"] is None  # period path not taken
@@ -137,13 +146,13 @@ def test_fetch_prices_recovers_from_transient_failure(monkeypatch, sample_ohlcv_
         def __init__(self, symbol):
             pass
 
-        def history(self, period=None, start=None, end=None):
+        def history(self, period=None, start=None, end=None, auto_adjust=None, **kwargs):
             calls["n"] += 1
             if calls["n"] == 1:
                 raise RuntimeError("transient network error")
             return sample_ohlcv_df.copy()
 
-    monkeypatch.setattr(prices.yf, "Ticker", FlakyTicker)
+    monkeypatch.setattr(yfinance, "Ticker", FlakyTicker)
     out = prices.fetch_prices("AAPL", use_indicators=False)
     assert calls["n"] == 2  # failed once, then succeeded
     assert not out.empty
@@ -157,7 +166,7 @@ def test_fetch_prices_raises_on_empty(monkeypatch):
         def history(self, **kwargs):
             return pd.DataFrame()
 
-    monkeypatch.setattr(prices.yf, "Ticker", EmptyTicker)
+    monkeypatch.setattr(yfinance, "Ticker", EmptyTicker)
     with pytest.raises(ValueError):
         prices.fetch_prices("BADSYM")
 
@@ -221,3 +230,82 @@ def test_compute_rsi_is_0_when_price_only_falls():
     falling = pd.Series(np.arange(40.0, 1.0, -1.0))
     rsi = prices.compute_rsi(falling, 14)
     np.testing.assert_allclose(rsi.dropna().to_numpy(), 0.0)
+
+
+# --- PYQ-135: no inf may reach the panel -------------------------------------
+
+
+def test_volume_change_is_nan_not_inf_on_a_zero_volume_session(sample_ohlcv_df):
+    """A halted/gapped session reported as Volume=0 makes the *next* row's
+    pct_change divide by zero. inf is not NaN, so it survives build_panel()'s
+    dropna() and poisons GroupNormalizer's fitted scale (PYQ-135)."""
+    df = sample_ohlcv_df.copy()
+    df.iloc[60, df.columns.get_loc("Volume")] = 0.0
+
+    out = prices.add_technical_indicators(df)
+
+    assert not np.isinf(out["Volume_Change"]).any()
+    assert np.isnan(out["Volume_Change"].iloc[61])  # the divide-by-zero row
+    assert not np.isinf(out.select_dtypes("number").to_numpy()).any()
+    assert len(out.dropna()) > 0  # the row is dropped, the panel survives
+
+
+def test_no_indicator_column_emits_inf_for_a_flat_or_zero_series():
+    """Belt-and-braces: the whole indicator block is inf-free even on degenerate
+    input, so a new indicator cannot reintroduce the PYQ-135 class silently."""
+    n = 200
+    idx = pd.bdate_range("2023-01-02", periods=n, name="Date")
+    df = pd.DataFrame(
+        {"Open": 10.0, "High": 10.0, "Low": 10.0, "Close": 10.0, "Volume": 0.0}, index=idx
+    )
+
+    out = prices.add_technical_indicators(df)
+
+    assert not np.isinf(out.select_dtypes("number").to_numpy()).any()
+
+
+# --- PYQ-137: EMA warm-up must be long enough that the seed has decayed -------
+
+
+def _full_history_ema(n_prior: int, window: pd.Series, span: int) -> pd.Series:
+    """EMA_``span`` computed with ``n_prior`` extra rows of history in front.
+
+    This is the reference PYQ-137 actually cares about: what the indicator would
+    read on a charting package that has more history than our panel starts with.
+    """
+    rng = np.random.default_rng(99)
+    prior = pd.Series(float(window.iloc[0]) + np.cumsum(rng.normal(0, 1, n_prior)))
+    full = pd.concat([prior, window], ignore_index=True)
+    return full.ewm(span=span, adjust=False).mean().iloc[n_prior:].reset_index(drop=True)
+
+
+def test_first_surviving_ema_row_matches_a_full_history_reference(sample_ohlcv_df):
+    """From the first surviving panel row onward, EMA_26 must agree with an EMA
+    that had ample prior history to within 0.05% of price.
+
+    PYQ-132 masked the first ``span`` outputs but did not change the recursion,
+    which ``adjust=False`` seeds at ``close[0]``; the first rows that *were*
+    emitted still carried the seed (PYQ-137). A four-span warm-up decays it.
+    """
+    window = sample_ohlcv_df["Close"].reset_index(drop=True)
+    reference = _full_history_ema(3000, window, span=26)
+
+    out = prices.add_technical_indicators(sample_ohlcv_df)
+    ema = out["EMA_26"].reset_index(drop=True)
+    first = int(ema.notna().idxmax())
+
+    relative_error = (ema.iloc[first:] - reference.iloc[first:]).abs() / window.iloc[first:]
+    assert relative_error.max() < 0.0005, (
+        f"EMA_26 at the first surviving row (index {first}) is "
+        f"{relative_error.iloc[0] * 100:.4f}% off a full-history reference"
+    )
+
+
+def test_ema_warmup_spans_is_configurable_and_trades_rows_for_accuracy(sample_ohlcv_df):
+    """The warm-up length is a tunable, not a constant: a shorter one keeps more
+    rows and a longer one is strictly more accurate at the front."""
+    short = prices.add_technical_indicators(sample_ohlcv_df, warmup_spans=1)
+    long = prices.add_technical_indicators(sample_ohlcv_df, warmup_spans=4)
+
+    assert len(short.dropna()) > len(long.dropna())
+    assert short["EMA_26"].first_valid_index() < long["EMA_26"].first_valid_index()

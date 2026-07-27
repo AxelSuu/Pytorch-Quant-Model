@@ -13,6 +13,11 @@ from pyquant.data.dataset import build_panel, future_business_dates, panel_to_lo
 from pyquant.models import tft
 
 
+def log_returns_to_prices(log_returns: np.ndarray, last_close: float) -> np.ndarray:
+    """Reconstruct a price path from per-step log-return quantiles."""
+    return float(last_close) * np.exp(np.cumsum(np.asarray(log_returns, dtype=float), axis=0))
+
+
 @dataclass
 class Forecast:
     """A multi-horizon quantile forecast plus context for display."""
@@ -98,12 +103,19 @@ def generate_forecast(
     panel = build_panel(symbol, settings, pin=pin)
     df = panel_to_long(panel, symbol)
 
+    raw_predictions = tft.predict_quantiles(bundle, df)
+    target = (bundle.meta.get("config") or {}).get("training", {}).get("target", "close")
+    predictions = (
+        log_returns_to_prices(raw_predictions, float(panel["Close"].iloc[-1]))
+        if target == "log_return"
+        else raw_predictions
+    )
     # Forecast.__post_init__ enforces a monotonic band and records any crossing.
     return Forecast(
         symbol=symbol,
         last_date=panel.index[-1],
         current_price=float(panel["Close"].iloc[-1]),
         quantiles=list(bundle.meta["quantiles"]),
-        predictions=tft.predict_quantiles(bundle, df),
+        predictions=predictions,
         history=panel["Close"].tail(history_days),
     )

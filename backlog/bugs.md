@@ -1,7 +1,7 @@
 # Bugs (PYQ-1xx)
 
 Concrete, reproducible defects — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-138**.
+Next free ID: **PYQ-141**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -35,13 +35,16 @@ Next free ID: **PYQ-138**.
 | [PYQ-128](#pyq-128) | Medium | Resolved | A `--config` path that does not exist is silently ignored |
 | [PYQ-129](#pyq-129) | Critical | Resolved | News sentiment is joined to the session it was published in, including post-close headlines |
 | [PYQ-130](#pyq-130) | High | Resolved | `future_business_dates()` names exchange holidays as forecast days |
-| [PYQ-131](#pyq-131) | Medium | Open | `predict_quantiles` returns `out[0]` without checking which group it is |
+| [PYQ-131](#pyq-131) | Medium | Resolved | `predict_quantiles` returns `out[0]` without checking which group it is |
 | [PYQ-132](#pyq-132) | Medium | Resolved | EMA/MACD warm-up rows survive `dropna()` — the still-live half of PYQ-121 |
-| [PYQ-133](#pyq-133) | High | Open | Cache entries and pins record no code version, so a pin outlives a feature redefinition |
-| [PYQ-134](#pyq-134) | Low | Open | `_git_sha()` resolves against the installed package directory, not the working tree |
-| [PYQ-135](#pyq-135) | Low | Open | `Volume_Change` yields `inf` on a zero-volume session |
+| [PYQ-133](#pyq-133) | High | Resolved | Cache entries and pins record no code version, so a pin outlives a feature redefinition |
+| [PYQ-134](#pyq-134) | Low | Resolved | `_git_sha()` resolves against the installed package directory, not the working tree |
+| [PYQ-135](#pyq-135) | Low | Resolved | `Volume_Change` yields `inf` on a zero-volume session |
 | [PYQ-136](#pyq-136) | Medium | Resolved | `aggregate_metrics()` sums sample counts but unweighted-averages the rates they describe |
-| [PYQ-137](#pyq-137) | Low | Open | EMA seed bias survives `min_periods`: the first surviving panel rows are still ~0.08% off |
+| [PYQ-137](#pyq-137) | Low | Resolved | EMA seed bias survives `min_periods`: the first surviving panel rows are still ~0.08% off |
+| [PYQ-138](#pyq-138) | Low | Resolved | CLI output tests assert on ANSI-coloured stdout, so they pass or fail by ambient terminal |
+| [PYQ-139](#pyq-139) | Critical | Resolved | PYQ-257's vintage fetch fails against the live FRED API: every FRED macro feature silently vanished |
+| [PYQ-140](#pyq-140) | High | Open | Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros |
 
 ---
 
@@ -1359,7 +1362,7 @@ does not.
 
 ## [PYQ-131]
 `predict_quantiles` returns `out[0]` without checking which group it is
-Status: Open
+Status: Resolved — 2026-07-26
 Priority: Medium
 Files: `pyquant/models/tft.py` (`predict_quantiles`, `interpret`)
 
@@ -1390,6 +1393,12 @@ an immediate error.
 Acceptance criteria: a test passing a two-symbol frame and asserting the returned array
 corresponds to the requested symbol (or that a clear error is raised naming the
 limitation), not merely that *an* array of the right shape came back.
+
+Resolution (2026-07-26): `_prediction_dataset()` now requires exactly one unique
+`symbol` before constructing the prediction dataset. `predict_quantiles` and `interpret`
+therefore fail clearly for an accidental batched frame instead of silently selecting output
+row zero. `test_prediction_rejects_a_multi_symbol_frame_instead_of_returning_group_zero`
+trains a bundle, passes two symbols and asserts the named constraint.
 
 ---
 
@@ -1478,7 +1487,7 @@ definition every charting package plots, which is a decision and not a patch.
 
 ## [PYQ-133]
 Cache entries and pins record no code version, so a pin outlives a feature redefinition
-Status: Open
+Status: Resolved — 2026-07-26
 Priority: High
 Files: `pyquant/data/cache.py` (`write_cache`, `write_pin`, `read_pin`), `pyquant/data/dataset.py` (`_cache_fingerprint`)
 
@@ -1516,11 +1525,20 @@ package version produce different keys; a test asserting `read_pin` warns when t
 recorded version differs from the current one; a test asserting a pin's metadata records
 the panel's column list.
 
+Resolution (2026-07-26): cache fingerprints now include `provenance.code_version()`, so
+TTL entries are invalidated when the package version or working-tree revision changes.
+Pins now write a sibling metadata file containing the package version, git sha, creation
+time, row count and exact panel columns. Replaying a legacy pin with no metadata, a pin
+from another version, or a pin whose recorded column list disagrees with its pickle emits
+a clear warning; pin removal deletes the metadata too. Verified by the focused PYQ-133
+cache/dataset tests (10 passed), including version-key divergence, metadata persistence,
+legacy/stale-pin warnings and cleanup.
+
 ---
 
 ## [PYQ-134]
 `_git_sha()` resolves against the installed package directory, not the working tree
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `pyquant/models/tft.py` (`_git_sha`)
 
@@ -1544,11 +1562,31 @@ matching a known marker) before trusting the sha.
 Acceptance criteria: a test running `_git_sha()` with a monkeypatched `__file__` inside a
 temporary unrelated git repo, asserting it returns `None` rather than that repo's sha.
 
+Resolution (2026-07-27): reproduced first — with `__file__` pointed at a `site-packages`
+tree inside an unrelated repo, `git_sha()` returned that repo's sha (`1422f92`) while the
+project's own HEAD was `a7a2b5f`, exactly the silent-mis-stamp the ticket describes.
+
+`provenance.git_sha()` now resolves `git rev-parse --show-toplevel` from the package
+directory and **verifies the repo actually contains this file** — `<toplevel>/pyquant/
+provenance.py` must resolve to the very module doing the asking — before trusting the sha.
+An unrelated enclosing repo therefore yields `None` (absent, which downstream can detect)
+rather than a wrong sha (which it cannot). Chosen over the ticket's other suggestion
+(prefer the distribution version, consult git only for editable installs) because it keeps
+working for the ordinary source checkout without needing to detect install mode, which is
+itself unreliable.
+
+`models/tft.py` carried a second copy of this function; it now delegates to
+`provenance`, so the same defect cannot be half-fixed. Guarded by
+`test_git_sha_returns_none_when_the_package_lives_in_an_unrelated_repo` (builds a real
+throwaway repo and asserts both `is None` and `!= that repo's sha`) and
+`test_git_sha_still_reports_the_sha_from_a_real_source_checkout`, which pins the case that
+already worked.
+
 ---
 
 ## [PYQ-135]
 `Volume_Change` yields `inf` on a zero-volume session
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `pyquant/data/prices.py` (`add_technical_indicators`)
 
@@ -1570,6 +1608,23 @@ belt-and-braces guard for the whole indicator block.
 
 Acceptance criteria: a test with a zero-volume row asserting no `inf` survives into the
 built panel.
+
+Resolution (2026-07-27): reproduced — a single `Volume=0` session in a 120-row frame put
+exactly one `inf` in `Volume_Change`, and it survived `dropna()` into the panel as
+predicted.
+
+Took the ticket's belt-and-braces option: `add_technical_indicators` ends with
+`df.replace([np.inf, -np.inf], np.nan)`, so the existing row-drop handles it and **the
+whole indicator block** is covered rather than just `Volume_Change`. Preferred over a
+log-volume difference because that would redefine an existing model input — a PYQ-121-class
+change needing its own before/after — where this only removes a value that was never
+meaningful. The relative-change definition is unchanged for every non-degenerate row.
+
+Guarded by `test_volume_change_is_nan_not_inf_on_a_zero_volume_session` (asserts the
+divide-by-zero row is NaN, that no `inf` remains anywhere in the frame, and that the panel
+still has rows) and `test_no_indicator_column_emits_inf_for_a_flat_or_zero_series`, which
+holds the invariant for the block as a whole so a future indicator cannot reintroduce the
+class silently.
 
 ---
 
@@ -1637,7 +1692,7 @@ midpoint) and the fallback test above.
 
 ## [PYQ-137]
 EMA seed bias survives `min_periods`: the first surviving panel rows are still ~0.08% off
-Status: Open
+Status: Resolved — 2026-07-27
 Priority: Low
 Files: `pyquant/data/prices.py` (`add_technical_indicators`, `compute_macd`)
 
@@ -1684,3 +1739,250 @@ relative to price.
 Acceptance criteria: a decision recorded here with its reasoning, and — if either fix is
 taken — a test asserting the emitted EMA matches an unbiased reference to a stated
 tolerance from the first surviving row onward.
+
+Resolution (2026-07-27): **decision — take `min_periods = 4 * span`** (option 2), with the
+multiplier exposed as `add_technical_indicators(warmup_spans=...)` /
+`compute_macd(warmup_spans=...)`, default `DEFAULT_EMA_WARMUP_SPANS = 4`.
+
+The measurement changed the decision, in two ways.
+
+*First, this ticket's own framing understated the effect ~100x.* "0.08% of price" is the
+wrong denominator for `MACD`/`MACD_Hist`, which are small differences of two EMAs, not
+price levels. Against MACD's own typical magnitude the first surviving row was off by
+**5.66%**, not 0.08%. That is what moved this from "defensible to do nothing" to worth
+paying rows for.
+
+*Second, the ticket's premise about `adjust=True` is wrong.* It is described here as
+removing the bias exactly, "the exact normalised weighted average, which has no seed". It
+does not. `adjust=True` is exact only over the **truncated window** and is just as blind to
+the history the panel does not have. Measured against the reference that actually matters
+— an EMA given 3000 rows of prior history, i.e. what a charting package with more history
+than our panel plots — `adjust=True` is **1.3–1.6x worse** than the status quo at rows
+49/78/104:
+
+```
+row  |EMA_26 - full-history EMA_26|, % of price, mean of 20 seeds
+      adjust=False (current)   adjust=True
+ 49          0.1962%             0.2626%
+ 78          0.0161%             0.0246%
+104          0.0043%             0.0071%
+```
+
+Seeding the recursion with an SMA of the first `span` observations (what TradingView does)
+was measured too and is worse again — 1.6x at row 49. So the real error source is
+**window truncation, not the seed choice**, and a longer warm-up is the only one of the
+three candidates that attacks it. It also keeps the standard `adjust=False` definition,
+which is the direction PYQ-121 argued for when it adopted Wilder's RSI to match reference
+implementations — so this resolution is consistent with that precedent rather than in
+tension with it.
+
+Cost/benefit at the chosen multiplier, on MACD's own scale vs. the full-history reference:
+
+```
+warm-up cut at row   MACD truncation error
+     49 (today)             5.66%
+     78 (3 spans)           0.61%
+    104 (4 spans)           0.08%     <- chosen
+```
+
+A 71x reduction for 91 rows (7.2%) off a 5-year panel: 1209 surviving rows becomes 1118.
+The binding warm-up moves from `SMA_50` (49) to `MACD_Signal` (138 = `4*26-1` plus
+`4*9-1`). Four spans rather than three because the extra 34 rows buy another 7.6x and the
+project's stated preference is correctness over sample count.
+
+**This redefines a model input.** `EMA_12`, `EMA_26`, `MACD`, `MACD_Signal` and `MACD_Hist`
+all change value at the front of every panel, and every panel is now shorter, so bundles
+and metrics from before this commit are not comparable across it — the same invalidation
+PYQ-121 recorded, and the reason cache fingerprints include `code_version()` (PYQ-133).
+
+Guarded by `test_first_surviving_ema_row_matches_a_full_history_reference`, which asserts
+the stated tolerance (< 0.05% of price) against a 3000-row-history reference from the first
+surviving row onward, and `test_ema_warmup_spans_is_configurable_and_trades_rows_for_accuracy`.
+`test_add_technical_indicators_leaves_warmup_rows_genuinely_nan` now derives its expected
+warm-ups from `DEFAULT_EMA_WARMUP_SPANS` instead of hardcoding PYQ-132's numbers, and two
+`test_dataset.py` tests that hardcoded "the panel starts at row 49" now derive the boundary
+— hardcoding which indicator binds is what let PYQ-121 and PYQ-132 hide behind `SMA_50` in
+the first place.
+
+---
+
+## [PYQ-138]
+CLI output tests assert on ANSI-coloured stdout, so they pass or fail by ambient terminal
+Status: Resolved — 2026-07-27
+Priority: Low
+Files: `tests/conftest.py`, `tests/test_cli.py`
+
+Problem: found while running the suite for PYQ-137. `test_cache_list_and_prune_commands`
+asserts `"Pruned 0" in pruned.stdout`. Rich decides whether to emit ANSI colour when the
+`Console` is constructed — at import of `pyquant/cli/app.py` — from whether stdout looks
+like a terminal. Under a piped run (CI, `pytest > log`) it emits plain text and the
+assertion holds; under an interactive run it emits `Pruned \x1b[1;36m0\x1b[0m` and the
+same test fails:
+
+```
+E  AssertionError: assert 'Pruned 0' in 'Pruned \x1b[1;36m0\x1b[0m expired cac...'
+```
+
+Verified pre-existing: it fails on `a7a2b5f` with no local changes applied, and passes on
+the identical tree under `NO_COLOR=1 TERM=dumb`.
+
+This is the PYQ-120 shape rather than a cosmetic nit — a test whose result is decided by
+something other than the code under test. It fails *open* in CI (piped, so always plain),
+which is the bad direction: the colour path is never exercised there, and the failure only
+appears on a developer's machine, where it reads as "someone broke the cache command."
+
+Resolution (2026-07-27): `tests/conftest.py` sets `NO_COLOR=1` and `TERM=dumb` at module
+scope, before any test module imports the CLI and therefore before the `Console` is built.
+Every CLI assertion now sees the same plain output under both run modes. Fixed at the
+harness level rather than by loosening the individual assertion to a regex, because the
+defect is "output format varies with environment", not "this one string is too strict" —
+and there are 30-odd CLI assertions that would each need the same loosening. Verified by
+running `tests/test_cli.py` both piped and on a tty: 31 passed either way.
+
+---
+
+## [PYQ-139]
+PYQ-257's vintage fetch fails against the live FRED API: every FRED macro feature silently vanished
+Status: Resolved — 2026-07-27
+Priority: Critical
+Files: `pyquant/data/macro.py` (`_fetch_fred`, `_vintage_series`), `tests/test_macro.py`
+
+Problem: found by running `build_panel("AAPL", ...)` against live vendors while setting up
+PYQ-247's backtest comparison. PYQ-257 replaced fixed publication lags with ALFRED release
+vintages and is marked Resolved with a passing test. **Against the real API it fetches
+nothing.** The built panel contained one macro column, `VIX` — the one that does not go
+through FRED — and `FedFunds`, `YieldSpread` and `CPI` were all absent:
+
+```
+WARNING pyquant.data.macro: Could not fetch FRED series T10Y2Y: Bad Request.  There are
+  3085 vintage dates in the specified real-time period: 1776-07-04 to 9999-12-31.  This
+  exceeds the maximum number of vintage dates allowed for this file type (2000).
+WARNING pyquant.data.macro: Could not fetch FRED series CPIAUCSL: float() argument must be
+  a string or a real number, not 'NaTType'
+panel rows: 1116 cols: 28   macro columns present: ['VIX']
+```
+
+Three distinct defects, all in code that its own test suite passes:
+
+1. **The realtime window was never bounded.** `build_panel` calls `fetch_macro(key,
+   start=None, end=None, period="5y")`, so `_fetch_fred` passed `realtime_start=None,
+   realtime_end=None` and fredapi defaulted to FRED's entire real-time span,
+   1776-07-04..9999-12-31. FRED caps one `get_series_all_releases` call at 2000 vintage
+   dates; a daily series over that span has thousands.
+2. **A missing observation kills the whole series.** FRED encodes one as `"."`, which
+   fredapi converts to **`NaT`, not `NaN`**, and `_vintage_series` did `float(row.value)`.
+   Measured on the live response: `T10Y2Y` had 551 such rows in a five-year window
+   (market holidays) and `CPIAUCSL` had 1. One holiday discarded five years of data.
+3. **`realtime_end` in the future.** Clamping to `pd.Timestamp.today()` is the caller's
+   local date; FRED's is US-based. From a European clock that is tomorrow, and FRED
+   rejects it: *"realtime_end can not be after today's date (2026-07-26)"*.
+
+Why the tests did not catch it: `test_fetch_macro_uses_the_first_published_cpi_vintage` and
+its siblings mock `fredapi.Fred` at *our* function boundary and return a hand-built frame
+with exactly the dtypes the parser wants — no NaT values, and the realtime arguments are
+accepted and ignored. That verifies our logic against our own assumptions about the
+payload, which is precisely the half-a-test features.md#pyq-243 describes. This ticket is
+the concrete evidence for that one.
+
+Severity is Critical rather than High because of how it fails: graceful degradation
+(correct, and a stated contract) turned a total loss of one of four vendors into a logged
+warning. Nothing in the reported metrics says the model trained on 24 features instead of
+27, and the README's four-source claim was silently false at runtime.
+
+Resolution (2026-07-27):
+
+- `_vintage_windows()` derives a bounded realtime range from the history actually being
+  requested (`start`/`end`, else `period` via a new `_period_to_offset`), clamps the end to
+  **FRED's own clock** (`America/New_York`) rather than the caller's, and tiles it into
+  one-year chunks — ~252 vintages for a daily series, comfortably under the 2000 ceiling
+  and independent of how long a `period` is asked for.
+- `_vintage_series()` coerces `value` with `pd.to_numeric(errors="coerce")` and drops
+  nulls, so a missing observation is treated as "not a release" instead of raising.
+- Chunk failures degrade per chunk, not per series, so one bad window costs a gap rather
+  than five years.
+
+Verified against the live API, before and after, same call:
+
+```
+before:  macro columns ['VIX']                                     (1116 panel rows)
+after:   macro columns ['VIX','FedFunds','YieldSpread','CPI']      1263 rows,
+         non-null 1261/1260/1260/1260, 2021-07-26..2026-07-23
+```
+
+Guarded offline by three tests that each reproduce one defect:
+`test_missing_observations_do_not_abort_a_whole_series` (NaT in the value column),
+`test_vintage_requests_are_bounded_and_never_ask_for_a_future_realtime_end` (asserts every
+issued request is bounded, ends no later than FRED's today, and spans ≤ 400 days), and
+`test_a_ten_year_request_is_split_into_chunks_that_cover_the_whole_window` (chunks tile the
+range with no gaps, so the feature cannot silently start late).
+
+**This changes model inputs.** Any bundle trained between PYQ-257 landing and this fix was
+trained without `FedFunds`/`YieldSpread`/`CPI` regardless of config, so its recorded feature
+list and any metric derived from it are not comparable with runs either side. PYQ-257's
+resolution note stands on the design but its "verified offline" evidence did not establish
+that the integration worked; see also features.md#pyq-243, which this promotes from
+"good idea" to "already paid for once".
+
+---
+
+## [PYQ-140]
+Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros
+Status: Open
+Priority: High
+Files: `pyquant/data/sentiment.py` (module docstring, `fetch_news`), `pyquant/data/dataset.py`
+
+Problem: found while measuring investigations.md#pyq-301 against the live API, now that a
+`FINNHUB_API_KEY` is configured. `sentiment.py`'s docstring states the free tier "only
+covers ~365 days of news". PYQ-301 reasoned from that to "roughly 80% of training rows
+could be structurally zero for this feature" at the default `period="5y"`.
+
+Both figures are wrong. Measured on a freshly-built panel:
+
+```
+AAPL: 1116 rows, 2022-02-10..2026-07-27
+  inside news window    :     3 (  0.3%)
+  OUTSIDE (structural 0):  1113 ( 99.7%)
+MSFT: 1116 rows
+  inside news window    :     2 (  0.2%)
+```
+
+Probing the endpoint directly shows why — the free tier ignores `from` entirely and always
+returns the same recent slice:
+
+```
+from=2026-07-20 ->  248 headlines across 6 distinct days, range 2026-07-22..2026-07-27
+from=2026-06-27 ->  248 headlines across 6 distinct days, range 2026-07-22..2026-07-27
+from=2025-07-27 ->  248 headlines across 6 distinct days, range 2026-07-22..2026-07-27
+from=2021-07-28 ->  248 headlines across 6 distinct days, range 2026-07-22..2026-07-27
+```
+
+Four requests spanning one week to five years return byte-identical coverage: **~6 days**,
+not 365.
+
+Consequences, in order of severity:
+
+1. `Sentiment` and `HeadlineCount` are effectively constant-zero columns across training.
+   Two of ~27 features carry almost no variance, and the TFT's variable-selection network
+   is being asked to weight a column that is zero 99.7% of the time.
+2. It is a guaranteed train/serve distribution shift, and a much sharper one than PYQ-301
+   anticipated: at predict time the *most recent* rows — the ones the encoder actually
+   reads — are the only rows that ever carry sentiment.
+3. The README counts four data sources. One of them contributes 0.3% coverage. That is a
+   documentation-accuracy problem as much as a data one (non-negotiable #4).
+4. FinBERT is downloaded and run, and the sentiment extra is installed, to score ~250
+   headlines that reach ~3 rows.
+
+This is filed as a bug rather than folded into PYQ-301 because the module *documents* a
+behaviour the vendor does not provide, and code and docs disagreeing about a data source's
+coverage is the same class as PYQ-139 — correct-looking in isolation, wrong against the
+real API, hidden by graceful degradation.
+
+Suggested fix: correct the docstring to the measured behaviour first (cheap, and stops the
+next reader reasoning from 365 days as PYQ-301 did). Then decide between: dropping the
+sentiment feature from the default config until deeper history is available; truncating the
+training window to the covered period (PYQ-256 already ships the `has_sentiment_data`
+indicator that makes either arm measurable); or pricing a paid tier / alternative vendor
+(features.md#pyq-214, #pyq-258). The decision needs a backtest arm, not an opinion.
+
+Acceptance criteria: the docstring states the measured coverage; a decision recorded here
+with a backtest comparing sentiment-on vs sentiment-off on equal footing.

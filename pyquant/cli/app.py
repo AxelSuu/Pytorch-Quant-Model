@@ -16,6 +16,7 @@ from rich.table import Table
 from pyquant.analysis import serialize
 from pyquant.analysis.forecast import Forecast, generate_forecast
 from pyquant.analysis.interpret import attention_to_series, explain_forecast
+from pyquant.analysis.metrics import moving_block_bootstrap_interval
 from pyquant.cli import charts
 from pyquant.config import Settings, load_settings
 from pyquant.data import cache as data_cache
@@ -48,6 +49,7 @@ class _Output:
 
     @property
     def json(self) -> bool:
+        """True when ``--format json`` was requested, i.e. Rich output is suppressed."""
         return self.fmt == "json"
 
 
@@ -109,6 +111,12 @@ def _build_settings(
     no_sectors: bool,
     config: Path | None = None,
 ) -> Settings:
+    """Resolve settings for one command invocation, applying CLI flags last.
+
+    Implements the documented precedence CLI flags > env > ``.env`` > YAML >
+    defaults: ``load_settings`` establishes everything up to YAML, and the
+    explicit flags here overwrite on top of it (PYQ-209).
+    """
     # YAML config (if any) is layered first; the explicit CLI flags below then
     # win over it (PYQ-209).
     s = load_settings(config)
@@ -148,8 +156,25 @@ def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "")
         f"Calibration coverage{suffix} ({_band_label(quantiles)})",
         f"{ev.calibration_coverage:.1%}",
     )
+    if ev.quantile_exceedance:
+        for quantile, rate in ev.quantile_exceedance.items():
+            table.add_row(f"Empirical p{quantile:.0%}{suffix}", f"{rate:.1%}")
+    if ev.pinball_losses:
+        table.add_row(
+            f"Mean pinball loss{suffix}",
+            f"{sum(ev.pinball_losses.values()) / len(ev.pinball_losses):.4f}",
+        )
+    # CRPS scores the whole predictive distribution; Winkler charges for band
+    # width as well as coverage, which is the pathology coverage alone hides --
+    # a band can hit nominal by being enormous (PYQ-252). Both: lower is better.
+    if ev.crps:
+        table.add_row(f"CRPS{suffix} (lower better)", f"{ev.crps:.4f}")
+    if ev.winkler_score:
+        table.add_row(f"Winkler interval score{suffix} (lower better)", f"{ev.winkler_score:.4f}")
     table.add_row(
-        "Evaluated on", f"{ev.n_samples} windows ({ev.n_points} predictions)"
+        "Evaluated on",
+        f"{ev.n_samples} overlapping windows ({ev.n_points} predictions; "
+        f"effective n≈{ev.effective_n_samples})",
     )
 
 
@@ -179,7 +204,15 @@ def _per_window_table(result, quantiles: list[float]) -> Table:
     return table
 
 
+def _directional_interval(result, horizon: int) -> tuple[float, float]:
+    """Moving-block interval for backtest window directional accuracy (PYQ-251)."""
+    return moving_block_bootstrap_interval(
+        [window.directional_accuracy for window in result.per_window], max(1, horizon)
+    )
+
+
 def _color_pct(pct: float) -> str:
+    """Render a percentage as Rich markup, green/▲ when non-negative and red/▼ below."""
     arrow = "▲" if pct >= 0 else "▼"
     color = "green" if pct >= 0 else "red"
     return f"[{color}]{arrow} {abs(pct):.2f}%[/{color}]"
@@ -259,6 +292,7 @@ def backtest(
         _fail(exc)
 
     def _run():
+        """Run the backtest; a closure so it can be called with or without the spinner."""
         return tft.walk_forward_backtest(
             symbol, settings, n_windows=windows, max_epochs=epochs, progress=False
         )
@@ -282,12 +316,20 @@ def backtest(
         show_header=False,
     )
     _add_metric_rows(table, result.aggregated, settings.tft.quantiles, suffix=" (avg)")
+    # A bare "57.5% directional accuracy" invites exactly one question -- is that
+    # distinguishable from 50%? -- and the answer depends entirely on how many
+    # *independent* windows are behind it. Blocks no shorter than the horizon
+    # preserve the overlap the naive bootstrap would destroy (PYQ-251).
+    if len(result.per_window) > 1:
+        low, high = _directional_interval(result, settings.training.max_prediction_length)
+        table.add_row("Directional accuracy 95% CI", f"[{low:.1%}, {high:.1%}]")
     console.print(table)
     if len(result.per_window) > 1:
         console.print(_per_window_table(result, settings.tft.quantiles))
 
 
 def _forecast_table(fc: Forecast) -> Table:
+    """Build the per-step quantile table, one row per forecast day."""
     table = Table(title=f"{fc.symbol} — {fc.horizon}-day forecast")
     table.add_column("Day", justify="right")
     # Name the actual date each step is for; "Day 1" alone gave no way to notice
@@ -501,6 +543,7 @@ app.add_typer(cache_app, name="cache")
 
 
 def _fmt_bytes(n: int) -> str:
+    """Format a byte count as B/KB/MB/GB, whole bytes and one decimal above that."""
     size = float(n)
     # GB is the last unit, so it is the explicit fall-through rather than a special
     # case inside the loop with an unreachable return after it (PYQ-126).
@@ -555,6 +598,80 @@ def cache_rm_pin(name: str = typer.Argument(..., help="Pin name to remove")):
         console.print(f"[green]Removed pin '{name}'.[/green]")
     else:
         console.print(f"[yellow]No pin named '{name}'.[/yellow]")
+
+
+@app.command()
+def doctor():
+    """Report what is switched on, and whether every bundle is still usable.
+
+    Exits non-zero if any existing bundle's feature schema can no longer be
+    satisfied -- so a broken bundle is found by asking, rather than by a
+    forecast failing later (PYQ-263).
+    """
+    from pyquant.analysis.doctor import run_doctor
+
+    settings = load_settings()
+    report = run_doctor(settings)
+
+    if _output.json:
+        _emit_json(report.to_dict())
+        raise typer.Exit(0 if report.healthy else 1)
+
+    def _tick(ok: bool) -> str:
+        return "[green]yes[/green]" if ok else "[yellow]no[/yellow]"
+
+    env = Table(title="Environment", show_header=False)
+    env.add_row("PyQuant version", report.code_version)
+    for key, present in report.keys.items():
+        # Presence only, never the value (see the secrets non-negotiable).
+        env.add_row(key, _tick(present))
+    for extra, present in report.optional_extras.items():
+        env.add_row(extra, _tick(present))
+    torch_info = report.torch
+    if torch_info.get("available"):
+        env.add_row("torch", str(torch_info["version"]))
+        env.add_row(
+            "accelerator",
+            f"{torch_info['accelerator']}"
+            + (f" ({torch_info['device_name']})" if torch_info.get("device_name") else ""),
+        )
+        env.add_row("bf16 supported", _tick(torch_info["bf16_supported"]))
+    else:
+        env.add_row("torch", f"[red]unavailable: {torch_info.get('error')}[/red]")
+    for label, value in report.paths.items():
+        env.add_row(label, value)
+    env.add_row(
+        "cache",
+        f"{report.cache.get('entry_count', 0)} entries, "
+        f"{_fmt_bytes(report.cache.get('total_bytes', 0))}"
+        + (f", pins: {', '.join(report.cache['pins'])}" if report.cache.get("pins") else ""),
+    )
+    console.print(env)
+
+    if not report.bundles:
+        console.print("[dim]No trained bundles yet. Run `pyquant train SYMBOL`.[/dim]")
+        return
+
+    bundles = Table(title="Bundles")
+    for column in ("Bundle", "Symbols", "Trained", "Target", "Features", "Usable"):
+        bundles.add_column(column)
+    for bundle in report.bundles:
+        bundles.add_row(
+            bundle.name,
+            ", ".join(str(s) for s in bundle.symbols if s),
+            (bundle.trained_at or "?")[:10],
+            bundle.target or "?",
+            str(bundle.n_features),
+            "[green]yes[/green]" if bundle.schema_ok else f"[red]no — {bundle.problem}[/red]",
+        )
+    console.print(bundles)
+
+    if not report.healthy:
+        console.print(
+            "[red]At least one bundle cannot be satisfied by the current "
+            "configuration.[/red] Restore the source/key it names, or retrain it."
+        )
+        raise typer.Exit(1)
 
 
 if __name__ == "__main__":

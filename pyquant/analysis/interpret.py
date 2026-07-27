@@ -14,12 +14,23 @@ from pyquant.models import tft
 
 @dataclass
 class Interpretation:
+    """What the model attended to when producing a forecast.
+
+    ``feature_importance`` is the TFT's variable-selection weight per feature and
+    ``attention`` is one weight per encoder timestep, oldest to newest.
+    ``panel_index`` records the dates those weights were computed over, so the
+    attention vector can be aligned to real calendar days rather than to
+    positions. Whether these weights mean what ``explain`` presents them as is
+    itself an open question — see investigations.md#pyq-314.
+    """
+
     symbol: str
     feature_importance: dict[str, float]  # feature -> normalised weight
     attention: np.ndarray  # attention weight per past time step (oldest..newest)
     panel_index: pd.DatetimeIndex  # dates of the panel this interpretation was computed from
 
     def top_features(self, n: int = 10) -> list[tuple[str, float]]:
+        """Return the ``n`` highest-weighted features as ``(name, weight)``, descending."""
         return sorted(self.feature_importance.items(), key=lambda kv: kv[1], reverse=True)[:n]
 
 

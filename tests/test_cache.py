@@ -1,6 +1,7 @@
 """Tests for the local panel cache: TTL expiry + named pins."""
 
 import json
+from pathlib import Path
 
 import pandas as pd
 
@@ -170,3 +171,46 @@ def test_remove_pin(tmp_path):
     cache.write_pin(tmp_path, "p1", df)
     assert cache.remove_pin(tmp_path, "p1") is True
     assert cache.remove_pin(tmp_path, "p1") is False
+
+
+def test_git_sha_returns_none_when_the_package_lives_in_an_unrelated_repo(tmp_path, monkeypatch):
+    """A pip-installed package can sit inside *some other* git repo (a vendored
+    dependency tree, a conda env under version control, a monorepo with a
+    committed venv). Recording that repo's sha as PyQuant's provenance is
+    silently wrong, which is worse than absent (PYQ-134)."""
+    import subprocess
+
+    unrelated = tmp_path / "unrelated"
+    (unrelated / "site-packages" / "pyquant").mkdir(parents=True)
+    subprocess.run(["git", "init", "-q", "."], cwd=unrelated, check=True)
+    subprocess.run(
+        ["git", "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-q",
+         "--allow-empty", "-m", "unrelated"],
+        cwd=unrelated, check=True,
+    )
+    foreign_sha = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"], cwd=unrelated,
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+
+    monkeypatch.setattr(
+        provenance, "__file__", str(unrelated / "site-packages" / "pyquant" / "provenance.py")
+    )
+
+    sha = provenance.git_sha()
+    assert sha != foreign_sha
+    assert sha is None
+
+
+def test_git_sha_still_reports_the_sha_from_a_real_source_checkout():
+    """The fix must not break the case that actually works today."""
+    import subprocess
+
+    expected = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=Path(provenance.__file__).resolve().parent,
+        capture_output=True, text=True,
+    )
+    if expected.returncode != 0:  # not a checkout (installed wheel) -- nothing to assert
+        return
+    assert provenance.git_sha() == expected.stdout.strip()

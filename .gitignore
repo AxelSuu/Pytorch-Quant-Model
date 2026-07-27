@@ -18,10 +18,19 @@ checkpoints/*
 # Tooling caches
 .ruff_cache/
 .pytest_cache/
+.mypy_cache/
+# Coverage artifacts (PYQ-230 measures coverage; the data file is rebuildable).
+.coverage
+.coverage.*
+htmlcov/
 
 # Local data panel cache (pyquant.data.cache) -- rebuildable, not reproducible
 # storage; pinned datasets live under here too but are meant to be local-only.
 .cache/
+
+# Rendered documentation (PYQ-232); the sources are checked in, the build is not.
+docs/_build/
+docs/api/_generated/
 
 # Generated chart exports
 exports/

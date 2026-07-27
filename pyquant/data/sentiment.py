@@ -82,6 +82,7 @@ def fetch_news(api_key: str, symbol: str, start: str, end: str) -> list[dict]:
     params = {"symbol": symbol, "from": start, "to": end, "token": api_key}
 
     def _get() -> list:
+        """One Finnhub request; non-list payloads become an empty result."""
         resp = requests.get(_FINNHUB_NEWS_URL, params=params, timeout=20)
         resp.raise_for_status()
         data = resp.json()

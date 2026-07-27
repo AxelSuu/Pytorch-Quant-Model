@@ -8,6 +8,8 @@ import json
 import logging
 import warnings
 
+import numpy as np
+import pandas as pd
 import pytest
 
 from pyquant.data.prices import add_technical_indicators
@@ -168,9 +170,9 @@ def test_train_evaluates_best_checkpoint_not_live_model(monkeypatch, sample_ohlc
     evaluated = {}
     real_eval = tft._evaluate_validation
 
-    def spy_eval(model, val_loader, quantiles):
+    def spy_eval(model, val_loader, quantiles, *args, **kwargs):
         evaluated["model"] = model
-        return real_eval(model, val_loader, quantiles)
+        return real_eval(model, val_loader, quantiles, *args, **kwargs)
 
     monkeypatch.setattr(tft, "_evaluate_validation", spy_eval)
 
@@ -368,6 +370,50 @@ def test_train_evaluates_many_validation_windows_not_a_single_one(
     assert result.evaluation.n_points == result.evaluation.n_samples * horizon
 
 
+def test_validation_predictions_actuals_and_persistence_baseline_share_price_units(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-240/PYQ-313: upstream prediction outputs must stay in raw target units.
+
+    This independently maps the decoder indices back to raw Close values. It
+    fails if pytorch-forecasting starts returning any of the arrays normalised.
+    """
+    from pytorch_forecasting import TimeSeriesDataSet
+
+    from pyquant.analysis.metrics import persistence_baseline_mae
+    from pyquant.data.dataset import align_time_index, make_dataset, panel_to_long
+
+    fast_settings.training.target = "close"
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    df = align_time_index(panel_to_long(panel, "TEST"))
+    cutoff = int(df["time_idx"].max()) - fast_settings.training.validation_days
+    training = make_dataset(df, fast_settings, training_cutoff=cutoff)
+    validation = TimeSeriesDataSet.from_dataset(
+        training, df, min_prediction_idx=cutoff + 1, stop_randomization=True
+    )
+    loader = validation.to_dataloader(train=False, batch_size=fast_settings.training.batch_size)
+    result = bundle.model.predict(loader, mode="quantiles", return_x=True, return_y=True)
+
+    predictions = result.output.cpu().numpy()
+    actuals = result.y[0].cpu().numpy()
+    last_observed = result.x["encoder_target"][:, -1].cpu().numpy()
+    decoder_idx = result.x["decoder_time_idx"].cpu().numpy()
+    raw_close = df.set_index("time_idx")["Close"]
+    expected_actuals = np.array([[raw_close[i] for i in row] for row in decoder_idx])
+    expected_last = np.array([raw_close[row[0] - 1] for row in decoder_idx])
+
+    np.testing.assert_allclose(actuals, expected_actuals)
+    np.testing.assert_allclose(last_observed, expected_last)
+    assert np.all(predictions > 10.0)
+    assert persistence_baseline_mae(actuals, last_observed) == pytest.approx(
+        persistence_baseline_mae(expected_actuals, expected_last)
+    )
+
+
 def test_walk_forward_window_validation_targets_its_own_origin(sample_ohlcv_df, settings):
     """PYQ-127: every rolling origin evaluated the *same* final window, so a
     5-window backtest was 5 models scored on one identical 5 days."""
@@ -435,6 +481,24 @@ def test_predict_ignores_columns_not_seen_during_training(
 
     predictions = tft.predict_quantiles(bundle, panel_to_long(rich, "TEST"))
     assert predictions.shape == (fast_settings.training.max_prediction_length, 3)
+
+
+def test_prediction_rejects_a_multi_symbol_frame_instead_of_returning_group_zero(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-131: batched frames must not silently return another symbol's path."""
+    from pyquant.data.dataset import panel_to_long
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+    multi_symbol = pd.concat(
+        [panel_to_long(panel, "AAA"), panel_to_long(panel, "BBB")], ignore_index=True
+    )
+
+    with pytest.raises(ValueError, match="exactly one symbol"):
+        tft.predict_quantiles(bundle, multi_symbol)
 
 
 def test_train_records_the_resolved_data_config(monkeypatch, sample_ohlcv_df, fast_settings):
@@ -530,3 +594,154 @@ def test_train_records_provenance_including_the_pin(
     assert provenance["pyquant_version"]
     assert provenance["pin"] == "exp-7"
     assert "git_sha" in provenance  # best-effort: present, may be None
+
+
+# --- PYQ-250: purge + embargo around every split ------------------------------
+
+
+def _decoder_range(ds) -> tuple[int, int]:
+    """(min, max) decoder ``time_idx`` across every sample in a TimeSeriesDataSet.
+
+    Each row of ``ds.index`` is one sample starting at ``time`` and running for
+    ``sequence_length`` steps; the decoder is the last ``max_prediction_length``
+    of those.
+    """
+    end = ds.index["time"] + ds.index["sequence_length"] - 1
+    start = end - ds.max_prediction_length + 1
+    return int(start.min()), int(end.max())
+
+
+def _long_df(sample_ohlcv_df):
+    from pyquant.data.dataset import align_time_index, panel_to_long
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    return align_time_index(panel_to_long(panel, "TEST"))
+
+
+def test_no_training_decoder_overlaps_the_validation_window_at_any_origin(
+    sample_ohlcv_df, fast_settings
+):
+    """The remaining known member of the leak family (PYQ-250).
+
+    A training sample whose decoder reaches the days immediately before the
+    split shares target days with the period about to be scored -- the
+    validation sample reads exactly those days through its own encoder. Purge
+    drops them; embargo drops a further buffer for serial correlation. Asserted
+    at *every* walk-forward origin, not just one, because PYQ-127's defect was
+    that the origins were not actually distinct.
+    """
+    from pyquant.data.dataset import make_dataset
+
+    df = _long_df(sample_ohlcv_df)
+    settings = fast_settings
+    horizon = settings.training.max_prediction_length
+    settings.training.purge_horizon = horizon
+    settings.training.embargo_days = 2
+
+    max_idx = int(df["time_idx"].max())
+    for origin in range(max_idx - horizon - 40, max_idx - horizon + 1, 10):
+        train_cutoff = tft.purged_training_cutoff(origin, settings)
+        training = make_dataset(df, settings, training_cutoff=train_cutoff)
+        validation = tft._window_validation_dataset(training, df, origin, horizon)
+
+        _, train_decoder_end = _decoder_range(training)
+        val_decoder_start, _ = _decoder_range(validation)
+
+        assert train_decoder_end < val_decoder_start, (
+            f"origin {origin}: a training decoder reaches {train_decoder_end}, "
+            f"into the validation window starting at {val_decoder_start}"
+        )
+        # And not merely non-overlapping -- separated by the full buffer.
+        assert val_decoder_start - train_decoder_end > horizon + 2
+
+
+def test_purge_and_embargo_shrink_the_training_slice_by_exactly_their_sum(fast_settings):
+    """Both knobs are configurable and additive, and zeroing them restores the
+    pre-PYQ-250 geometry exactly -- which is what makes the before/after
+    skill comparison in the ticket a controlled one."""
+    fast_settings.training.max_prediction_length = 5
+
+    fast_settings.training.purge_horizon = 0
+    fast_settings.training.embargo_days = 0
+    assert tft.purged_training_cutoff(100, fast_settings) == 100
+
+    fast_settings.training.purge_horizon = None  # -> max_prediction_length
+    fast_settings.training.embargo_days = 2
+    assert tft.purged_training_cutoff(100, fast_settings) == 100 - 5 - 2
+
+    fast_settings.training.purge_horizon = 3
+    assert tft.purged_training_cutoff(100, fast_settings) == 100 - 3 - 2
+
+
+def test_train_still_validates_on_the_full_holdout_after_purging(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """Purging must shrink *training* only. If it moved the validation window
+    too, the sample size PYQ-117 fought for would quietly shrink with it."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.validation_days = 30
+
+    fast_settings.training.purge_horizon = 0
+    fast_settings.training.embargo_days = 0
+    unpurged = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    fast_settings.training.purge_horizon = 5
+    fast_settings.training.embargo_days = 2
+    purged = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    assert purged.evaluation.n_points == unpurged.evaluation.n_points
+    assert purged.evaluation.n_samples == unpurged.evaluation.n_samples
+
+
+# --- PYQ-248: the conformal offset travels with the bundle --------------------
+
+
+def test_calibration_slice_produces_an_offset_that_forecast_reuses(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """The offset must be fitted on a slice disjoint from training and from the
+    scored window, persisted, and applied at predict time -- otherwise the
+    coverage a bundle reports is not the coverage of the band it prints."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.validation_days = 30
+    fast_settings.training.calibration_days = 20
+
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    recorded = bundle.meta["conformal"]
+    assert recorded is not None
+    assert recorded["n_calibration"] > 0
+    assert recorded["nominal_coverage"] == pytest.approx(0.8)
+
+    offset = tft.bundle_conformal_offset(bundle)
+    assert offset.offset == pytest.approx(recorded["offset"])
+
+    # And the prediction path actually applies it.
+    from pyquant.data.dataset import panel_to_long
+
+    df = panel_to_long(panel, "TEST")
+    calibrated = tft.predict_quantiles(bundle, df)
+    monkeypatch.setattr(tft, "bundle_conformal_offset", lambda _b: None)
+    raw = tft.predict_quantiles(bundle, df)
+
+    assert not np.allclose(calibrated, raw)
+    np.testing.assert_allclose(calibrated[:, 1], raw[:, 1])  # median untouched
+
+
+def test_a_bundle_without_a_calibration_slice_records_no_offset(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """calibration_days defaults to 0, so nothing changes for existing bundles
+    and no coverage figure moves without someone asking for it."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    assert fast_settings.training.calibration_days == 0
+
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    assert bundle.meta["conformal"] is None
+    assert tft.bundle_conformal_offset(bundle) is None

@@ -10,10 +10,16 @@ def _fake_vix_ticker(sample_index):
         def __init__(self, symbol):
             pass
 
-        def history(self, period=None, start=None, end=None):
+        def history(self, period=None, start=None, end=None, auto_adjust=None, **kwargs):
             return pd.DataFrame({"Close": range(len(sample_index))}, index=sample_index)
 
     return FakeTicker
+
+
+def _releases(index, values=None):
+    """One point-in-time release per synthetic observation."""
+    values = values if values is not None else range(len(index))
+    return pd.DataFrame({"date": index, "realtime_start": index, "value": values})
 
 
 def test_fetch_macro_without_key_returns_vix_only(monkeypatch, sample_ohlcv_df):
@@ -40,10 +46,8 @@ def test_fetch_macro_with_key_adds_fred(monkeypatch, sample_ohlcv_df):
         def __init__(self, api_key=None):
             pass
 
-        def get_series(self, series_id, observation_start=None, observation_end=None):
-            return pd.Series(
-                range(len(sample_ohlcv_df.index)), index=sample_ohlcv_df.index
-            )
+        def get_series_all_releases(self, series_id, realtime_start=None, realtime_end=None):
+            return _releases(sample_ohlcv_df.index)
 
     import fredapi
 
@@ -62,10 +66,10 @@ def test_fetch_macro_keeps_series_that_succeed_when_one_fails(monkeypatch, sampl
         def __init__(self, api_key=None):
             pass
 
-        def get_series(self, series_id, observation_start=None, observation_end=None):
+        def get_series_all_releases(self, series_id, realtime_start=None, realtime_end=None):
             if series_id == "CPIAUCSL":
                 raise RuntimeError("transient FRED rate limit")
-            return pd.Series(range(len(sample_ohlcv_df.index)), index=sample_ohlcv_df.index)
+            return _releases(sample_ohlcv_df.index)
 
     import fredapi
 
@@ -77,11 +81,8 @@ def test_fetch_macro_keeps_series_that_succeed_when_one_fails(monkeypatch, sampl
     assert "CPI" not in out.columns
 
 
-def test_fetch_macro_lags_monthly_cpi_by_publication_delay(monkeypatch, sample_ohlcv_df):
-    """CPIAUCSL is indexed by BLS's reference period, not its publish date.
-
-    A row must not reveal the value before it was actually released.
-    """
+def test_fetch_macro_uses_the_first_published_cpi_vintage(monkeypatch, sample_ohlcv_df):
+    """A historical row sees CPI only after its actual first release, not a revision."""
     monkeypatch.setattr(macro.yf, "Ticker", _fake_vix_ticker(sample_ohlcv_df.index))
     reference_date = pd.Timestamp("2022-06-01")  # June's CPI, dated at month start
 
@@ -89,19 +90,124 @@ def test_fetch_macro_lags_monthly_cpi_by_publication_delay(monkeypatch, sample_o
         def __init__(self, api_key=None):
             pass
 
-        def get_series(self, series_id, observation_start=None, observation_end=None):
-            return pd.Series([111.0], index=[reference_date])
+        def get_series_all_releases(self, series_id, realtime_start=None, realtime_end=None):
+            return pd.DataFrame(
+                {
+                    "date": [reference_date, reference_date],
+                    "realtime_start": ["2022-06-14", "2022-07-14"],
+                    "value": [111.0, 999.0],
+                }
+            )
 
     import fredapi
 
     monkeypatch.setattr(fredapi, "Fred", FakeFred)
     out = macro.fetch_macro(api_key="dummy", start="2022-01-01", end="2022-12-31")
 
-    lag_days = macro.FRED_SERIES["CPIAUCSL"].publication_lag_days
-    assert lag_days > 14  # sanity: this is meant to model a multi-week real lag
-
-    published_date = reference_date + pd.Timedelta(days=lag_days)
-    # Not yet known on the reference date itself -- the pre-fix bug exposed it here.
+    published_date = pd.Timestamp("2022-06-14")
+    # Not known on its reference date -- the pre-fix bug exposed it here.
     assert pd.isna(out.loc[reference_date, "CPI"])
-    # Known once its real publication date has passed.
+    # Known at the first-published value on the actual release date.
     assert out.loc[published_date, "CPI"] == 111.0
+    # A later revision only appears from its own release date onwards.
+    assert out.loc[pd.Timestamp("2022-07-14"), "CPI"] == 999.0
+
+
+# --- PYQ-139: the vintage fetch has to survive the real API -------------------
+
+
+def test_missing_observations_do_not_abort_a_whole_series(monkeypatch, sample_ohlcv_df):
+    """FRED encodes a missing observation as ".", which fredapi hands back as
+    NaT -- not NaN. ``float(NaT)`` raises, so one market holiday in T10Y2Y took
+    the entire series down, and graceful degradation then hid it (PYQ-139).
+
+    Reproduced against the live API: T10Y2Y returned 551 such rows in a 5-year
+    window and CPIAUCSL one.
+    """
+    monkeypatch.setattr(macro.yf, "Ticker", _fake_vix_ticker(sample_ohlcv_df.index))
+    index = sample_ohlcv_df.index[:10]
+    values = [1.0, pd.NaT, 3.0, 4.0, pd.NaT, 6.0, 7.0, 8.0, 9.0, 10.0]
+
+    class FakeFred:
+        def __init__(self, api_key=None):
+            pass
+
+        def get_series_all_releases(self, series_id, realtime_start=None, realtime_end=None):
+            return pd.DataFrame({"date": index, "realtime_start": index, "value": values})
+
+    import fredapi
+
+    monkeypatch.setattr(fredapi, "Fred", FakeFred)
+    out = macro.fetch_macro(api_key="dummy")
+
+    assert "YieldSpread" in out.columns
+    assert out["YieldSpread"].notna().any()
+    # The gaps carry the previous known value forward, never NaT, never a crash.
+    assert out["YieldSpread"].dropna().map(lambda v: isinstance(v, float)).all()
+
+
+def test_vintage_requests_are_bounded_and_never_ask_for_a_future_realtime_end(
+    monkeypatch, sample_ohlcv_df
+):
+    """Two live failures in one assertion (PYQ-139).
+
+    With ``period="5y"`` and no explicit start/end, the realtime window was left
+    unset, so fredapi defaulted to 1776-07-04..9999-12-31. FRED rejects that two
+    ways: "3085 vintage dates ... exceeds the maximum 2000" for a daily series,
+    and "realtime_end can not be after today's date".
+    """
+    monkeypatch.setattr(macro.yf, "Ticker", _fake_vix_ticker(sample_ohlcv_df.index))
+    seen: list[tuple[str, str]] = []
+    # FRED's clock, not ours: a caller east of the US is on a later calendar day
+    # and asking for it is a Bad Request (PYQ-139).
+    today = pd.Timestamp.now(tz="America/New_York").normalize().tz_localize(None)
+
+    class RecordingFred:
+        def __init__(self, api_key=None):
+            pass
+
+        def get_series_all_releases(self, series_id, realtime_start=None, realtime_end=None):
+            seen.append((realtime_start, realtime_end))
+            return _releases(sample_ohlcv_df.index[:5])
+
+    import fredapi
+
+    monkeypatch.setattr(fredapi, "Fred", RecordingFred)
+    macro.fetch_macro(api_key="dummy", period="5y")
+
+    assert seen, "no FRED request was made"
+    for realtime_start, realtime_end in seen:
+        assert realtime_start is not None and realtime_end is not None
+        assert pd.Timestamp(realtime_end) <= today
+        assert pd.Timestamp(realtime_start) <= pd.Timestamp(realtime_end)
+        # Chunked so no single request can exceed FRED's 2000-vintage ceiling.
+        span_days = (pd.Timestamp(realtime_end) - pd.Timestamp(realtime_start)).days
+        assert span_days <= 400, f"chunk spans {span_days} days; a daily series would exceed 2000 vintages"
+
+
+def test_a_ten_year_request_is_split_into_chunks_that_cover_the_whole_window(
+    monkeypatch, sample_ohlcv_df
+):
+    """Chunking must tile the requested window without leaving holes, or the
+    feature silently starts late."""
+    monkeypatch.setattr(macro.yf, "Ticker", _fake_vix_ticker(sample_ohlcv_df.index))
+    seen: list[tuple[pd.Timestamp, pd.Timestamp]] = []
+
+    class RecordingFred:
+        def __init__(self, api_key=None):
+            pass
+
+        def get_series_all_releases(self, series_id, realtime_start=None, realtime_end=None):
+            seen.append((pd.Timestamp(realtime_start), pd.Timestamp(realtime_end)))
+            return _releases(sample_ohlcv_df.index[:3])
+
+    import fredapi
+
+    monkeypatch.setattr(fredapi, "Fred", RecordingFred)
+    macro.fetch_macro(api_key="dummy", start="2016-01-01", end="2026-01-01")
+
+    dff_chunks = sorted(seen[: len(seen) // len(macro.FRED_SERIES)])
+    assert len(dff_chunks) > 1
+    assert dff_chunks[0][0] == pd.Timestamp("2016-01-01")
+    for (_, prev_end), (next_start, _) in zip(dff_chunks, dff_chunks[1:], strict=False):
+        assert next_start <= prev_end + pd.Timedelta(days=1), "gap between vintage chunks"
