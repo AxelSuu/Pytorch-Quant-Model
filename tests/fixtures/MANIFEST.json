@@ -1,10 +1,10 @@
 {
   "yfinance_prices_aapl.pkl": {
-    "recorded_at": "2026-07-27T20:34:10",
+    "recorded_at": "2026-07-27T23:38:11",
     "vendor": "yfinance",
     "library_version": "1.4.1",
     "symbol": "AAPL",
-    "rows": 62,
+    "rows": 61,
     "columns": [
       "Open",
       "High",
@@ -16,7 +16,7 @@
     ]
   },
   "yfinance_vix.pkl": {
-    "recorded_at": "2026-07-27T20:34:10",
+    "recorded_at": "2026-07-27T23:38:11",
     "vendor": "yfinance",
     "library_version": "1.4.1",
     "symbol": "^VIX",
@@ -32,17 +32,17 @@
     ]
   },
   "yfinance_sectors.pkl": {
-    "recorded_at": "2026-07-27T20:34:10",
+    "recorded_at": "2026-07-27T23:38:11",
     "vendor": "yfinance",
     "library_version": "1.4.1",
     "symbols": [
       "XLK",
       "SPY"
     ],
-    "rows": 62
+    "rows": 61
   },
   "yfinance_options_aapl.pkl": {
-    "recorded_at": "2026-07-27T20:34:11",
+    "recorded_at": "2026-07-27T23:38:12",
     "vendor": "yfinance",
     "library_version": "1.4.1",
     "symbol": "AAPL",

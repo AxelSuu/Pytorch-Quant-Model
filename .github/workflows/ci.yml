@@ -75,8 +75,14 @@ jobs:
         # import fastapi at module level, autodoc imports every module it
         # documents, and this step runs under -W -- omitting the extra fails
         # the build on a missing dependency, not a real docs defect (PYQ-264).
+        #
+        # --isolated: without it, this installs fastapi/starlette (but not an
+        # HTTP test client) into the job's *shared* .venv, which the Test step
+        # below then reuses -- silently changing "api extra not installed, skip
+        # test_api.py" into "fastapi importable but broken", the exact
+        # contamination that turned a clean skip into a collection error.
         if: matrix.python-version == '3.12'
-        run: uv run --group docs --extra api sphinx-build -W --keep-going -b html docs docs/_build/html
+        run: uv run --isolated --group docs --extra api sphinx-build -W --keep-going -b html docs docs/_build/html
 
       - name: Backlog consistency
         # Cheap, dependency-free guard against duplicate/out-of-range IDs and

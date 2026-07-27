@@ -1,9 +1,9 @@
 """Tests for the PYQ-261 FastAPI service layer (network-free, mocked domain calls).
 
 Needs the 'api' extra (fastapi/uvicorn), which CI's default job does not install --
-skips cleanly there via pytest.importorskip, the same disposition already used for
-PYQ-253's Optuna tests (and PYQ-308's precedent: verify a real-dependency integration
-locally, don't gate default CI on an optional extra).
+skips cleanly there, the same disposition already used for PYQ-253's Optuna tests
+(and PYQ-308's precedent: verify a real-dependency integration locally, don't gate
+default CI on an optional extra).
 """
 
 import json
@@ -16,7 +16,17 @@ import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
-fastapi_testclient = pytest.importorskip("fastapi.testclient")
+try:
+    import fastapi.testclient as fastapi_testclient
+except Exception as exc:  # noqa: BLE001 - see comment: any failure here means "skip"
+    # Deliberately broader than pytest.importorskip's ImportError-only net.
+    # starlette.testclient raises RuntimeError (not ImportError) when fastapi is
+    # importable but no HTTP client (httpx/httpx2) is installed alongside it --
+    # a state CI has actually produced (a shared-venv step installing fastapi
+    # without also installing a test client). This file's whole premise is "the
+    # api extra isn't fully usable here, skip cleanly"; a narrower catch would
+    # turn that exact case back into a collection error instead of a skip.
+    pytest.skip(f"fastapi.testclient not usable: {exc}", allow_module_level=True)
 
 from pyquant.analysis.forecast import Forecast  # noqa: E402
 from pyquant.analysis.interpret import Interpretation  # noqa: E402
