@@ -16,9 +16,11 @@ split geometry, the question to ask out loud is:
 Twice, the whole bug was answered by asking what `decoder_time_idx` actually contains.
 
 :::{note}
-This page and PYQ-238's proposed `tests/test_invariants.py` are the same content in two
-forms. Until that module lands, the guarding tests are spread across the suite and named
-below. If you add an invariant, add it in both places.
+This page and [`tests/test_invariants.py`](https://github.com/AxelSuu/Pytorch-Quant-Model/blob/main/tests/test_invariants.py)
+(PYQ-238) are the same content in two forms: the module states invariants 1-9 above as one
+named test each, over a synthetic multi-symbol panel with deliberately unequal history.
+Invariant 10 and the five non-leakage invariants below predate that module and stay
+guarded by the tests named inline. If you add an invariant, add it in both places.
 :::
 
 ## At a glance

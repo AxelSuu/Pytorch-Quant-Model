@@ -39,39 +39,32 @@ edit lands.
 ## Now
 
 A hand-curated shortlist, not auto-generated — re-pick this after every review
-pass. Full context for each is in its file. (Re-picked 2026-07-27 after the
-implementation pass below, which closed 28 tickets including PYQ-247. That
-result reshuffles everything: the headline number is no longer negative, so the
-open questions change from "why is it bad" to "is the near-zero real".)
+pass. (Re-picked 2026-07-27 after a second implementation pass closed 16 more
+tickets — PYQ-140/238/239/241/243/246/254/255/259/253/261 resolved,
+PYQ-314/315/316/319 answered, PYQ-211 superseded by PYQ-253. Only **5 tickets
+remain open in the entire backlog**, so this list is now close to exhaustive
+rather than a curated subset of a much larger open set.)
 
-1. **PYQ-239** (feature, High) — learnability test. Now the *blocking* ticket
-   rather than a nice-to-have: PYQ-247 reports +2.4% skill, and nothing in the
-   suite can distinguish a real +2.4% from a wiring artifact. Its noise-control
-   half is equally load-bearing — a pipeline that finds skill in noise has a
-   leak. investigations.md#pyq-312 cannot be closed without this.
-2. **PYQ-140** (bug, High) — Finnhub's free tier serves ~6 days of news, not the
-   ~365 the module documents, so `Sentiment` is 99.7% structural zeros. One of
-   four advertised data sources is contributing 0.3% coverage.
-3. **PYQ-238** (feature, High) — `tests/test_invariants.py`. Unchanged in
-   rationale and now more urgent: PYQ-250 added purge/embargo to the split
-   geometry, so there is one more pipeline-spanning invariant than there were
-   regression tests for.
-4. **A multi-symbol repeat of PYQ-247's comparison.** The single highest-value
-   piece of work in the backlog and it has no ticket, because it is a *run*
-   rather than a change: one symbol at effective n≈5 is not enough to flip
-   `TrainingConfig.target` to `log_return` by default, and flipping it is what
-   turns the result into the product. Needs PYQ-251's intervals (landed) and
-   ideally PYQ-249's third baseline.
-5. **PYQ-241** (feature, Medium) — end-to-end CLI journey. Six commands, two
-   output formats, one temp directory. The pass below added `doctor`, a provider
-   layer, a conformal offset in `meta.json` and three new metric fields; each is
-   a new way for the write side and the read side to disagree.
-6. **PYQ-261** (feature, Medium) — `pyquant/api/`. Its stated blocker (PYQ-220,
-   absolute paths) landed in the pass below, and PYQ-320 recorded the licensing
-   prerequisite as satisfiable via PYQ-258. Nothing blocks it now.
-
-**PYQ-211** (LR tuning) stays Open but is now measurably deprioritised — see its
-2026-07-27 update. Supersede it when PYQ-253 lands, not before.
+1. **A multi-symbol repeat of PYQ-247's comparison**, now joined by a
+   multi-symbol repeat of investigations.md#pyq-315/#pyq-316's feature and
+   pooling findings. All three are the same shape of open question — one
+   symbol, tens of points, one run said "the effect looks real," and none of
+   them are yet at the sample size this project's own non-negotiable #1
+   requires before changing a default (`TrainingConfig.target`,
+   `DataConfig.use_sentiment`, and whether pooling is on by default). Still no
+   ticket, because each is a *run* rather than a code change.
+2. **PYQ-249** (feature, Medium) — time-series foundation-model baseline.
+   Explicitly deferred to design-plus-stub in the 2026-07-27 pass (a genuinely
+   heavy new dependency, judged not worth the install/runtime risk in that
+   session) — `baselines.py`'s actual `chronos_baseline()` integration is
+   still unwritten. The CLI plumbing this needs is otherwise ready.
+3. **PYQ-217** (feature, Low) — Dockerfile. Deprioritised from Medium by an
+   explicit user call the same pass; also genuinely blocked on verification —
+   no sandbox used so far in this project's history has had a Docker CLI to
+   confirm `docker build`/`docker run` against.
+4. PYQ-237/242/245 (Low) — doctests, property-based tests, mutation testing on
+   `analysis/metrics.py`. Never picked up across three passes; not urgent, but
+   the only genuinely untouched items left besides the two above.
 
 ## History
 

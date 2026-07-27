@@ -12,4 +12,6 @@ stays one front-end among several:
 - :mod:`pyquant.analysis` — forecast/metrics/interpretation objects, which import
   neither the modelling stack nor the terminal UI.
 - :mod:`pyquant.cli` — Typer + Rich, a thin caller over the two layers above.
+- :mod:`pyquant.api` — FastAPI, a second thin caller over the same two layers
+  (``uv sync --extra api``); see ``docs/api-design.md``.
 """

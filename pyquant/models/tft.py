@@ -17,9 +17,10 @@ import datetime as dt
 import json
 import logging
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 import torch
 from lightning.pytorch import Trainer, seed_everything
@@ -64,6 +65,32 @@ class BacktestResult:
     n_windows: int
     per_window: list[EvaluationMetrics]
     aggregated: EvaluationMetrics
+    # Populated only when walk_forward_backtest(..., compute_signals=True): the
+    # BUY/SELL/HOLD scan() would have emitted at each origin, and the realized
+    # percent move over that origin's horizon (PYQ-255). Kept optional rather
+    # than always computed -- it costs one extra forward pass per window.
+    signals: list[str] = field(default_factory=list)
+    signal_returns_pct: list[float] = field(default_factory=list)
+
+
+@dataclass
+class TuneResult:
+    """An Optuna hyperparameter search (PYQ-253), plus its winner's honest score.
+
+    ``held_out_evaluation`` comes from data the search never trained or selected
+    on -- every trial is a selection event, so the in-search score
+    (``best_value``, the pruned/selected trial's own validation loss) is
+    optimistically biased and must not be reported as the model's real
+    performance.
+    """
+
+    symbol: str
+    n_trials: int
+    best_params: dict
+    best_value: float
+    held_out_evaluation: EvaluationMetrics
+    bundle_dir: Path
+    config_path: Path
 
 
 class FeatureSchemaMismatch(RuntimeError):
@@ -443,6 +470,42 @@ def _window_validation_dataset(
     )
 
 
+def _window_signal(
+    predictions: np.ndarray,
+    actuals: np.ndarray,
+    last_observed: np.ndarray,
+    quantiles: list[float],
+    target: str,
+) -> tuple[str, float]:
+    """The (signal, realized_return_pct) scan() would have shown for one window.
+
+    Derived from that walk-forward window's raw prediction/actual arrays
+    (PYQ-255). walk_forward_backtest is single-symbol, so each window's arrays
+    hold exactly one sample.
+    """
+    from pyquant.analysis.forecast import log_returns_to_prices
+    from pyquant.analysis.signals import classify_signal
+
+    median_idx = quantiles.index(0.5)
+    pred, actual, last_obs = predictions[0], actuals[0], float(last_observed[0])
+
+    if target == "LogReturn":
+        median_path = log_returns_to_prices(pred[:, median_idx], last_obs)
+        lower_path = log_returns_to_prices(pred[:, 0], last_obs)
+        upper_path = log_returns_to_prices(pred[:, -1], last_obs)
+        actual_path = log_returns_to_prices(actual, last_obs)
+    else:
+        median_path, lower_path, upper_path = pred[:, median_idx], pred[:, 0], pred[:, -1]
+        actual_path = actual
+
+    expected_pct = float((median_path[-1] - last_obs) / last_obs * 100)
+    lower_pct = float((lower_path[-1] - last_obs) / last_obs * 100)
+    upper_pct = float((upper_path[-1] - last_obs) / last_obs * 100)
+    realized_pct = float((actual_path[-1] - last_obs) / last_obs * 100)
+
+    return classify_signal(expected_pct, lower_pct, upper_pct), realized_pct
+
+
 def walk_forward_backtest(
     symbol: str,
     settings: Settings,
@@ -453,12 +516,15 @@ def walk_forward_backtest(
     end: str | None = None,
     max_epochs: int | None = None,
     progress: bool = False,
+    compute_signals: bool = False,
 ) -> BacktestResult:
     """Train/evaluate across many rolling origins (walk-forward validation).
 
     Unlike train(), each window's model is discarded after evaluation -- this
     measures how stable the metrics are across time (see PYQ-303), it does not
-    produce a deployable bundle.
+    produce a deployable bundle. ``compute_signals`` additionally records, per
+    window, the BUY/SELL/HOLD signal scan() would have shown and the realized
+    return -- one extra forward pass per window, so it defaults off (PYQ-255).
     """
     symbol = symbol.upper()
     seed_everything(settings.training.seed, workers=True)
@@ -489,6 +555,8 @@ def walk_forward_backtest(
 
     num_workers = settings.training.num_workers
     per_window: list[EvaluationMetrics] = []
+    signals: list[str] = []
+    signal_returns_pct: list[float] = []
     for cutoff in cutoffs:
         training = make_dataset(df, settings, training_cutoff=purged_training_cutoff(cutoff, settings))
         validation = _window_validation_dataset(training, df, cutoff, horizon)
@@ -530,13 +598,195 @@ def walk_forward_backtest(
                     target_column(settings),
                 )
             )
+            if compute_signals:
+                # A second forward pass rather than reusing _evaluate_best_checkpoint's:
+                # that helper returns only the aggregated EvaluationMetrics, not the raw
+                # arrays a signal needs, and this stays opt-in specifically to keep the
+                # default backtest path (no signals) at its current one-pass cost.
+                best_model = _load_best_checkpoint(ckpt_cb.best_model_path, model)
+                predictions, actuals, last_observed = _raw_validation_arrays(best_model, val_loader)
+                signal, realized_pct = _window_signal(
+                    predictions, actuals, last_observed, settings.tft.quantiles, target_column(settings)
+                )
+                signals.append(signal)
+                signal_returns_pct.append(realized_pct)
 
     return BacktestResult(
         symbol=symbol,
         n_windows=len(cutoffs),
         per_window=per_window,
         aggregated=aggregate_metrics(per_window),
+        signals=signals,
+        signal_returns_pct=signal_returns_pct,
     )
+
+
+def tune(
+    symbol: str,
+    settings: Settings,
+    *,
+    n_trials: int = 15,
+    held_out_days: int | None = None,
+    max_epochs: int = 5,
+    progress: bool = False,
+) -> TuneResult:
+    """Optuna hyperparameter search over the coupled TFT/training knobs (PYQ-253).
+
+    Absorbs PYQ-211's narrower scope (learning-rate-only tuning via
+    ``Tuner.lr_find``): learning rate is one of at least six coupled knobs
+    (``hidden_size``, ``attention_head_size``, ``dropout``,
+    ``hidden_continuous_size``, ``learning_rate``, ``gradient_clip_val``), and
+    tuning one in isolation is close to uninformative.
+
+    The search trains and selects entirely within ``df[time_idx < held_out_start]``
+    -- the final ``held_out_days`` of the panel are never seen by any trial. The
+    winning configuration is then retrained via :func:`train` with
+    ``validation_days=held_out_days`` on the *full* panel, so
+    ``TuneResult.held_out_evaluation`` is scored on data the search never touched.
+    Report that number, not ``best_value`` (the winning trial's own in-search
+    validation loss) -- every trial is a selection event, so the in-search score is
+    optimistically biased by construction.
+    """
+    try:
+        import optuna
+        from pytorch_forecasting.models.temporal_fusion_transformer.tuning import (
+            optimize_hyperparameters,
+        )
+    except ImportError as exc:
+        raise ImportError(
+            "pyquant tune needs the 'tuning' extra: uv sync --extra tuning"
+        ) from exc
+
+    symbol = symbol.upper()
+    seed_everything(settings.training.seed, workers=True)
+    panel = build_panel(symbol, settings)
+    df = align_time_index(panel_to_long(panel, symbol))
+
+    horizon = settings.training.max_prediction_length
+    encoder_len = settings.training.max_encoder_length
+    held_out_days = max(
+        held_out_days if held_out_days is not None else settings.training.validation_days, horizon
+    )
+    max_idx = int(df["time_idx"].max())
+    held_out_start = max_idx - held_out_days + 1
+
+    search_df = df[df["time_idx"] < held_out_start]
+    search_validation_days = max(settings.training.validation_days, horizon)
+    search_max_idx = int(search_df["time_idx"].max()) if len(search_df) else -1
+    search_validation_start = search_max_idx - search_validation_days + 1
+    search_train_cutoff = purged_training_cutoff(search_validation_start - 1, settings)
+    if search_train_cutoff <= encoder_len:
+        raise ValueError(
+            f"Not enough history for {symbol} to reserve {held_out_days} held-out day(s) "
+            f"AND run a search-region validation split of {search_validation_days} day(s): "
+            f"need more history, or a smaller held_out_days/validation_days."
+        )
+
+    training = make_dataset(search_df, settings, training_cutoff=search_train_cutoff)
+    validation = TimeSeriesDataSet.from_dataset(
+        training, search_df, min_prediction_idx=search_validation_start, stop_randomization=True
+    )
+    batch_size = settings.training.batch_size
+    num_workers = settings.training.num_workers
+    train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
+    val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
+
+    bundle_name = f"{symbol}_TUNED"
+    bundle_dir = _bundle_dir(settings, bundle_name)
+    bundle_dir.mkdir(parents=True, exist_ok=True)
+    study_path = bundle_dir / "optuna_study.db"
+    study = optuna.create_study(
+        study_name=bundle_name,
+        storage=f"sqlite:///{study_path}",
+        direction="minimize",
+        load_if_exists=True,
+    )
+
+    with tempfile.TemporaryDirectory() as tmp_model_dir:
+        # optimize_hyperparameters() unconditionally adds a LearningRateMonitor
+        # callback, which raises unless the Trainer has a logger -- so unlike every
+        # other Trainer in this file, `logger` must NOT be forced off here. Its
+        # own TensorBoardLogger writes under log_dir, contained to the same
+        # temporary directory as the throwaway per-trial checkpoints.
+        optimize_hyperparameters(
+            train_loader,
+            val_loader,
+            model_path=tmp_model_dir,
+            max_epochs=max_epochs,
+            n_trials=n_trials,
+            use_learning_rate_finder=False,
+            trainer_kwargs={
+                "enable_progress_bar": progress,
+                "accelerator": "auto",
+                "gradient_clip_val": settings.training.gradient_clip_val,
+            },
+            log_dir=str(Path(tmp_model_dir) / "tb_logs"),
+            study=study,
+            verbose=1 if progress else 0,
+        )
+
+    best_params = dict(study.best_trial.params)
+    logger.info("Optuna search for %s: %d trials, best value %.6g", symbol, n_trials, study.best_value)
+
+    tuned = settings.model_copy(deep=True)
+    for tft_field in ("hidden_size", "hidden_continuous_size", "attention_head_size", "dropout"):
+        if tft_field in best_params:
+            setattr(tuned.tft, tft_field, best_params[tft_field])
+    if "learning_rate" in best_params:
+        tuned.training.learning_rate = best_params["learning_rate"]
+    if "gradient_clip_val" in best_params:
+        tuned.training.gradient_clip_val = best_params["gradient_clip_val"]
+    # The final retrain's validation slice IS the honest held-out evaluation: same
+    # size as what the search excluded, so train()'s own validation_days-from-the-
+    # end logic lands on exactly the region no trial ever saw.
+    tuned.training.validation_days = held_out_days
+    tuned.training.max_epochs = max_epochs
+
+    result = train(symbol, tuned, bundle_name=bundle_name, progress=progress)
+
+    config_path = _write_tuned_config(bundle_name, tuned, best_params)
+
+    return TuneResult(
+        symbol=symbol,
+        n_trials=n_trials,
+        best_params=best_params,
+        best_value=float(study.best_value),
+        held_out_evaluation=result.evaluation,
+        bundle_dir=bundle_dir,
+        config_path=config_path,
+    )
+
+
+def _write_tuned_config(bundle_name: str, tuned: Settings, best_params: dict) -> Path:
+    """Write the winning configuration as a YAML file in configs/ (PYQ-209's format)."""
+    import yaml
+
+    from pyquant.config import project_root
+
+    configs_dir = project_root() / "configs"
+    configs_dir.mkdir(parents=True, exist_ok=True)
+    config_path = configs_dir / f"{bundle_name.lower()}_tuned.yaml"
+    payload = {
+        "tft": {
+            "hidden_size": tuned.tft.hidden_size,
+            "hidden_continuous_size": tuned.tft.hidden_continuous_size,
+            "attention_head_size": tuned.tft.attention_head_size,
+            "dropout": tuned.tft.dropout,
+        },
+        "training": {
+            "learning_rate": tuned.training.learning_rate,
+            "gradient_clip_val": tuned.training.gradient_clip_val,
+        },
+    }
+    header = (
+        f"# PyQuant experiment config -- Optuna search winner for {bundle_name} (PYQ-253).\n"
+        f"# Trial params: {best_params}\n"
+        "# The in-search validation loss that selected this configuration is optimistically\n"
+        "# biased (every trial is a selection event) -- see the bundle's meta.json for its\n"
+        "# score on data the search never saw, which is the number to trust.\n"
+    )
+    config_path.write_text(header + yaml.dump(payload, sort_keys=False))
+    return config_path
 
 
 def _load_best_checkpoint(
@@ -709,6 +959,67 @@ def interpret(bundle: ModelBundle, df) -> dict:
     return {"encoder_importance": importance, "attention": attention}
 
 
+def permutation_importance(
+    bundle: ModelBundle, df: pd.DataFrame, settings: Settings, *, seed: int = 42
+) -> dict[str, float]:
+    """Model-agnostic feature importance: MAE degradation from shuffling one column.
+
+    A check on interpret()'s TFT variable-selection weights, which are a property of
+    the model's internals and only as trustworthy as the literature on attention-based
+    explanations allows (investigations.md#pyq-314). This assumes nothing about the
+    model except that it can predict() -- so agreement between the two methods is real
+    evidence the weights mean something, and disagreement is worth knowing before
+    either is trusted.
+
+    Evaluated over the bundle's own validation slice (the last
+    ``TrainingConfig.validation_days`` of ``df``), which has real held-out actuals to
+    score against -- unlike a single live forecast, which has none. Costs one forward
+    pass over the validation set per feature, so this is an offline analysis step, not
+    something to run on every ``explain`` call.
+    """
+    horizon = int(bundle.dataset_params["max_prediction_length"])
+    validation_days = max(settings.training.validation_days, horizon)
+    max_idx = int(df["time_idx"].max())
+    validation_start = max_idx - validation_days + 1
+    quantiles = list(bundle.meta["quantiles"])
+    median_idx = quantiles.index(0.5)
+
+    def _mae(frame: pd.DataFrame) -> float:
+        ds = TimeSeriesDataSet.from_parameters(
+            bundle.dataset_params,
+            frame,
+            predict=False,
+            stop_randomization=True,
+            min_prediction_idx=validation_start,
+        )
+        dl = ds.to_dataloader(train=False, batch_size=64, num_workers=0)
+        result = bundle.model.predict(
+            dl,
+            mode="quantiles",
+            return_y=True,
+            trainer_kwargs={"enable_progress_bar": False, "logger": False},
+        )
+        predictions = result.output.cpu().numpy()
+        actuals = result.y[0].cpu().numpy()
+        return float(np.mean(np.abs(actuals - predictions[:, :, median_idx])))
+
+    baseline = _mae(df)
+
+    rng = np.random.default_rng(seed)
+    feature_names = [c for c in (bundle.meta.get("features") or []) if c in df.columns]
+    degradation: dict[str, float] = {}
+    for col in feature_names:
+        shuffled = df.copy()
+        shuffled[col] = rng.permutation(shuffled[col].to_numpy())
+        degradation[col] = _mae(shuffled) - baseline
+
+    # Floor at zero: a feature whose shuffling *improves* MAE is noise, not negative
+    # importance, and interpret()'s weights are never negative either -- flooring
+    # keeps the two comparable fraction-for-fraction.
+    total = sum(max(0.0, v) for v in degradation.values()) or 1.0
+    return {k: max(0.0, v) / total for k, v in degradation.items()}
+
+
 # Data-config fields that determine the panel's feature schema. Paths, cache
 # settings and secrets are deliberately excluded -- those are properties of the
 # machine you are on now, not of the trained model.
@@ -718,6 +1029,7 @@ _SCHEMA_DATA_FIELDS = (
     "use_sectors",
     "use_sentiment",
     "use_options",
+    "use_indicators",
     "sector_etfs",
 )
 
@@ -737,9 +1049,9 @@ def settings_for_bundle(bundle: ModelBundle, settings: Settings) -> Settings:
     if not recorded:
         return settings
     restored = settings.model_copy(deep=True)
-    for field in _SCHEMA_DATA_FIELDS:
-        if field in recorded:
-            setattr(restored.data, field, recorded[field])
+    for field_name in _SCHEMA_DATA_FIELDS:
+        if field_name in recorded:
+            setattr(restored.data, field_name, recorded[field_name])
     return restored
 
 

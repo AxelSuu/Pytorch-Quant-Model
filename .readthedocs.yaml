@@ -38,8 +38,12 @@ build:
     install:
       # `.` installs the project and its runtime dependencies; `--group docs`
       # adds the PEP 735 documentation group from pyproject.toml, which never
-      # ships to installers.
-      - uv pip install --python "${READTHEDOCS_VIRTUALENV_PATH}" --torch-backend=cpu --group docs .
+      # ships to installers. `--extra api` is also required here, not only for
+      # users of the FastAPI layer: pyquant/api/{app,deps,routes/*}.py import
+      # fastapi at module level, autodoc actually imports every module it
+      # documents, and `fail_on_warning` below means a missing extra fails the
+      # whole build over one section most readers never open (PYQ-264).
+      - uv pip install --python "${READTHEDOCS_VIRTUALENV_PATH}" --torch-backend=cpu --group docs --extra api .
 
 sphinx:
   configuration: docs/conf.py

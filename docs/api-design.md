@@ -1,9 +1,12 @@
 # PyQuant FastAPI service layer — design note (PYQ-213)
 
-Status: **design** (research ticket — no implementation yet). This note is the
-deliverable for `backlog/features.md#pyq-213`. It decides the shape of a REST
-layer before any of it is built, and flags the decisions that must be made
-before anything stateful is written on top.
+Status: **implemented** (PYQ-261, 2026-07-27) — `pyquant/api/`, following the shape
+this note decided. The note is kept as-is below since the implementation follows it
+directly; see `backlog/features.md#pyq-261` for what shipped versus what was
+deliberately deferred (a real job queue, object storage, rate-limiting).
+
+**To run the service rather than read its design, go to [HTTP API](http-api.md).** This
+page is the reasoning; that one is the interface.
 
 ## Why this is additive, not a rewrite
 
@@ -141,6 +144,42 @@ regardless of backend:
   so local-disk vs S3 is one implementation swap, not scattered `Path` joins.
 
 ## 4. Inference concurrency
+
+**Measured (PYQ-319, `scripts/profile_forecast.py`, AAPL, default `period=5y`):** the
+question this section used to answer by guesswork now has real numbers.
+
+| Phase | Cold (panel cache empty) | Warm (panel cache hit) |
+|---|---|---|
+| Bundle load (checkpoint deserialize) | 261 ms | 203 ms |
+| Fetch + panel build (4 vendors) | **64,300 ms** | 5 ms |
+| `predict()` (the actual forward pass) | 812 ms | 632 ms |
+| `interpret()`'s extra raw-mode predict (`explain` only) | +835 ms | +740 ms |
+| **Total, `forecast`** | **~65.4 s** | **~0.84 s** |
+
+Request counts behind the cold call: 8 `yfinance.Ticker.history`/related calls (prices +
+VIX + options), 15 `fredapi.get_series_all_releases` calls (5 yearly-chunked windows × 3
+FRED series, at the default 5-year period), 1 `yfinance.download` (sector ETFs), 1
+`requests.get` (Finnhub). The warm call makes zero outbound requests.
+
+This answers the concurrency design's central open question directly: **the forward pass
+is not the bottleneck.** Cold, fetch/panel-build is 98% of total latency; the model
+inference this section spends most of its words worrying about (locking, LRU eviction,
+thread-safety) is under a second regardless of cache state, and `explain`'s second
+raw-mode predict adds well under a second more. The real scaling constraint is vendor
+latency and rate limits on a cache miss, and cache hit rate is therefore the single number
+that determines whether a deployed `/forecast` endpoint feels instant (sub-second) or feels
+like a timeout risk (60+ seconds) — which reframes the panel TTL cache (`pyquant.data.
+cache`) from a nice-to-have into the thing that actually decides the service's perceived
+latency. It also means a naive per-request panel rebuild is the wrong default for any
+server deployment: the LRU **bundle** cache below saves ~250-450ms; a **panel** cache (or a
+background pre-warm) saves ~64 seconds. Quota is the other real constraint this implies:
+FRED's 15 requests/call at the default period means an operator serving many distinct
+symbols cold will hit FRED's rate limit long before CPU or GPU becomes the bottleneck.
+
+Caveats on these numbers: one symbol, one run, on whatever the live vendors' latency
+happened to be at measurement time (2026-07-27) — not a controlled benchmark, and vendor
+latency varies. The qualitative conclusion (fetch dominates, predict is cheap) is robust to
+that noise; the exact millisecond figures are not.
 
 - **Thread-safety of `predict()`:** do **not** assume
   `TemporalFusionTransformer.predict()` is safe to call concurrently on the

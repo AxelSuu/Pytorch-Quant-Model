@@ -1,0 +1,427 @@
+/* PyQuant documentation theme (PYQ-264).
+ *
+ * Structure and typography only -- every colour token lives in docs/conf.py's
+ * html_theme_options light_css_variables / dark_css_variables, so a value is
+ * defined once per theme rather than twice per rule here.
+ *
+ * The visual argument: this project's whole identity is reporting a number
+ * with its denominator attached instead of the number alone. So the landing
+ * page's hero is the two measured configurations side by side, at equal weight,
+ * each with its sample size set in the same type as the figure -- and the
+ * recurring mark is the p10/p90 fan, which is literally what the product emits.
+ */
+
+/* -- Type ---------------------------------------------------------------- */
+
+:root {
+  --pq-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo,
+    Consolas, "DejaVu Sans Mono", monospace;
+}
+
+article {
+  font-size: 1.0125rem;
+  line-height: 1.72;
+}
+
+article p,
+article li {
+  max-width: 76ch;
+}
+
+/* A measure is for prose. Cells size to their column. */
+article td p,
+article th p {
+  max-width: none;
+}
+
+/* h1/h2 are short labels, so they can carry the terminal-native mono face that
+   matches the product's only UI. h3 and below are frequently whole sentences
+   (invariants.md sets each invariant as an h3) and stay in the body face. */
+article h1,
+article h2 {
+  font-family: var(--pq-mono);
+  font-weight: 600;
+  letter-spacing: -0.025em;
+}
+
+article h1 {
+  font-size: clamp(1.95rem, 1.45rem + 1.9vw, 2.7rem);
+  line-height: 1.15;
+  margin-bottom: 0.9rem;
+}
+
+article h2 {
+  font-size: 1.5rem;
+  margin-top: 2.75rem;
+  padding-top: 1.4rem;
+  border-top: 1px solid var(--color-background-border);
+}
+
+article h3 {
+  font-size: 1.16rem;
+  font-weight: 650;
+  letter-spacing: -0.012em;
+  line-height: 1.4;
+  margin-top: 2rem;
+}
+
+article h4 {
+  font-size: 1.02rem;
+  font-weight: 650;
+}
+
+/* Furo renders the heading anchor as a trailing #; keep it quiet until hover. */
+article a.headerlink {
+  color: var(--color-foreground-muted);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+:is(h1, h2, h3, h4, h5, h6):hover a.headerlink,
+a.headerlink:focus-visible {
+  opacity: 1;
+}
+
+/* -- The band rule ------------------------------------------------------- */
+
+/* The one decorative device on the site, and it encodes the subject: a
+   three-stop gradient standing for p10 / p50 / p90. Used only where a section
+   genuinely ends. */
+.pq-band {
+  height: 3px;
+  border: 0;
+  margin: 3rem 0 2rem;
+  border-radius: 2px;
+  background: linear-gradient(
+    90deg,
+    var(--pq-band-edge) 0%,
+    var(--color-brand-primary) 50%,
+    var(--pq-band-edge) 100%
+  );
+  opacity: 0.85;
+}
+
+/* The band already separates the sections, so the h2 that follows one does not
+   also need its own rule. */
+article hr.pq-band + section > h2 {
+  border-top: 0;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+/* -- Hero ---------------------------------------------------------------- */
+
+.pq-hero {
+  margin: 0 0 2.25rem;
+}
+
+.pq-hero__lede {
+  font-size: 1.16rem;
+  line-height: 1.6;
+  color: var(--color-foreground-secondary);
+  max-width: 60ch;
+  margin: 0 0 1.75rem;
+}
+
+.pq-hero__fan {
+  display: block;
+  width: 100%;
+  max-width: 30rem;
+  height: auto;
+  margin: 0 0 1.5rem;
+}
+
+/* -- Measured-result panel ----------------------------------------------- */
+
+.pq-result {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+  gap: 1px;
+  background: var(--color-background-border);
+  border: 1px solid var(--color-background-border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin: 0 0 0.9rem;
+}
+
+.pq-result__col {
+  background: var(--color-background-secondary);
+  padding: 1.15rem 1.25rem 1.25rem;
+}
+
+.pq-result__eyebrow {
+  font-family: var(--pq-mono);
+  font-size: 0.775rem;
+  color: var(--color-foreground-muted);
+  margin: 0 0 0.55rem;
+}
+
+.pq-result__figure {
+  font-family: var(--pq-mono);
+  font-size: 2rem;
+  font-weight: 600;
+  letter-spacing: -0.04em;
+  line-height: 1.1;
+  color: var(--color-brand-primary);
+  margin: 0;
+}
+
+.pq-result__metric {
+  font-size: 0.9rem;
+  color: var(--color-foreground-secondary);
+  margin: 0.15rem 0 0.85rem;
+}
+
+/* The denominator is set at the same size as the metric line above it, on
+   purpose: it is not a footnote to the figure, it is half of the claim. */
+.pq-result__denominator {
+  font-family: var(--pq-mono);
+  font-size: 0.8rem;
+  line-height: 1.65;
+  color: var(--color-foreground-muted);
+  margin: 0;
+  padding-top: 0.7rem;
+  border-top: 1px dashed var(--color-background-border);
+}
+
+.pq-result__denominator b {
+  font-weight: 600;
+  color: var(--color-foreground-secondary);
+}
+
+.pq-verdict {
+  font-size: 0.93rem;
+  line-height: 1.6;
+  color: var(--color-foreground-secondary);
+  margin: 0 0 2rem;
+  padding-left: 0.85rem;
+  border-left: 3px solid var(--pq-accent);
+}
+
+/* -- Card grid ----------------------------------------------------------- */
+
+.pq-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(14.5rem, 1fr));
+  gap: 0.85rem;
+  margin: 1.25rem 0 2rem;
+}
+
+.pq-card {
+  position: relative;
+  padding: 1.05rem 1.15rem 1.15rem;
+  border: 1px solid var(--color-background-border);
+  border-radius: 10px;
+  background: var(--color-background-primary);
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.pq-card:hover,
+.pq-card:focus-within {
+  border-color: var(--color-brand-primary);
+  background: var(--color-background-secondary);
+}
+
+/* The card's first link covers the whole card, so the target is the card and
+   not just the four words of its title. */
+.pq-card p:first-child a::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+}
+
+.pq-card p {
+  max-width: none;
+}
+
+.pq-card p:first-child {
+  font-family: var(--pq-mono);
+  font-size: 1rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 0.4rem;
+}
+
+.pq-card p:first-child a {
+  color: var(--color-foreground-primary);
+  text-decoration: none;
+}
+
+.pq-card:hover p:first-child a {
+  color: var(--color-brand-content);
+}
+
+.pq-card p:not(:first-child) {
+  font-size: 0.895rem;
+  line-height: 1.55;
+  color: var(--color-foreground-secondary);
+  margin: 0;
+}
+
+/* The count each card carries is real -- 15 invariants, 9 commands, 29 modules.
+   It tells the reader the size of what is behind the link. */
+.pq-card__count {
+  display: block;
+  font-family: var(--pq-mono);
+  font-size: 0.72rem;
+  color: var(--color-foreground-muted);
+  margin-top: 0.65rem;
+}
+
+/* -- Definition lists ---------------------------------------------------- */
+
+/* The dominant structural device across this site: architecture.md describes
+   every layer as one, and the configuration reference is nothing else. Scoped to
+   `.myst` so it cannot reach autodoc's own `dl.py.function` / `dl.py.class`,
+   which the theme already styles. */
+article dl.myst > dt {
+  font-family: var(--pq-mono);
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--color-brand-content);
+  margin-top: 1.25rem;
+}
+
+article dl.myst > dd {
+  margin-left: 0;
+  padding-left: 1rem;
+  border-left: 2px solid var(--color-background-border);
+}
+
+/* -- Tables -------------------------------------------------------------- */
+
+article table.docutils {
+  border: 1px solid var(--color-background-border);
+  border-radius: 8px;
+  border-collapse: separate;
+  border-spacing: 0;
+  overflow: hidden;
+  font-size: 0.925rem;
+}
+
+article table.docutils th {
+  font-family: var(--pq-mono);
+  font-size: 0.79rem;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--color-foreground-secondary);
+  background: var(--color-background-secondary);
+}
+
+article table.docutils td,
+article table.docutils th {
+  border: 0;
+  border-bottom: 1px solid var(--color-background-border);
+  padding: 0.5rem 0.75rem;
+}
+
+article table.docutils tr:last-child td {
+  border-bottom: 0;
+}
+
+/* Result tables carry figures in their emphasised cells; align the digits. */
+article table.docutils td strong {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Wide tables scroll inside themselves rather than pushing the page sideways. */
+article .table-wrapper {
+  overflow-x: auto;
+}
+
+/* -- Code ---------------------------------------------------------------- */
+
+article div.highlight,
+article pre {
+  border-radius: 8px;
+}
+
+article div.highlight {
+  border: 1px solid var(--color-background-border);
+}
+
+article code.literal {
+  font-size: 0.875em;
+  padding: 0.1em 0.34em;
+  border-radius: 4px;
+  border: 1px solid var(--color-background-border);
+}
+
+/* -- Admonitions --------------------------------------------------------- */
+
+/* Furo's default is a heavy tinted block; the warning admonition on the landing
+   and methodology pages is long-form prose, so soften the body and keep the
+   colour on the rail and the title only. */
+article .admonition {
+  border-radius: 10px;
+  box-shadow: none;
+  border: 1px solid var(--color-background-border);
+  font-size: 0.955rem;
+}
+
+article .admonition > .admonition-title {
+  font-family: var(--pq-mono);
+  font-size: 0.875rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+/* -- Sidebar and chrome -------------------------------------------------- */
+
+.sidebar-brand-text {
+  font-family: var(--pq-mono);
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+
+.sidebar-logo {
+  max-width: 3.1rem;
+}
+
+.sidebar-tree .caption {
+  font-family: var(--pq-mono);
+  font-size: 0.74rem;
+  letter-spacing: 0.02em;
+  color: var(--color-foreground-muted);
+}
+
+.toc-title {
+  font-family: var(--pq-mono);
+  font-size: 0.76rem;
+  letter-spacing: 0.02em;
+}
+
+/* -- Accessibility floor ------------------------------------------------- */
+
+a:focus-visible,
+.pq-card:focus-within {
+  outline: 2px solid var(--color-brand-primary);
+  outline-offset: 2px;
+  border-radius: 3px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}
+
+/* -- Narrow screens ------------------------------------------------------ */
+
+@media (max-width: 46em) {
+  article {
+    font-size: 0.98rem;
+  }
+
+  .pq-result__figure {
+    font-size: 1.7rem;
+  }
+
+  .pq-hero__lede {
+    font-size: 1.05rem;
+  }
+}

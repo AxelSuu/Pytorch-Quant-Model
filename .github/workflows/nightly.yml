@@ -1,4 +1,4 @@
-name: Nightly vendor smoke
+name: Nightly vendor smoke + docs drift
 
 # A separate workflow from ci.yml on purpose (PYQ-244): nothing here is a merge
 # gate. The PR suite is deliberately network-free, which means no automated check
@@ -9,6 +9,16 @@ name: Nightly vendor smoke
 # It asserts SHAPE and FRESHNESS only, never values. A vendor returning a
 # different price is not a defect; a vendor returning no `Close` column, or data
 # that stopped updating a fortnight ago, is.
+#
+# `docs-drift` (PYQ-264) applies the identical philosophy to the documentation site:
+# `docs/conf.py` resolves types into five upstream projects' own documentation via
+# intersphinx (pandas, numpy, torch, pytorch-forecasting, pydantic). Any of those
+# renaming or moving a symbol this project links to breaks the build with nothing
+# in *this* repository having changed -- the same "we depend on something we do
+# not control" shape as a vendor changing its response format, just on a much
+# slower clock. Catching it here means a reader finds a working link instead of a
+# stale hosted build, and the failure is attributed to the actual cause instead of
+# blamed on whatever unrelated PR happened to trigger the next docs rebuild.
 
 on:
   schedule:
@@ -185,3 +195,32 @@ jobs:
               sys.exit(1)
           print(f"\nAll live vendor checks passed ({len(skipped)} skipped).")
           PY
+
+  docs-drift:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    env:
+      UV_FROZEN: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        # --extra api alongside --group docs: pyquant/api/{app,deps,routes/*}.py import
+        # fastapi at module level and autodoc imports every module it documents.
+        run: uv sync --frozen --group docs --extra api
+
+      - name: Rebuild docs against live upstream inventories (warnings are errors)
+        # Deliberately does NOT reuse any cached intersphinx inventory: the whole point
+        # is to fetch pandas/numpy/torch/pytorch-forecasting/pydantic's *current*
+        # objects.inv files, so a rename or removal on their side shows up here first.
+        run: uv run --group docs --extra api sphinx-build -W --keep-going -E -b html docs docs/_build/html

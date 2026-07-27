@@ -50,6 +50,7 @@ def _cache_fingerprint(symbol: str, settings: Settings, start: str | None, end: 
         "use_macro": data.use_macro,
         "use_sectors": data.use_sectors,
         "use_sentiment": data.use_sentiment,
+        "use_indicators": data.use_indicators,
         "sector_etfs": sorted(data.sector_etfs),
         # Feature definitions can change between releases. Include the source
         # version (and git sha when available) so a TTL entry is never reused
@@ -86,7 +87,9 @@ def build_panel(
             return cached
 
     period = settings.data.period
-    panel = fetch_prices(symbol, period=period, start=start, end=end, use_indicators=True)
+    panel = fetch_prices(
+        symbol, period=period, start=start, end=end, use_indicators=settings.data.use_indicators
+    )
     # Drop leading rows still NaN from indicator warm-up (e.g. SMA_50 needs
     # 49 days of history) before joining other sources, so their own
     # fill/reindex logic never launders these into fabricated values.
@@ -138,6 +141,33 @@ def build_panel(
                 "Joined sentiment features; news coverage begins %s (%d of %d rows)",
                 coverage_start.date() if coverage_start is not None else "never",
                 int(panel["has_sentiment_data"].sum()),
+                len(panel),
+            )
+
+    if settings.data.use_options:
+        from pyquant.data.options import SNAPSHOT_COLUMNS, load_snapshot_history
+
+        options_history = load_snapshot_history(symbol, settings)
+        if not options_history.empty:
+            # Same shape as sentiment above, and for the same reason: the
+            # accumulated history only ever grows forward from whenever
+            # `pyquant snapshot` was first run, so most of a multi-year training
+            # window has no coverage at all. Left to the generic ffill()+dropna()
+            # below, that sparsity would drop nearly the entire panel rather than
+            # just the options columns -- neutral-fill plus a has-data indicator
+            # instead, matching PYQ-256's fix for the identical problem shape.
+            aligned_options = options_history.reindex(price_index, method="ffill")
+            panel = panel.join(aligned_options)
+            covered = aligned_options.dropna(how="all")
+            coverage_start = covered.index.min() if len(covered) else None
+            panel["has_options_history"] = (
+                0.0 if coverage_start is None else (panel.index >= coverage_start).astype(float)
+            )
+            panel[SNAPSHOT_COLUMNS] = panel[SNAPSHOT_COLUMNS].fillna(0.0)
+            logger.info(
+                "Joined accumulated options-snapshot history; coverage begins %s (%d of %d rows)",
+                coverage_start.date() if coverage_start is not None else "never",
+                int(panel["has_options_history"].sum()),
                 len(panel),
             )
 

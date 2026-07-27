@@ -1,14 +1,18 @@
 """Tests for news sentiment (graceful degradation + scoring logic)."""
 
 import datetime as dt
+import json
 import sys
 import types
 import warnings
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from pyquant.data import sentiment
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _utc(year, month, day, hour):
@@ -238,3 +242,54 @@ def test_align_to_sessions_drops_news_after_the_last_session():
     aligned = sentiment.align_to_sessions(daily, sessions)
 
     assert aligned["HeadlineCount"].sum() == 0.0
+
+
+def test_fetch_news_parses_a_real_recorded_finnhub_payload(monkeypatch):
+    """PYQ-243: drives the real fetch_news() JSON parsing from one real recorded
+    Finnhub response (headline/summary/url/image text replaced with placeholders
+    before being checked in -- the contract is the response *shape*, not the
+    copyrighted article text) instead of the hand-built ``[{"headline": "x", ...}]``
+    every other test in this file uses.
+    """
+    real_articles = json.loads((FIXTURES / "finnhub_news_aapl.json").read_text())
+    assert len(real_articles) > 50  # a real multi-day response, not a token sample
+
+    class RecordedResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return real_articles
+
+    monkeypatch.setattr(sentiment.requests, "get", lambda *a, **k: RecordedResp())
+
+    out = sentiment.fetch_news("key", "AAPL", "2024-01-01", "2024-02-01")
+
+    assert out == real_articles
+    # Every article fetch_sentiment() actually reads must carry these two fields.
+    assert all("datetime" in a and "headline" in a for a in out)
+
+
+def test_fetch_sentiment_scores_a_real_recorded_finnhub_payload_end_to_end(monkeypatch):
+    """The fuller chain: real recorded articles -> session_date bucketing ->
+    daily aggregation, with only the network call and the FinBERT model stubbed.
+    """
+    real_articles = json.loads((FIXTURES / "finnhub_news_aapl.json").read_text())
+
+    class RecordedResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return real_articles
+
+    monkeypatch.setattr(sentiment.requests, "get", lambda *a, **k: RecordedResp())
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    monkeypatch.setattr(sentiment, "score_headlines", lambda hs: [0.0] * len(hs))
+
+    out = sentiment.fetch_sentiment("key", "AAPL", start="2024-01-01", end="2024-02-01")
+
+    assert not out.empty
+    assert list(out.columns) == sentiment.SENTIMENT_COLUMNS
+    # Every real article landed on exactly one day; none silently vanished.
+    assert out["HeadlineCount"].sum() == len(real_articles)

@@ -1,0 +1,76 @@
+name: Deploy docs to GitHub Pages
+
+# Separate from ci.yml on purpose: this workflow needs `pages: write` / `id-token: write`
+# to publish, and only the merged state of `main` should ever be live -- a PR workflow
+# does not get (and should not ask for) those permissions. ci.yml's own "Docs build
+# (warnings are errors)" step is what gates a PR; this step re-builds the already-gated
+# tree and publishes it, it does not re-decide whether the build is clean.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      # Only rebuild when something that can change the rendered output changes --
+      # a source-only commit (e.g. a test-only change) does not need a redeploy, and
+      # skipping it keeps the deploy history meaningful (PYQ-264).
+      - "docs/**"
+      - "pyquant/**"
+      - "README.md"
+      - "pyproject.toml"
+      - "uv.lock"
+      - ".github/workflows/docs.yml"
+  # Manual trigger, so a Pages-only change (e.g. a theme tweak) or a redeploy after an
+  # upstream intersphinx fix can be published without an unrelated commit.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Only one deployment in flight at a time; a second push while one is still building
+# cancels the superseded run rather than racing it.
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        # --extra api alongside --group docs: pyquant/api/{app,deps,routes/*}.py import
+        # fastapi at module level and autodoc imports every module it documents (PYQ-264).
+        run: uv sync --frozen --group docs --extra api
+
+      - name: Build docs (warnings are errors)
+        # Same gate as ci.yml's PR check (PYQ-233) -- a site that silently drops a
+        # renamed module or a broken cross-reference is worse than no hosted site,
+        # because it looks current.
+        run: uv run --group docs --extra api sphinx-build -W --keep-going -b html docs docs/_build/html
+
+      - name: Upload build artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs/_build/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

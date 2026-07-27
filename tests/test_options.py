@@ -1,11 +1,15 @@
 """Tests for options-implied market context: nearest-strike indexing, degradation, labels."""
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 
 import pandas as pd
 import pytest
 
 from pyquant.data import options
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 @dataclass
@@ -66,6 +70,32 @@ def test_fetch_options_snapshot_no_options_listed(monkeypatch):
     monkeypatch.setattr(options.yf, "Ticker", _fake_ticker([], _FakeChain(pd.DataFrame(), pd.DataFrame())))
     snap = options.fetch_options_snapshot("AAPL")
     assert snap == options.OptionsSnapshot(None, None, None, None)
+
+
+def test_fetch_options_snapshot_parses_a_real_recorded_chain(monkeypatch):
+    """PYQ-243: every other test here hand-builds a 3-column calls/puts frame
+    (strike/volume/impliedVolatility). The real chain carries 14 columns
+    (contractSymbol, lastTradeDate, bid/ask, inTheMoney, ...) -- this drives the
+    real fetch_options_snapshot() parsing from one real recorded chain instead, so
+    an unexpected dtype or a renamed/missing column would actually be caught.
+    """
+    recorded = pd.read_pickle(FIXTURES / "yfinance_options_aapl.pkl")
+    assert "impliedVolatility" in recorded["calls"].columns
+    assert len(recorded["calls"].columns) > 3  # the real chain, not the 3-column fixture
+
+    chain = _FakeChain(calls=recorded["calls"], puts=recorded["puts"])
+    monkeypatch.setattr(
+        options.yf,
+        "Ticker",
+        _fake_ticker([recorded["expiry"]], chain, spot=recorded["fast_last_price"]),
+    )
+
+    snap = options.fetch_options_snapshot("AAPL")
+
+    assert snap.expiry == recorded["expiry"]
+    assert snap.put_call_ratio is not None and snap.put_call_ratio > 0
+    assert snap.atm_iv is not None and snap.atm_iv > 0
+    assert snap.iv_skew is not None
 
 
 def test_fetch_options_snapshot_empty_chain(monkeypatch):
@@ -145,3 +175,84 @@ def test_fetch_options_snapshot_handles_ticker_exception(monkeypatch):
 def test_sentiment_label_thresholds(ratio, expected):
     snap = options.OptionsSnapshot(put_call_ratio=ratio, atm_iv=None, iv_skew=None, expiry=None)
     assert snap.sentiment_label == expected
+
+
+# --- PYQ-254: accumulated snapshot history --------------------------------------
+
+
+class _Settings:
+    """Minimal stand-in: append_snapshot/load_snapshot_history need only this attr."""
+
+    def __init__(self, tmp_path):
+        self.options_history_dir = tmp_path
+
+
+def test_append_snapshot_writes_one_recorded_row(monkeypatch, tmp_path):
+    fake_snap = options.OptionsSnapshot(put_call_ratio=1.1, atm_iv=0.3, iv_skew=0.02, expiry="2024-06-21")
+    monkeypatch.setattr(options, "fetch_options_snapshot", lambda symbol: fake_snap)
+
+    path = options.append_snapshot("aapl", _Settings(tmp_path))
+
+    assert path.name == "AAPL.jsonl"
+    rows = [json.loads(line) for line in path.read_text().splitlines()]
+    assert len(rows) == 1
+    assert rows[0]["put_call_ratio"] == 1.1
+    assert rows[0]["atm_iv"] == 0.3
+    assert "date" in rows[0] and "observed_at" in rows[0]
+
+
+def test_load_snapshot_history_is_empty_below_the_minimum_days(monkeypatch, tmp_path):
+    """Not enough accumulated history to be a meaningful per-day feature yet --
+    empty (with the right columns), not a nearly-all-missing column (PYQ-254)."""
+    settings = _Settings(tmp_path)
+    path = tmp_path / "AAPL.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"date": f"2024-01-{d:02d}", "observed_at": f"2024-01-{d:02d}T15:00:00", "put_call_ratio": 1.0, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+        for d in range(1, options.MIN_SNAPSHOT_DAYS)  # one short of the threshold
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    out = options.load_snapshot_history("AAPL", settings)
+
+    assert out.empty
+    assert list(out.columns) == options.SNAPSHOT_COLUMNS
+
+
+def test_load_snapshot_history_returns_data_once_enough_days_accumulate(tmp_path):
+    settings = _Settings(tmp_path)
+    path = tmp_path / "AAPL.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"date": f"2024-01-{d:02d}", "observed_at": f"2024-01-{d:02d}T15:00:00", "put_call_ratio": 1.0 + d * 0.01, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+        for d in range(1, options.MIN_SNAPSHOT_DAYS + 1)
+    ]
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    out = options.load_snapshot_history("AAPL", settings)
+
+    assert not out.empty
+    assert list(out.columns) == options.SNAPSHOT_COLUMNS
+    assert len(out) == options.MIN_SNAPSHOT_DAYS
+    assert out.index.is_monotonic_increasing
+
+
+def test_load_snapshot_history_keeps_the_latest_of_a_repeated_day(tmp_path):
+    """Re-running `snapshot` on the same day must not duplicate that day's row."""
+    settings = _Settings(tmp_path)
+    path = tmp_path / "AAPL.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {"date": f"2024-01-{d:02d}", "observed_at": f"2024-01-{d:02d}T10:00:00", "put_call_ratio": 1.0, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+        for d in range(1, options.MIN_SNAPSHOT_DAYS + 1)
+    ]
+    # A second, later snapshot on the same first day, with a different value.
+    rows.append(
+        {"date": "2024-01-01", "observed_at": "2024-01-01T15:30:00", "put_call_ratio": 9.9, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+    )
+    path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
+
+    out = options.load_snapshot_history("AAPL", settings)
+
+    assert out.index.nunique() == options.MIN_SNAPSHOT_DAYS  # not +1
+    assert out.loc[pd.Timestamp("2024-01-01"), "OptionsPutCallRatio"] == 9.9  # the later value won

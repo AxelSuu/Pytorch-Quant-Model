@@ -14,6 +14,7 @@ import numpy as np
 from pyquant.analysis.forecast import Forecast
 from pyquant.analysis.interpret import Interpretation
 from pyquant.analysis.metrics import EvaluationMetrics
+from pyquant.analysis.signals import SignalEvaluation, classify_signal
 from pyquant.models.tft import BacktestResult, TrainResult
 
 
@@ -73,6 +74,30 @@ def forecast_to_dict(fc: Forecast) -> dict[str, Any]:
     return out
 
 
+def scan_row_to_dict(symbol: str, fc: Forecast) -> dict[str, Any]:
+    """One `scan` comparison row for a successfully-forecast symbol.
+
+    The single implementation the CLI's `scan` command and the PYQ-261 API's
+    `/scan` route both call, so the two front-ends' `signal`/`band_width_pct`
+    cannot drift apart the way PYQ-119 found for config handling.
+    """
+    pct = fc.expected_return_pct()
+    lo = fc.quantile_series(fc.quantiles[0])[-1]
+    hi = fc.quantile_series(fc.quantiles[-1])[-1]
+    lo_pct = (lo - fc.current_price) / fc.current_price * 100
+    hi_pct = (hi - fc.current_price) / fc.current_price * 100
+    band = (hi - lo) / fc.current_price * 100
+    return {
+        "symbol": symbol,
+        "status": "ok",
+        "current_price": fc.current_price,
+        "median_target": float(fc.median[-1]),
+        "expected_return_pct": pct,
+        "band_width_pct": band,
+        "signal": classify_signal(pct, lower_pct=lo_pct, upper_pct=hi_pct),
+    }
+
+
 def train_result_to_dict(tr: TrainResult) -> dict[str, Any]:
     """Serialize a training run: where the bundle landed and how it scored."""
     return {
@@ -99,6 +124,24 @@ def backtest_to_dict(br: BacktestResult) -> dict[str, Any]:
     }
 
 
+def signal_evaluation_to_dict(ev: SignalEvaluation) -> dict[str, Any]:
+    """Serialize a PYQ-255 signal P&L evaluation."""
+    return {
+        "n_buy": ev.n_buy,
+        "n_sell": ev.n_sell,
+        "n_hold": ev.n_hold,
+        "hit_rate_buy": ev.hit_rate_buy,
+        "hit_rate_sell": ev.hit_rate_sell,
+        "avg_return_buy_pct": ev.avg_return_buy_pct,
+        "avg_return_sell_pct": ev.avg_return_sell_pct,
+        "turnover": ev.turnover,
+        "strategy_pnl_pct": ev.strategy_pnl_pct,
+        "buy_and_hold_pnl_pct": ev.buy_and_hold_pnl_pct,
+        "cost_bps": ev.cost_bps,
+        "n_periods": ev.n_periods,
+    }
+
+
 def interpretation_to_dict(interp: Interpretation, top: int | None = None) -> dict[str, Any]:
     """Serialize feature importances and attention weights, importance-sorted.
 
@@ -114,4 +157,9 @@ def interpretation_to_dict(interp: Interpretation, top: int | None = None) -> di
         "symbol": interp.symbol,
         "feature_importance": [{"feature": name, "weight": w} for name, w in features],
         "attention": np.asarray(interp.attention).tolist(),
+        # None when the bundle predates evaluation being recorded. A consumer
+        # should treat weights from a bundle with non-positive skill as a
+        # description of the model's attention, not of what moves the price
+        # (investigations.md#pyq-314).
+        "bundle_skill": interp.bundle_skill,
     }

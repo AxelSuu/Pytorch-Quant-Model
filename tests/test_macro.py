@@ -1,8 +1,13 @@
 """Tests for macro features (graceful degradation)."""
 
+import json
+from pathlib import Path
+
 import pandas as pd
 
 from pyquant.data import macro
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def _fake_vix_ticker(sample_index):
@@ -211,3 +216,44 @@ def test_a_ten_year_request_is_split_into_chunks_that_cover_the_whole_window(
     assert dff_chunks[0][0] == pd.Timestamp("2016-01-01")
     for (_, prev_end), (next_start, _) in zip(dff_chunks, dff_chunks[1:], strict=False):
         assert next_start <= prev_end + pd.Timedelta(days=1), "gap between vintage chunks"
+
+
+def test_fetch_macro_parses_real_recorded_vix_and_fred_payloads(monkeypatch):
+    """PYQ-243: every other test in this file hand-builds its VIX/FRED frames, which
+    verifies our parsing against our own assumptions rather than the vendors'
+    actual shapes. fredapi in particular talks to FRED over urllib, not `requests`
+    (checked directly), so `_fetch_fred`/`_vintage_series` is the real boundary
+    worth pinning here -- mocking raw sockets would only test fredapi's own XML
+    parsing, not ours.
+    """
+    real_vix = pd.read_pickle(FIXTURES / "yfinance_vix.pkl")
+    assert "Dividends" in real_vix.columns  # a real Ticker.history() response shape
+
+    class RecordedVixTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, **kwargs):
+            return real_vix
+
+    real_releases = pd.DataFrame(json.loads((FIXTURES / "fred_dff.json").read_text()))
+    assert set(real_releases.columns) == {"realtime_start", "date", "value"}
+
+    class RecordedFred:
+        def __init__(self, api_key=None):
+            pass
+
+        def get_series_all_releases(self, series_id, realtime_start=None, realtime_end=None):
+            return real_releases
+
+    import fredapi
+
+    monkeypatch.setattr(macro.yf, "Ticker", RecordedVixTicker)
+    monkeypatch.setattr(fredapi, "Fred", RecordedFred)
+
+    out = macro.fetch_macro(api_key="dummy")
+
+    assert "VIX" in out.columns
+    assert out["VIX"].notna().any()
+    assert "FedFunds" in out.columns  # DFF -> FedFunds, from the real releases
+    assert out.index.tz is None

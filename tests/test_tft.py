@@ -100,6 +100,27 @@ def test_walk_forward_backtest_aggregates_across_windows(monkeypatch, sample_ohl
     assert 0.0 <= result.aggregated.calibration_coverage <= 1.0
     # No trained model artifacts should be persisted for a backtest.
     assert not (fast_settings.checkpoint_dir / "TEST").exists()
+    # compute_signals defaults off (PYQ-255): no extra forward pass unless asked.
+    assert result.signals == []
+    assert result.signal_returns_pct == []
+
+
+def test_walk_forward_backtest_computes_a_signal_per_window_when_requested(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-255: compute_signals=True must populate one BUY/SELL/HOLD signal and one
+    realized return per window, using the same classify_signal() scan() uses."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result = tft.walk_forward_backtest(
+        "TEST", fast_settings, n_windows=2, max_epochs=1, progress=False, compute_signals=True
+    )
+
+    assert len(result.signals) == 2
+    assert all(s in ("BUY", "SELL", "HOLD") for s in result.signals)
+    assert len(result.signal_returns_pct) == 2
+    assert all(isinstance(r, float) for r in result.signal_returns_pct)
 
 
 def test_train_pools_multiple_symbols_into_one_dataset(monkeypatch, sample_ohlcv_df, fast_settings):
@@ -221,6 +242,37 @@ def test_train_seeds_everything_and_records_seed(monkeypatch, sample_ohlcv_df, f
     assert 123 in seeds
     meta = json.loads((tft._bundle_dir(fast_settings, "TEST") / "meta.json").read_text())
     assert meta["seed"] == 123
+
+
+def test_two_identically_seeded_runs_produce_identical_metrics(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-246: PYQ-210's own acceptance criterion was "two consecutive train() calls
+    with the same seed and a pinned dataset produce identical val_loss" -- but the test
+    that shipped for it only checked that the seed is *passed* and *recorded*
+    (test_train_seeds_everything_and_records_seed, above), not that the run is
+    actually reproducible. seed_everything() does not by itself guarantee determinism
+    on every backend (cuDNN autotuning, num_workers > 0 ordering), so the property this
+    project claims could have been false on some configurations without anything
+    noticing.
+
+    On this CPU-only suite it holds exactly, with default num_workers=0 *and* with
+    num_workers=2 (checked manually; not asserted here since the second is redundant
+    with this test's own default DataLoader config and would only double the runtime).
+    GPU determinism is not covered -- there is no GPU in this environment to check it
+    against, and cuDNN autotuning is a real, materially different source of
+    nondeterminism this test cannot see. Document rather than claim it: `runs.jsonl`
+    comparisons across GPU-trained bundles should not assume bit-identical
+    reproducibility the way this test verifies for CPU.
+    """
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result_a = tft.train("TEST", fast_settings, max_epochs=3, progress=False)
+    result_b = tft.train("TEST", fast_settings, max_epochs=3, progress=False)
+
+    assert result_a.val_loss == result_b.val_loss
+    assert result_a.evaluation == result_b.evaluation
 
 
 def test_train_threads_num_workers_into_dataloaders(monkeypatch, sample_ohlcv_df, fast_settings):
@@ -745,3 +797,117 @@ def test_a_bundle_without_a_calibration_slice_records_no_offset(
 
     assert bundle.meta["conformal"] is None
     assert tft.bundle_conformal_offset(bundle) is None
+
+
+def test_permutation_importance_ranks_the_injected_signal_above_pure_noise_features(
+    monkeypatch, tmp_path
+):
+    """PYQ-314: sanity-checks permutation_importance() itself, independent of any
+    question about what interpret()'s TFT weights mean -- on a panel where exactly
+    one feature (Signal) actually drives the target and the rest are pure noise, a
+    working implementation must rank Signal at or near the top.
+
+    Deliberately skips add_technical_indicators(): a first version of this test
+    included them and Signal scored *zero* while SMA_10 scored highest, because
+    every indicator is a smoothing of Close, and Close's own path necessarily
+    encodes the cumulative signal history the log-return target is derived from
+    (panel_to_long() computes LogReturn from Close directly). Shuffling Signal
+    alone left correlated echoes of it intact in every indicator column, which
+    is a genuine, useful finding about permutation importance's blind spot with
+    collinear features (see the PYQ-314 resolution note and PYQ-316) -- but it
+    would make a poor mechanics check for this function specifically, so this
+    test isolates the mechanism instead of exercising that interaction.
+    """
+    rng = np.random.default_rng(11)
+    n = 300
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    signal = rng.choice([-1.0, 1.0], size=n)
+    log_returns = 0.08 * np.roll(signal, 1) + rng.normal(0, 0.002, n)
+    log_returns[0] = 0.0
+    close = 100 * np.exp(np.cumsum(log_returns))
+    panel = pd.DataFrame(
+        {
+            "Open": close,
+            "High": close * 1.001,
+            "Low": close * 0.999,
+            "Close": close,
+            "Volume": np.abs(rng.normal(0, 1, n)) * 1_000_000,
+            "Signal": signal,
+            "NoiseA": rng.normal(0, 1, n),
+            "NoiseB": rng.normal(0, 1, n),
+        },
+        index=dates,
+    )
+    panel.index.name = "Date"
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    from pyquant.config import Settings
+
+    settings = Settings()
+    settings.data.use_macro = False
+    settings.data.use_sectors = False
+    settings.data.use_sentiment = False
+    settings.data.cache_enabled = False
+    settings.training.target = "log_return"
+    settings.training.max_encoder_length = 15
+    settings.training.max_prediction_length = 1
+    settings.training.validation_days = 40
+    settings.training.batch_size = 32
+    settings.training.max_epochs = 15
+    settings.tft.hidden_size = 8
+    settings.tft.hidden_continuous_size = 4
+    settings.checkpoint_dir = tmp_path / "checkpoints"
+
+    tft.train("TEST", settings, progress=False)
+    bundle = tft.load("TEST", settings)
+
+    from pyquant.data.dataset import panel_to_long
+
+    long_df = panel_to_long(panel, "TEST")
+    importance = tft.permutation_importance(bundle, long_df, settings)
+
+    assert "Signal" in importance
+    top_feature = max(importance, key=importance.get)
+    assert top_feature == "Signal", f"expected Signal on top, got {importance}"
+    assert importance["Signal"] > importance.get("NoiseA", 0.0)
+    assert importance["Signal"] > importance.get("NoiseB", 0.0)
+
+
+def test_tune_writes_a_config_and_scores_the_winner_on_a_held_out_split(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-253: needs the 'tuning' extra (optuna/statsmodels/tensorboard), which CI's
+    default job does not install -- skips cleanly there, same disposition PYQ-308
+    already established for a real-FinBERT CI job. Verified locally with the extra
+    installed (see the ticket's resolution note for a real run's output).
+    """
+    pytest.importorskip("optuna")
+    pytest.importorskip("statsmodels")
+    pytest.importorskip("tensorboard")
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result = tft.tune("TEST", fast_settings, n_trials=1, max_epochs=1, held_out_days=20, progress=False)
+
+    assert result.symbol == "TEST"
+    assert result.n_trials == 1
+    assert result.best_params  # at least one tuned hyperparameter recorded
+    assert result.held_out_evaluation.n_samples > 0
+    assert 0.0 <= result.held_out_evaluation.calibration_coverage <= 1.0
+    assert result.config_path.exists()
+    assert result.config_path.suffix == ".yaml"
+    assert (result.bundle_dir / "optuna_study.db").exists()
+    # The bundle behind the held-out score is the real, loadable thing train() makes.
+    bundle = tft.load("TEST_TUNED", fast_settings)
+    assert bundle.meta["symbol"] == "TEST_TUNED"
+
+    result.config_path.unlink()  # scripts/configs/ is real repo state, not a tmp dir
+
+
+def test_tune_without_the_extra_installed_fails_clearly(monkeypatch, fast_settings):
+    """A missing 'tuning' extra must not surface as a bare ImportError deep inside
+    pytorch-forecasting -- name the fix."""
+    monkeypatch.setitem(__import__("sys").modules, "optuna", None)
+    with pytest.raises(ImportError, match="tuning"):
+        tft.tune("TEST", fast_settings, n_trials=1)

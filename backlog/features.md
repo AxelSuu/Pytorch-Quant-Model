@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-264**.
+Next free ID: **PYQ-265**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -15,13 +15,13 @@ Next free ID: **PYQ-264**.
 | [PYQ-208](#pyq-208) | Medium | Resolved | `test_options.py` — was 0% covered |
 | [PYQ-209](#pyq-209) | High | Resolved | Config-file (YAML) support for experiments |
 | [PYQ-210](#pyq-210) | Medium | Resolved | `seed_everything` + recorded seed for reproducibility |
-| [PYQ-211](#pyq-211) | Low | Open | Learning-rate tuning instead of one fixed lr for every run |
+| [PYQ-211](#pyq-211) | Low | Superseded by PYQ-253 | Learning-rate tuning instead of one fixed lr for every run |
 | [PYQ-212](#pyq-212) | Medium | Resolved | Machine-readable output mode (`--format json` / `--quiet`) |
 | [PYQ-213](#pyq-213) | High | Resolved | Design (and scaffold) a FastAPI service layer alongside the CLI |
 | [PYQ-214](#pyq-214) | Medium | Resolved | Broaden and harden external data providers |
 | [PYQ-215](#pyq-215) | Medium | Resolved | Retry/backoff for flaky external calls |
 | [PYQ-216](#pyq-216) | Low | Resolved | Detect/guard against quantile crossing |
-| [PYQ-217](#pyq-217) | Medium | Open | Dockerfile for reproducible training/serving environments |
+| [PYQ-217](#pyq-217) | Low | Open | Dockerfile for reproducible training/serving environments |
 | [PYQ-218](#pyq-218) | Medium | Resolved | Make DataLoader `num_workers` configurable (hardcoded to 0 everywhere) |
 | [PYQ-219](#pyq-219) | Low | Resolved | Validate `TFTConfig.quantiles` is sorted ascending |
 | [PYQ-220](#pyq-220) | Medium | Resolved | `checkpoint_dir`/`cache_dir` resolve relative to CWD |
@@ -42,32 +42,33 @@ Next free ID: **PYQ-264**.
 | [PYQ-235](#pyq-235) | High | Resolved | Narrative docs: architecture, leakage invariants, methodology |
 | [PYQ-236](#pyq-236) | Low | Resolved | Adopt one docstring style and enforce it with ruff's `D` rules |
 | [PYQ-237](#pyq-237) | Low | Open | Executable doctests for the metrics and forecast APIs |
-| [PYQ-238](#pyq-238) | High | Open | `tests/test_invariants.py` — assert the pipeline-spanning invariants directly |
-| [PYQ-239](#pyq-239) | High | Open | Learnability test: inject a known signal and assert the model recovers it |
+| [PYQ-238](#pyq-238) | High | Resolved | `tests/test_invariants.py` — assert the pipeline-spanning invariants directly |
+| [PYQ-239](#pyq-239) | High | Resolved | Learnability test: inject a known signal and assert the model recovers it |
 | [PYQ-240](#pyq-240) | Medium | Resolved | Regression test that predictions/actuals/last_observed share units |
-| [PYQ-241](#pyq-241) | Medium | Open | End-to-end CLI journey test across every command and both output formats |
+| [PYQ-241](#pyq-241) | Medium | Resolved | End-to-end CLI journey test across every command and both output formats |
 | [PYQ-242](#pyq-242) | Low | Open | Property-based tests for `analysis/metrics.py` |
-| [PYQ-243](#pyq-243) | Medium | Open | Recorded-payload contract tests for every external vendor |
+| [PYQ-243](#pyq-243) | Medium | Resolved | Recorded-payload contract tests for every external vendor |
 | [PYQ-244](#pyq-244) | Low | Resolved | Scheduled nightly CI job against live vendors |
 | [PYQ-245](#pyq-245) | Low | Open | Mutation testing on the metrics and indicator modules |
-| [PYQ-246](#pyq-246) | Medium | Open | Determinism test: same seed + same pin ⇒ identical metrics |
+| [PYQ-246](#pyq-246) | Medium | Resolved | Determinism test: same seed + same pin ⇒ identical metrics |
 | [PYQ-247](#pyq-247) | High | Resolved | Forecast log-returns instead of price levels |
 | [PYQ-248](#pyq-248) | High | Resolved | Conformal / split-calibration of the quantile band |
 | [PYQ-249](#pyq-249) | Medium | Open | Add a time-series foundation model as a zero-shot baseline |
 | [PYQ-250](#pyq-250) | Medium | Resolved | Purge + embargo around every walk-forward split |
 | [PYQ-251](#pyq-251) | Medium | Resolved | Report effective sample size and block-bootstrap intervals |
 | [PYQ-252](#pyq-252) | Medium | Resolved | CRPS, Winkler score and a PIT histogram |
-| [PYQ-253](#pyq-253) | Medium | Open | Optuna hyperparameter search (absorbs PYQ-211's scope) |
-| [PYQ-254](#pyq-254) | Medium | Open | Promote options data from display context to model features |
-| [PYQ-255](#pyq-255) | Medium | Open | Signal evaluation: does `scan`'s BUY/SELL actually make money? |
+| [PYQ-253](#pyq-253) | Medium | Resolved | Optuna hyperparameter search (absorbs PYQ-211's scope) |
+| [PYQ-254](#pyq-254) | Medium | Resolved | Promote options data from display context to model features |
+| [PYQ-255](#pyq-255) | Medium | Resolved | Signal evaluation: does `scan`'s BUY/SELL actually make money? |
 | [PYQ-256](#pyq-256) | Low | Resolved | `has_sentiment_data` indicator column |
 | [PYQ-257](#pyq-257) | High | Resolved | Use FRED/ALFRED vintages instead of a fixed publication lag |
 | [PYQ-258](#pyq-258) | Medium | Resolved | Pluggable price-provider interface with a licensed fallback |
-| [PYQ-259](#pyq-259) | Medium | Open | Experiment tracking (MLflow) alongside `runs.jsonl` |
+| [PYQ-259](#pyq-259) | Medium | Resolved | Experiment tracking (MLflow) alongside `runs.jsonl` |
 | [PYQ-260](#pyq-260) | Low | Resolved | Ship a `py.typed` marker |
-| [PYQ-261](#pyq-261) | Medium | Open | Scaffold `pyquant/api/` per the PYQ-213 design note |
+| [PYQ-261](#pyq-261) | Medium | Resolved | Scaffold `pyquant/api/` per the PYQ-213 design note |
 | [PYQ-262](#pyq-262) | Low | Resolved | Pre-commit configuration |
 | [PYQ-263](#pyq-263) | Low | Resolved | `pyquant doctor` — environment and bundle health check |
+| [PYQ-264](#pyq-264) | Medium | Resolved | Fold PYQ-247/248/250 into the docs; deploy to GitHub Pages; nightly docs-drift check |
 
 ---
 
@@ -264,7 +265,7 @@ comparison in investigations.md#pyq-303 is now unblocked.
 
 ## [PYQ-211]
 Learning-rate tuning instead of one fixed lr for every run
-Status: Open
+Status: Superseded by PYQ-253
 Priority: Low (downgraded again from Medium — see 2026-07-26 update)
 Files: `pyquant/models/tft.py` (`build_model`, `train`), `pyquant/config.py` (`TrainingConfig.learning_rate`)
 
@@ -323,6 +324,10 @@ Deliberately **not** marked `Superseded by PYQ-253`: that ticket has not landed,
 file's own rule is that a superseding ID must exist and be real. The recommendation stands —
 supersede once PYQ-253 ships — and the prerequisite PYQ-253 names (land PYQ-247 first, so a
 GPU study is not spent inside a near-unbeatable formulation) is now satisfied.
+
+Update (2026-07-27): PYQ-253 shipped — `pyquant tune` runs an Optuna study over
+`learning_rate` alongside the other five coupled knobs this ticket's own updates argued
+could not be tuned informatively in isolation. Superseded as planned.
 
 ---
 
@@ -532,7 +537,7 @@ now enforced by PYQ-219.)
 ## [PYQ-217]
 Dockerfile for reproducible training/serving environments
 Status: Open
-Priority: Medium
+Priority: Low
 Files: new `Dockerfile`
 
 Problem: no containerization exists. This matters for two reasons: (a)
@@ -546,6 +551,14 @@ to build), plus notes on a CUDA variant for training, both built via
 
 Acceptance criteria: `docker build` + `docker run ... pyquant forecast
 AAPL` (against a mounted checkpoint) works.
+
+Deprioritised (2026-07-27, explicit user call during the PYQ-140/238/... pass): not
+interesting right now. Downgraded Medium -> Low rather than closed, since the ticket
+content and its acceptance criteria are still valid whenever it is picked back up.
+Left genuinely open, not attempted this pass -- also sidesteps a real limitation: this
+session's sandbox has no Docker CLI, so `docker build`/`docker run` could not have been
+verified here regardless (PYQ-261's API scaffold does not depend on this landing first;
+it is only the "deploy single-instance" step in `docs/api-design.md`'s build order).
 
 ---
 
@@ -1540,9 +1553,9 @@ least `skill_vs_baseline`, `calibration_coverage` and `Forecast.expected_return_
 
 ## [PYQ-238]
 `tests/test_invariants.py` — assert the pipeline-spanning invariants directly
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: High
-Files: new `tests/test_invariants.py`
+Files: `tests/test_invariants.py` (new), `docs/invariants.md`
 
 Problem: `backlog/README.md` states the lesson from the third review pass precisely —
 *"this backlog was optimising local correctness ticket by ticket while the invariants that
@@ -1587,13 +1600,44 @@ corresponding fix is reverted (verify this while writing them — an invariant t
 passes against the broken code is worthless, which is exactly the trap PYQ-120's coverage
 gap illustrates).
 
+Resolution: `tests/test_invariants.py` adds 10 tests (invariants 3 and 4 are asserted
+together in one test, since they're read off the same decoded batch; invariant 1 is split
+across three tests since it covers three independently-breakable join mechanisms —
+publication lag, late-start backfill, and post-close session timing — matching how
+`docs/invariants.md` already treats that trio as separate entries in the leak family).
+Built over a shared `unequal_history_panels` fixture (two symbols, one truncated to its
+last 90 rows) for the invariants that are inherently cross-symbol (5, 6), and reused for the
+single-symbol ones (3/4, 7, 8) so the module has one coherent multi-symbol shape throughout
+rather than a fixture per test.
+
+Verified against pre-fix logic shapes, not just against the current (fixed) code, per the
+acceptance criteria:
+
+- Reindexing a synthetic publication-lagged source with `method="bfill"` instead of
+  `"ffill"` (the PYQ-101 shape) makes the "value seen \<= row's own date" assertion fail, as
+  expected.
+- Running `.ffill().bfill()` on a late-starting source instead of dropping the ungapped
+  rows (the PYQ-123 shape) makes the "panel starts at the source's first observation"
+  assertion fail.
+- Computing the pre-extension decoder window (`observed_max - horizon + 1`) instead of
+  extending the frame first (the PYQ-115 shape) makes "decoder strictly after observed_max"
+  fail.
+- Anchoring every walk-forward origin to the frame's final window regardless of cutoff (the
+  PYQ-127 shape) collapses three distinct origins onto one window, failing the
+  disjoint-windows assertion.
+
+Full run: 10 passed in ~11s, no `@pytest.mark.slow` needed — the shared fixture keeps every
+test's model tiny (`hidden_size=8`) and most invariants (1, 2, 5, 6, 7, 9) need no training
+at all, only dataset/panel construction. Linked from `docs/invariants.md`'s existing note,
+which now points at the module by path instead of describing it as not-yet-landed.
+
 ---
 
 ## [PYQ-239]
 Learnability test: inject a known signal and assert the model recovers it
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: High
-Files: `tests/test_tft.py` or new `tests/test_learnability.py`
+Files: `tests/test_learnability.py` (new)
 
 Problem: `test_train_load_predict_roundtrip` asserts the bundle files exist, that
 `n_features > 0`, and that the metrics are within `[0, 1]`. **Every one of those assertions
@@ -1624,6 +1668,39 @@ noise has a leak, and this test finds it without needing to know where.
 Acceptance criteria: the injected-signal test asserts positive skill; the noise-control
 test asserts skill is not significantly positive. Both run in CI within a sensible time
 budget.
+
+Resolution: `tests/test_learnability.py` builds a synthetic OHLCV panel plus one extra
+`Signal` feature via a shared `_signal_panel()` helper. In the learnable case, day *t*'s
+log-return is `k * Signal[t-1] + noise` (`k=0.08`, `noise_std=0.002`); in the degenerate
+control, `Signal` is shuffled independently of the returns. `max_prediction_length` is set
+to 1 for this test specifically: `Signal` is an unknown real like every other feature, so
+it is only ever visible to the encoder, never the decoder — a multi-step horizon would ask
+the model to predict steps whose driving value it structurally cannot see yet, which is
+unlearnable by construction and would confound the test's purpose. `tft.train()` is run
+against a `monkeypatch`ed `build_panel`, same pattern as `test_tft.py`.
+
+Measured skill (`skill_vs_baseline`, `n=60` validation windows each), across three unrelated
+seeds to check the thresholds weren't tuned to one lucky run:
+
+```
+seed=1  learnable: 0.971   noise: 0.003
+seed=42 learnable: 0.972   noise: 0.011
+seed=99 learnable: 0.975   noise: 0.004
+```
+
+Chosen thresholds (`> 0.3` learnable, `< 0.15` noise) sit far inside both margins — the
+effect size is large by design (`k` well above `noise_std`), which is what keeps the test
+fast and non-flaky rather than borderline. Neither test needed `@pytest.mark.slow`: each
+runs in single-digit seconds.
+
+This also gives an answer for investigations.md#pyq-312's open question, restated here since
+this is the ticket that produces the evidence: the pipeline **can** learn a genuine
+signal when one exists, cleanly and repeatably. That means PYQ-247's small measured skill
+(+2.4%, one symbol, effective n≈5) is not obviously a wiring artifact — the machinery is
+demonstrably capable of finding a real effect at this scale when the effect is there. It
+does not prove +2.4% itself is real (that needs the multi-symbol repeat the backlog's `##
+Now` list already calls for), only that a near-zero result is not automatically evidence of
+a broken pipeline.
 
 ---
 
@@ -1678,7 +1755,7 @@ pins the upstream contract and fails if any one array crosses the normalization 
 
 ## [PYQ-241]
 End-to-end CLI journey test across every command and both output formats
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
 Files: `tests/test_cli.py`
 
@@ -1700,6 +1777,27 @@ asserting the JSON parses and carries the documented keys at each step. Mark it
 Acceptance criteria: one test function walking all six commands against a shared temp
 directory with mocked network but real training; JSON output parsed and key-checked at
 each step.
+
+Resolution: `test_full_cli_journey_across_every_command_and_both_output_formats` in
+`tests/test_cli.py`. Only two things are stubbed: `fetch_prices` (the network boundary,
+shared by every command since they all funnel through the same `build_panel`) and
+`fetch_options_snapshot` (display-only, not part of the trained schema). Everything else —
+bundle files, `meta.json`, the dataset params, the cache dir — is real, isolated to a temp
+`PYQUANT_HOME` (`forecast`/`explain`/`scan`/`cache list` have no settings-injection point at
+all, so this was the only way to redirect them without a mocked mid-state). A tiny
+checked-in-style YAML config (PYQ-209's mechanism, not a mocked `Settings` object) keeps the
+model small enough that both full passes together run in ~22s — no `@pytest.mark.slow`
+needed.
+
+The journey runs twice end-to-end (including retraining the same bundle), once per
+`--format`, all six commands each time. Every JSON payload is key-checked against exactly
+the fields `analysis/serialize.py` documents (`scan`'s rows are checked directly, since that
+command builds its dict inline rather than through a serializer). This exercises PYQ-119's
+exact failure class for real: `forecast`/`explain`/`scan` all pick up the bundle's *recorded*
+data-config toggles via `settings_for_bundle` rather than the fresh `load_settings()`
+defaults each command otherwise starts from — the test would fail loudly if that self-healing
+path ever regressed, since `--no-macro/--no-sentiment/--no-sectors` are only ever passed to
+`train`.
 
 ---
 
@@ -1729,9 +1827,10 @@ each with a shrinking-friendly strategy.
 
 ## [PYQ-243]
 Recorded-payload contract tests for every external vendor
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
-Files: `tests/fixtures/` (new), `tests/test_prices.py`, `test_macro.py`, `test_sentiment.py`, `test_options.py`, `test_sectors.py`
+Files: `tests/fixtures/` (new), `scripts/record_fixtures.py` (new), `tests/test_prices.py`,
+`test_macro.py`, `test_sentiment.py`, `test_options.py`, `test_sectors.py`
 
 Problem: every vendor test today mocks at the *function* boundary — `fetch_prices` is
 patched, or `yf.Ticker` returns a hand-built DataFrame with exactly the columns the code
@@ -1756,6 +1855,42 @@ Pairs with PYQ-244: fixtures catch *our* regressions, the nightly job catches *t
 Acceptance criteria: one recorded fixture per source; each source's happy-path test drives
 the real parsing code from that fixture; the fixture files record which vendor/library
 version produced them.
+
+Resolution: `scripts/record_fixtures.py` hits all five live vendor call sites once
+(`yfinance>=1.4.1`, `fredapi==0.5.2`, Finnhub REST v1) and writes `tests/fixtures/` plus a
+`MANIFEST.json` recording vendor, library version and fetch date per file. Six new tests
+(one each for prices, VIX, FRED, sector ETFs, options, plus one full `fetch_sentiment()`
+chain test) mock at the vendor's own class/function (`yf.Ticker`, `yf.download`,
+`fredapi.Fred`, `requests.get`) rather than at `pyquant`'s own `fetch_*` functions, then run
+the real parsing code against the recorded payload.
+
+`fredapi` was checked directly and does not use `requests` — it calls `urllib.request.
+urlopen` and parses XML internally — so `fredapi.Fred.get_series_all_releases` (the
+library's own public method) is the practical transport boundary; mocking raw sockets would
+only test fredapi's own XML parsing, not ours.
+
+This immediately paid for itself, twice, on the very first recording:
+
+- The real `Ticker.history()` response carries `Dividends`/`Stock Splits` alongside OHLCV.
+  Every existing hand-built fixture in this codebase only had the 5 columns the code wants
+  — none of them would have caught `fetch_prices` failing to drop an unexpected column.
+- `fredapi.get_series_all_releases()` over a 60-day realtime window returned **26,321
+  rows**, because FRED attaches the *entire* historical series (back to 1954 for `DFF`) to
+  the earliest vintage boundary in the window — not the handful of rows a hand-built
+  `_releases()` fixture assumes. The recording script now trims to reference dates within
+  90 days of the latest release before writing the fixture (90 rows, 40 distinct
+  `realtime_start` groups — still real multi-vintage structure, 12KB instead of 3MB).
+
+Finnhub's `headline`/`summary`/`url`/`image` fields are replaced with placeholder text
+before the fixture is written (`_sanitize_headline` in the recording script) — the contract
+these tests check is the response *shape* (which fields exist, `datetime` as a Unix
+timestamp, `id` as an int), not the copyrighted article text, so there is no reason to
+redistribute the latter in a public fixture. `category`/`datetime`/`id`/`related`/`source`
+are kept real.
+
+Pairs with PYQ-244 as designed: these fixtures catch *our* regressions against a payload
+shape that was real at the time it was recorded; PYQ-244's nightly job catches the vendor
+changing that shape *after* recording.
 
 ---
 
@@ -1886,9 +2021,9 @@ surviving mutant judged worth killing.
 
 ## [PYQ-246]
 Determinism test: same seed + same pin ⇒ identical metrics
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
-Files: `tests/test_tft.py`
+Files: `tests/test_tft.py`, `docs/methodology.md`
 
 Problem/Ask: PYQ-210 added `seed_everything` and PYQ-205 added dataset pins, and
 PYQ-210's own acceptance criterion was "two consecutive `train()` calls with the same seed
@@ -1909,6 +2044,24 @@ rather than let `runs.jsonl` imply comparability it cannot deliver.
 
 Acceptance criteria: the two-run equality test passes on CPU; the GPU/`num_workers > 0`
 situation is documented either way.
+
+Resolution: `test_two_identically_seeded_runs_produce_identical_metrics` in `test_tft.py`
+trains twice on an identical monkeypatched synthetic panel with the same seed and asserts
+`val_loss` and the full `EvaluationMetrics` dataclass compare equal. **It passes outright —
+no code change was needed.** Determinism holds exactly on this CPU-only environment, checked
+with both `num_workers=0` (the default, asserted in the test) and `num_workers=2` (checked
+manually alongside it; not asserted in the committed test since it would double the
+runtime for a config this suite doesn't otherwise exercise by default). That rules out one
+of the ticket's two suspected nondeterminism sources for the configurations actually
+available here.
+
+The other suspected source, cuDNN autotuning, could not be checked either way — there is no
+GPU in this environment. Per the acceptance criteria, this is documented explicitly rather
+than left implicit: `docs/methodology.md`'s reproducibility section now states plainly that
+GPU determinism is unverified and `runs.jsonl` comparisons should not assume bit-identical
+reproducibility across GPU-trained bundles on the strength of this result. No
+`torch.use_deterministic_algorithms`/`Trainer(deterministic=True)` change was made, since
+there was nothing observed to fix.
 
 ---
 
@@ -2335,9 +2488,9 @@ numeric half is done and tested, the chart is not.
 
 ## [PYQ-253]
 Optuna hyperparameter search (absorbs PYQ-211's scope)
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
-Files: `pyquant/models/tft.py`, `pyproject.toml`
+Files: `pyquant/models/tft.py` (`tune`, `TuneResult`), `pyquant/cli/app.py`, `pyproject.toml`
 
 Problem/Ask: PYQ-211 proposes `Tuner.lr_find` for the learning rate specifically. That is
 a reasonable narrow fix, but learning rate is one of at least six coupled knobs
@@ -2363,13 +2516,54 @@ Acceptance criteria: a `pyquant tune SYMBOL --trials N` command persisting an Op
 the winning config written as a YAML file in `configs/`; the reported figure comes from a
 period excluded from the search.
 
+Resolution: `tft.tune()` wraps pytorch-forecasting's `optimize_hyperparameters()` over
+`hidden_size`, `attention_head_size`, `dropout`, `hidden_continuous_size`,
+`learning_rate` and `gradient_clip_val`. Split geometry: the search trains and selects
+*entirely* within `df[time_idx < held_out_start]`; the final `held_out_days` of the panel
+are never in any trial's train or validation loader. The winning config is then retrained
+via the existing `train()` with `validation_days=held_out_days` on the *full* panel, so
+`train()`'s own last-N-days validation slice lands exactly on the region no trial saw —
+reusing the well-tested split logic rather than duplicating it. `pyquant tune SYMBOL
+--trials N` reports both numbers side by side, explicitly labelled, with a note that the
+in-search value is a selection-event score and the held-out numbers are the ones to trust.
+
+Two real dependency-chasing detours worth recording, since they're easy to hit again: (1)
+`optimize_hyperparameters()` unconditionally constructs a `TensorBoardLogger` — not
+optional despite not being passed through `trainer_kwargs` — so `tensorboard` is a genuine
+runtime requirement pytorch-forecasting's own `pip install optuna statsmodels` hint doesn't
+mention; without it the failure is a bare `ModuleNotFoundError` several frames inside the
+library. (2) It also unconditionally adds a `LearningRateMonitor` callback, which raises
+`MisconfigurationException` if the Trainer has no logger — so unlike every other Trainer in
+this file, `trainer_kwargs` here must *not* set `logger=False`. Both are noted inline at the
+call site so the next person doesn't rediscover them by traceback. The new `tuning` extra
+is `optuna`, `optuna-integration`, `statsmodels`, `tensorboard` — matching
+pytorch-forecasting's own `[tuning]` extra plus the undeclared `tensorboard` requirement.
+
+Optuna's own SQLite storage backend persists the study at
+`checkpoints/<SYMBOL>_TUNED/optuna_study.db` (`study_name` keyed to the bundle, `load_if_
+exists=True` so a second `tune` call resumes rather than restarting), giving the "persisted
+database of trials" the ask asks for without inventing a new storage format.
+
+Verified with a real (not mocked) 2-trial, 1-epoch run against a monkeypatched synthetic
+panel: produced real `best_params`, a real held-out `EvaluationMetrics`, a written+parseable
+YAML config, and a populated study database — see
+`test_tune_writes_a_config_and_scores_the_winner_on_a_held_out_split`. That test needs the
+`tuning` extra, which CI's default job does not install; it skips cleanly there via
+`pytest.importorskip`, the same disposition PYQ-308 already established for a real-FinBERT
+CI job (verify locally, don't gate CI on an optional extra). A separate test confirms a
+missing extra fails with a clear message naming the fix, not a bare traceback from inside
+pytorch-forecasting.
+
+Superseded PYQ-211 (learning-rate-only tuning) as that ticket's own updates anticipated.
+
 ---
 
 ## [PYQ-254]
 Promote options data from display context to model features
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
-Files: `pyquant/data/options.py`, `pyquant/data/dataset.py`, `pyquant/config.py`
+Files: `pyquant/data/options.py`, `pyquant/data/dataset.py`, `pyquant/config.py`,
+`pyquant/models/tft.py` (`_SCHEMA_DATA_FIELDS`), `pyquant/cli/app.py`
 
 Problem: `fetch_options_snapshot()` computes put/call ratio, ATM implied volatility and IV
 skew — genuinely forward-looking, market-priced expectations, and the only truly
@@ -2400,13 +2594,41 @@ Acceptance criteria: for route 1, a `snapshot` command with an append-only store
 join path in `build_panel` that activates once sufficient history exists; a test asserting
 the join respects observation time.
 
+Resolution: route 1 only, as the ticket recommends. `pyquant snapshot SYMBOL` appends one
+JSONL row per day to `Settings.options_history_dir` (a new, separately-anchored path —
+deliberately not under `data.cache_dir`, which is a TTL-pruned convenience rather than a
+permanent dataset). `load_snapshot_history()` returns empty (with the right columns, no
+special-casing needed downstream) until `MIN_SNAPSHOT_DAYS` (20) distinct days have
+accumulated. `build_panel` joins it exactly like PYQ-256 already handles sentiment's
+identical shape of problem: forward-filled onto the trading calendar, with a
+`has_options_history` indicator and a neutral (0.0) fill for the uncovered region — not the
+panel's generic `ffill()`+`dropna()`, which would otherwise drop nearly the *entire* training
+window down to whatever thin tail has coverage, since the history only ever grows forward
+from whenever `snapshot` was first run. The recorded date is the observation's own
+US/Eastern calendar date, so a join can never backfill a value onto a row before it existed
+(same discipline as PYQ-101/PYQ-129) — verified directly in
+`test_build_panel_joins_options_history_respecting_observation_time`, which asserts every
+row before the recorded date is neutral/unflagged and every row on-or-after carries the
+real value, with zero rows dropped.
+
+`use_options` (already existed, previously gated only the CLI's *display* snapshot) now also
+gates this join, and joined to `_SCHEMA_DATA_FIELDS` so `settings_for_bundle` restores it
+correctly at forecast/explain time (PYQ-119's mechanism) — a bundle trained with options
+history available must not silently lose those columns because a later `forecast` run's
+default toggle differs.
+
+Route 2 (sourcing historical IV from a paid vendor) is explicitly not pursued here, per the
+ticket's own sequencing — there is no accumulated data yet to weigh its cost against.
+
 ---
 
 ## [PYQ-255]
 Signal evaluation: does `scan`'s BUY/SELL actually make money?
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
-Files: `pyquant/cli/app.py` (`scan`), new `pyquant/analysis/signals.py`
+Files: `pyquant/cli/app.py` (`scan`, `backtest`), `pyquant/analysis/signals.py` (new),
+`pyquant/analysis/serialize.py`, `pyquant/models/tft.py` (`walk_forward_backtest`,
+`BacktestResult`)
 
 Problem: `scan` emits BUY / SELL / HOLD from a threshold on expected return plus a
 band-direction guard (PYQ-206, PYQ-124). Nothing anywhere evaluates whether following
@@ -2432,6 +2654,30 @@ so this ticket is only informative **after PYQ-248**.
 
 Acceptance criteria: `backtest --signals` reports hit rate, turnover and cost-adjusted P&L
 vs. buy-and-hold; unit tests for the P&L accounting on a hand-built signal series.
+
+Resolution: `analysis/signals.py` adds `classify_signal()` (the same BUY/SELL/HOLD logic
+`scan` used inline, extracted so the two cannot drift — `scan` now calls it directly) and
+`evaluate_signals()` (hit rate conditional on firing, average return per class, turnover,
+cost-adjusted cumulative P&L vs. buy-and-hold, via simple compounding). `walk_forward_
+backtest` gained an opt-in `compute_signals` flag (default off — it costs one extra forward
+pass per window) that records, per origin, the signal `scan` would have shown and the
+realized return; `backtest --signals` wires this through to both the Rich table and
+`--format json`, with `--cost-bps` (default 5) configurable.
+
+The two cautions the ticket flagged are carried forward rather than solved in code, since
+neither has a code fix: the module docstring states that tuning `classify_signal`'s
+threshold against the same data it's evaluated on is a selection event, and the CLI prints
+a note that the band guard needs PYQ-248's conformal calibration (implemented, off by
+default) to fire meaningfully against this project's current ~99% coverage on a nominal 80%
+band. `--signals` is therefore functional now but will mostly show all-HOLD, zero-trade
+output against an unmodified default config — expected, not a bug, and the printed note
+says so.
+
+Guarded by 11 unit tests in `test_signals.py` on hand-built series (conditional hit rate,
+cost-only-on-position-change, an oracle signal beating buy-and-hold) needing no training,
+plus `test_tft.py::test_walk_forward_backtest_computes_a_signal_per_window_when_requested`
+and two CLI tests (`--signals` reaches both Rich and JSON output; the flag is opt-in and the
+extra pass is skipped when absent).
 
 ---
 
@@ -2595,9 +2841,9 @@ and the contract are tested, the network round-trip is not.
 
 ## [PYQ-259]
 Experiment tracking (MLflow) alongside `runs.jsonl`
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
-Files: `pyquant/models/tft.py` (`train`), `pyproject.toml`
+Files: `scripts/runs.py` (new)
 
 Problem/Ask: `runs.jsonl` (PYQ-203) plus provenance (PYQ-225) plus pins (PYQ-205) is a
 genuinely thoughtful hand-rolled tracking system, and it should stay — it is
@@ -2619,6 +2865,36 @@ alternative of a `scripts/runs.py compare` reading `runs.jsonl` directly, which 
 
 Acceptance criteria: `MLFLOW_TRACKING_URI` set → runs appear with params and metrics;
 unset → no behaviour change and no import cost.
+
+Resolution: **built and evaluated both**, and the answer is the ticket's own suggested
+"no" — shipped `scripts/runs.py compare` (a real script now, not a hypothetical
+alternative), declined the `mlflow` extra.
+
+`scripts/runs.py` globs every `checkpoints/*/runs.jsonl` (each bundle keeps its own, so a
+cross-bundle comparison needs exactly this), parses each recorded run, and prints one
+sortable table (`--sort-by skill|val_loss|trained_at`, `--symbol` filter, `--top N`). 114
+lines, zero new dependencies, reads `runs.jsonl` directly rather than a parallel tracking
+store that could drift from it. Run for real against this session's accumulated bundles (12
+runs across AAPL/ARM/NVO/pooled/solo variants, spanning three git shas) — output sorted
+cleanly by skill, immediately surfaced that the two-epoch `AAPL` smoke-test bundle from
+PYQ-319's profiling run was the worst of the twelve (`-4.315`), which is exactly the
+"what did my runs have in common" question the ticket asks for.
+
+Why this, not MLflow: `mlflow`'s local-file-backend mode avoids running a server, but the
+*comparison UI* — the ticket's own stated "entire point" of adopting it — needs `mlflow ui`
+running as a separate process either way, and the package itself pulls in Flask,
+SQLAlchemy, alembic and several more transitive dependencies for functionality (a web UI,
+a model registry, artifact stores) this project does not use. Against that, a 94-line
+script reading the existing source of truth costs nothing and cannot drift from it by
+construction. This is the same disposition PYQ-310 reached for mypy: a tool must earn its
+place against doing nothing, and here "doing nothing" (extending the existing `runs.jsonl`
+reader) both works today and costs less than the alternative.
+
+Not closed forever: if PYQ-253's Optuna search actually produces the "hundreds of runs" the
+ticket anticipates and a text table genuinely stops being enough — visual comparison across
+many correlated hyperparameters is a real UI problem a table doesn't solve well — that
+would be the evidence-based trigger to revisit MLflow, per non-negotiable #5. Nothing
+observed yet justifies it.
 
 ---
 
@@ -2652,9 +2928,11 @@ compliance is the marker's presence in the distribution, and that is what was ve
 
 ## [PYQ-261]
 Scaffold `pyquant/api/` per the PYQ-213 design note
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: Medium
-Files: new `pyquant/api/`, `pyproject.toml`
+Files: new `pyquant/api/` (`app.py`, `schemas.py`, `deps.py`, `jobs.py`,
+`routes/{health,forecast,explain,train}.py`), `pyquant/analysis/serialize.py`
+(`scan_row_to_dict`, new), `pyquant/cli/app.py` (`scan` now calls it), `pyproject.toml`
 
 Problem/Ask: PYQ-213 delivered its stated deliverable — a design note — and closed
 correctly. The implementation follow-up it names has no ticket, so it is currently
@@ -2676,6 +2954,57 @@ object storage — and file the follow-ups it lists rather than pre-building the
 Acceptance criteria: `uvicorn pyquant.api.app:app` serves the endpoints; response schemas
 match the CLI's `--format json` payloads field-for-field (assert this in a test, so the two
 front-ends cannot drift); concurrent requests against one bundle are serialised.
+
+Resolution: built exactly the v1 surface the note specifies, stopping exactly where it says
+to stop — no queue, no object storage, no rate-limiting beyond the auth gate. `GET
+/healthz`, `GET /forecast/{symbol}`, `POST /scan`, `GET /explain/{symbol}`, `POST /train` →
+202 + job id, `GET /train/{job_id}`.
+
+Response models are thin pydantic wrappers constructed directly from `analysis/
+serialize.py`'s existing dict functions (`ForecastResponse(**serialize.forecast_to_dict(fc))`,
+same for explain/train), per the note's own recommended path — this is what makes the
+acceptance criterion's field-for-field parity true *by construction*: the API and the CLI's
+`--format json` call the identical conversion code, not two independently-typed schemas that
+happen to agree today. `scan`'s row-building was inline in `cli/app.py` before this ticket
+(not behind a serializer) — extracted to `serialize.scan_row_to_dict()` so `/scan` could
+reuse it too, the same move PYQ-255 made for `classify_signal`.
+`test_forecast_response_matches_the_cli_format_json_field_for_field` drives both front-ends
+from one mocked `Forecast` and asserts the two JSON payloads are equal, not just
+same-shaped.
+
+Concurrency, per the note's #4: a per-bundle `threading.Lock` (created lazily, one per
+bundle name) serializes `predict()` calls against a given loaded model without blocking
+requests for *different* bundles, plus an LRU `BundleCache` (bounded, default 8) so a
+request doesn't re-pay checkpoint deserialization and the `weights_only=False` unpickle
+every time. `test_forecast_serializes_concurrent_requests_against_the_same_bundle` proves
+the lock actually serializes: two real threads hit `/forecast/AAPL` concurrently against a
+mocked `generate_forecast` that records its own start/end timestamps, and the test asserts
+the two spans never overlap.
+
+Auth is the one place this deviated from a literal reading of "keys from config/secret
+store": `PYQUANT_API_KEYS` is read from the environment directly, not `Settings`, so a key
+can never end up serialized into `meta.json`/a log/a response the way a `Settings` field
+could — consistent with this project's secrets non-negotiable. It also fails **loudly**
+(500, naming the fix) when unconfigured rather than silently allowing every request through
+— an unconfigured gate defaulting to open would be exactly the "public endpoint spends the
+operator's quota" risk §5 warns about. `PYQUANT_API_ALLOW_UNAUTHENTICATED=1` is the explicit
+local-dev opt-out.
+
+Two things the note flags as prerequisites were already satisfied and re-verified rather
+than assumed: PYQ-220 (absolute `checkpoint_dir`/`cache_dir`) landed previously, and
+`bundle_dir`/`cache_dir` were confirmed absolute in this pass; PYQ-212's serializers already
+existed and needed no changes beyond the one extraction above.
+
+New `api` extra (`fastapi`, `uvicorn[standard]`), matching the note's own suggested
+pin. Verified against a *real* running server, not only `TestClient`: `uv run uvicorn
+pyquant.api.app:app` started cleanly and `curl`'d `/healthz` (200), `/docs` (200, the
+auto-generated OpenAPI UI), and an unauthenticated `/forecast/AAPL` (500, the
+unconfigured-auth-gate path) all behaved as designed. 15 tests in `test_api.py`, plus the
+`scan` refactor re-verified against the existing CLI `scan` tests.
+
+Deliberately not built, per the note's own stopping point: object-storage bundle backend,
+a real job queue (arq/Celery+Redis), and rate-limiting beyond the auth gate. All three
+remain named follow-ups in `docs/api-design.md`, not silently dropped.
 
 ---
 
@@ -2768,3 +3097,100 @@ and the suite must not answer differently on a machine that happens to have keys
 
 Verified live against this checkout: two real bundles (AAPL 25 features, NVO 27) both
 reported usable.
+
+---
+
+## [PYQ-264]
+Fold PYQ-247/248/250 into the docs; deploy to GitHub Pages; nightly docs-drift check
+Status: Resolved (pending, 2026-07-27)
+Priority: Medium
+Files: `docs/methodology.md`, `docs/index.md`, `docs/api/index.md`, `docs/architecture.md`,
+`.github/workflows/docs.yml` (new), `.github/workflows/nightly.yml`, `README.md`
+
+Problem: two known gaps, one already flagged in the backlog and one not. First,
+PYQ-235's own resolution note says so explicitly: `methodology.md` was written against
+commit `a7a2b5f`, before PYQ-247 (log-return target), PYQ-248 (conformal calibration) and
+PYQ-250 (purge/embargo) landed, and its "In flight" section still describes all three as
+pending. A reader hitting that page today gets the project's *previous* headline number
+with no sign the log-return finding exists. Second, the API reference (PYQ-232) predates
+this session's new modules (`analysis/signals.py`, `analysis/doctor.py`, `data/providers.py`,
+the whole `pyquant/api/` package) and does not list them. Neither gap is hypothetical: both
+are "the docs describe an earlier version of the code," the same class of problem PYQ-140
+found for a vendor docstring.
+
+Separately: the docs build cleanly (PYQ-233) and a `.readthedocs.yaml` exists (PYQ-234), but
+no hosted site is actually reachable — PYQ-234's own resolution note says plainly that no
+Read the Docs project is connected. Requested directly: get a working public URL via GitHub
+Pages instead, and add a nightly job that rebuilds the docs on a schedule independent of any
+code change, so an upstream intersphinx inventory change (pandas/torch/pytorch-forecasting
+renaming or moving a symbol this project links to) is caught as a notification rather than
+discovered by a reader clicking a dead link.
+
+Resolution:
+
+**Content.** `methodology.md`'s headline box now states both configurations side by side —
+the default (`target="close"`, −23.5% skill / 57.5% dir. acc. / 99.3% coverage, 280
+points) and PYQ-247's `log_return` comparison (+2.4%/+3.8% purged, 52–56% dir. acc.,
+76–80% coverage, effective n≈5) — rather than the default alone with the log-return finding
+absent. The old "In flight" section (describing PYQ-247/248/250 as not-yet-landed) is now
+"Landed since this page was first written," stating each one's actual measured effect,
+including the one surprising correction: PYQ-250's purge/embargo is *always on* by default
+now (not opt-in), so it is folded into every number on the page already, not a future
+change. A new "related open questions" section links PYQ-314/315/316's findings (weak
+`explain` agreement beyond the top feature, pooling measured worse, sentiment measured
+worse) as the same discipline applied elsewhere.
+
+One more number earned its own section rather than a table edit: a fresh
+`pyquant backtest NVO --windows 5` at the *same default config*, run for this page
+(2026-07-27, git `90afcf8`), scores **+36.2% skill** — better than −23.5%, and deliberately
+**not** substituted into the headline table, because it is not the same measurement.
+`train`'s 280-point figure scores one model's validation holdout; `backtest --windows 5`
+trains five independent models and scores each on only its own 5-day horizon (25 points,
+`effective_n_samples = 1`). Per-window results (+55.7%, −24.3%, +33.7%, +25.0%, +52.1%) are
+published alongside the aggregate specifically so the instability is visible rather than
+smoothed away by one summary number — four positive origins outweighing one negative one is
+a different claim than "the model works," and the page says so explicitly. This is the
+{ref}`negative-result`/`non-negotiable #1` discipline applied to a result that would have
+been easy to quietly prefer.
+
+`architecture.md` gained an `api/` entry in "what each layer owns," `api/` in the two
+structural rules, and a rewrite of the options-data section (previously unconditionally
+"display-only," now describing PYQ-254's accumulation path). `api/index.md` gained
+`pyquant.data.providers`, `pyquant.analysis.doctor`, `pyquant.analysis.signals`, and a new
+"API service" section for all of `pyquant.api.*`.
+
+**A real dependency gap this surfaced:** `pyquant/api/{app,deps,routes/*}.py` import
+`fastapi` at module level, and Sphinx's autodoc genuinely imports every module it
+documents — so `--group docs` alone (no `api` extra) fails the `-W` gate on a missing
+dependency, not a real docs defect. Fixed in three places that all build the same docs:
+`.readthedocs.yaml`, `ci.yml`'s docs-build step, and the new `docs.yml` all now install
+`--group docs --extra api` together. Caught by actually rebuilding from a clean
+`docs/_build/` + `docs/api/_generated/` locally before trusting any of this, not assumed.
+
+**GitHub Pages.** New `.github/workflows/docs.yml`: builds under the same `-W --keep-going`
+gate as `ci.yml` (it re-publishes the already-gated tree, it does not re-decide whether the
+build is clean), uploads via `actions/upload-pages-artifact`, deploys via
+`actions/deploy-pages` with `concurrency: cancel-in-progress` so a second push does not race
+a build still in flight. Triggered on push to `main` (path-filtered to what can actually
+change the rendered output) plus manual dispatch. Live at
+`https://axelsuu.github.io/Pytorch-Quant-Model/` once the workflow's first run completes and
+Pages is enabled on the repository (a one-time repository-settings step outside this
+session's reach — recorded plainly, matching PYQ-234's own precedent for the equivalent RTD
+gap, rather than claimed without being verifiable from here).
+
+**Nightly docs-drift.** `nightly.yml` gained a `docs-drift` job alongside the existing
+vendor `smoke` job, same philosophy stated once at the top of the file: a notification, not
+a merge gate. It rebuilds with `-E` (discard the cached environment, forcing a genuine
+re-fetch of every intersphinx inventory) so a pandas/numpy/torch/pytorch-forecasting/
+pydantic rename is caught independent of any commit in this repository, on the same daily
+schedule as the vendor check.
+
+`README.md`: docs link replaced with the live Pages URL plus Docs/Nightly badges alongside
+the existing CI badge; commands table gained `tune`, `snapshot` and `doctor`, all missing
+from a previous pass; both docs-build invocations updated to `--group docs --extra api`.
+
+Verified: `sphinx-build -W --keep-going` exits 0 from a clean `docs/_build/` +
+`docs/api/_generated/` after every content change in this ticket (four rebuilds, the last
+one clean); all three workflow YAML files parse; `scripts/backlog.py check` clean.
+
+---

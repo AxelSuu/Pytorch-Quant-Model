@@ -6,8 +6,14 @@ aggregate per day. Both the ``FINNHUB_API_KEY`` and the optional ``transformers`
 dependency are required; if either is missing the feature degrades gracefully
 to an empty frame.
 
-Note: Finnhub's free tier serves roughly the last year of news, so older dates
-in the panel get neutral (0) sentiment after the join.
+**Coverage (PYQ-140).** Finnhub's free tier ignores the ``from`` parameter entirely and
+always returns the same recent slice -- measured at ~6 distinct days of headlines,
+regardless of whether the requested window is one week or five years back. At the
+default ``DataConfig.period="5y"`` this makes ``Sentiment``/``HeadlineCount`` a
+structural zero for ~99.7% of training rows (see investigations.md#pyq-301), and the
+handful of non-zero rows sit at the *end* of the panel -- exactly where the prediction
+encoder reads. This module does not deliver a year of history on the free tier this
+project is built against; do not assume it does.
 
 **Publication timing (PYQ-129).** Headlines are bucketed by the session that can
 first act on them, not by the UTC calendar date they were published in. This is
@@ -32,7 +38,9 @@ logger = logging.getLogger(__name__)
 
 SENTIMENT_COLUMNS = ["Sentiment", "HeadlineCount"]
 _FINNHUB_NEWS_URL = "https://finnhub.io/api/v1/company-news"
-_MAX_HISTORY_DAYS = 365  # free-tier news horizon
+_MAX_HISTORY_DAYS = 365  # requested window when `start` is omitted -- the free tier
+# ignores this and returns ~6 days regardless of what's asked for (PYQ-140); kept as
+# the honest ask in case a paid tier ever honors it.
 
 # The exchange whose close decides which session a headline belongs to. US
 # equities close at 16:00 America/New_York; ZoneInfo handles EST/EDT so the

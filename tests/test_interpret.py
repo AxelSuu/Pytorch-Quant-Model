@@ -82,3 +82,34 @@ def test_explain_forecast_rebuilds_the_panel_with_the_bundles_recorded_config(
     interp_mod.explain_forecast("test", settings, bundle=FakeBundle())
 
     assert seen["use_sectors"] is False
+
+
+def test_explain_forecast_records_the_bundles_skill_vs_baseline(monkeypatch, sample_ohlcv_df):
+    """PYQ-314: skill_vs_baseline is a @property on EvaluationMetrics, not a stored
+    field, so it is never actually present in meta["evaluation"] -- explain_forecast
+    must recompute it from the two fields that are recorded, not index for it.
+    """
+    from pyquant.data.prices import add_technical_indicators
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(interp_mod, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(interp_mod, "panel_to_long", lambda p, s: p)
+    monkeypatch.setattr(
+        interp_mod.tft,
+        "interpret",
+        lambda bundle, df: {"encoder_importance": {"RSI_14": 1.0}, "attention": np.array([1.0])},
+    )
+
+    class FakeBundle:
+        meta = {"evaluation": {"model_mae": 3.0, "baseline_mae": 4.0}}  # skill = 0.25
+
+    result = interp_mod.explain_forecast("test", object(), bundle=FakeBundle())
+
+    assert result.bundle_skill == 0.25
+
+
+def test_explain_forecast_leaves_bundle_skill_none_without_a_recorded_evaluation():
+    class FakeBundle:
+        meta: dict = {}
+
+    assert interp_mod._bundle_skill(FakeBundle()) is None

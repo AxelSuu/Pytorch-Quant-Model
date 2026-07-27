@@ -28,10 +28,35 @@ class Interpretation:
     feature_importance: dict[str, float]  # feature -> normalised weight
     attention: np.ndarray  # attention weight per past time step (oldest..newest)
     panel_index: pd.DatetimeIndex  # dates of the panel this interpretation was computed from
+    # The bundle's own recorded skill_vs_baseline (None if the bundle predates
+    # evaluation being recorded). An interpretation of a model that does not
+    # outperform persistence describes what the model attends to, not what moves
+    # the price (investigations.md#pyq-314) -- carried here so every consumer
+    # (CLI, --format json, a future API) can show that caveat next to the
+    # numbers it qualifies, rather than presenting them with equal confidence
+    # regardless of whether the bundle is any good.
+    bundle_skill: float | None = None
 
     def top_features(self, n: int = 10) -> list[tuple[str, float]]:
         """Return the ``n`` highest-weighted features as ``(name, weight)``, descending."""
         return sorted(self.feature_importance.items(), key=lambda kv: kv[1], reverse=True)[:n]
+
+
+def _bundle_skill(bundle: tft.ModelBundle) -> float | None:
+    """Recompute skill_vs_baseline from the bundle's recorded evaluation.
+
+    Not read directly off meta.json: EvaluationMetrics.skill_vs_baseline is a
+    @property, not a dataclass field, so it was never serialised into
+    meta["evaluation"] in the first place (only vars(evaluation)'s actual fields
+    were). Recomputed from the two fields that are recorded, the same formula the
+    property itself uses.
+    """
+    ev = bundle.meta.get("evaluation") or {}
+    baseline_mae = ev.get("baseline_mae")
+    model_mae = ev.get("model_mae")
+    if not baseline_mae:
+        return None
+    return (baseline_mae - model_mae) / baseline_mae
 
 
 def explain_forecast(
@@ -57,6 +82,7 @@ def explain_forecast(
         feature_importance=result["encoder_importance"],
         attention=attention,
         panel_index=panel.index,
+        bundle_skill=_bundle_skill(bundle),
     )
 
 

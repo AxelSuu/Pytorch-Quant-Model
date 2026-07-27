@@ -1,25 +1,49 @@
-"""Options-implied market context (current snapshot).
+"""Options-implied market context: a current snapshot, plus an accumulating history.
 
-IMPORTANT: Yahoo Finance only exposes the *current* option chain, not history.
-So options features here are a point-in-time market-sentiment snapshot
-(put/call ratio, ATM implied vol, IV skew) used as CLI context for `forecast`
-and `scan` — they are NOT fed to the TFT as time-varying inputs, because a
-constant/lookahead value would carry no historical signal. The model's
-volatility signal comes from the historical ``Realized_Vol_20`` feature in
-:mod:`pyquant.data.prices`.
+IMPORTANT: Yahoo Finance only exposes the *current* option chain, not history. So
+``fetch_options_snapshot`` is a point-in-time market-sentiment reading used as CLI
+context for `forecast`/`scan` — on its own it is NOT fed to the TFT as a
+time-varying input, because a constant/lookahead value would carry no historical
+signal. The model's volatility signal comes from the historical
+``Realized_Vol_20`` feature in :mod:`pyquant.data.prices`.
+
+``append_snapshot``/``load_snapshot_history`` are PYQ-254's route out of that
+limitation: since there is no way to *fetch* a historical options-implied series,
+the only way to ever have one is to start *recording* today's snapshot every day,
+from today. Useless on day one; a genuinely proprietary dataset after enough days
+accumulate. Same publication-timing discipline as PYQ-101/PYQ-129 applies: a
+snapshot is recorded under the date it was actually observed (US/Eastern), so
+``build_panel`` can only ever join it onto that day's row or later.
 """
 
 from __future__ import annotations
 
+import datetime as dt
+import json
 import logging
 from dataclasses import dataclass
+from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import numpy as np
+import pandas as pd
 import yfinance as yf
 
 from pyquant.data.prices import AUTO_ADJUST
 
 logger = logging.getLogger(__name__)
+
+_EXCHANGE_TZ = ZoneInfo("America/New_York")
+
+# Columns load_snapshot_history() produces once it has enough history to be useful.
+SNAPSHOT_COLUMNS = ["OptionsPutCallRatio", "OptionsATMIV", "OptionsIVSkew"]
+
+# Below this many distinct recorded days, the accumulated history is too sparse to
+# be a meaningful per-day feature -- nearly every training row would be
+# structurally missing it, the same trap PYQ-140 found for sentiment at the
+# vendor's own free-tier coverage limit. Skipped with a logged notice rather than
+# joined as a nearly-empty column.
+MIN_SNAPSHOT_DAYS = 20
 
 
 @dataclass
@@ -98,3 +122,68 @@ def fetch_options_snapshot(symbol: str) -> OptionsSnapshot:
     except Exception as exc:
         logger.warning("Could not fetch options snapshot for %s: %s", symbol, exc)
         return empty
+
+
+def append_snapshot(symbol: str, settings) -> Path:
+    """Fetch today's snapshot and append it to ``symbol``'s accumulated history.
+
+    Written to ``settings.options_history_dir / f"{symbol}.jsonl"`` (PYQ-254).
+    ``settings`` is typed loosely (not ``pyquant.config.Settings``) to avoid a
+    circular import; any object with an ``options_history_dir`` path attribute
+    works. The recorded ``date`` is the US/Eastern calendar date the snapshot was
+    actually observed on, so a later join can never backfill it onto an earlier
+    row (the same discipline PYQ-101/PYQ-129 apply to macro/sentiment).
+    """
+    symbol = symbol.upper()
+    snap = fetch_options_snapshot(symbol)
+    path = Path(settings.options_history_dir) / f"{symbol}.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    now_et = dt.datetime.now(dt.timezone.utc).astimezone(_EXCHANGE_TZ)
+    row = {
+        "date": now_et.date().isoformat(),
+        "observed_at": now_et.isoformat(timespec="seconds"),
+        "put_call_ratio": snap.put_call_ratio,
+        "atm_iv": snap.atm_iv,
+        "iv_skew": snap.iv_skew,
+        "expiry": snap.expiry,
+    }
+    with path.open("a") as f:
+        f.write(json.dumps(row) + "\n")
+    return path
+
+
+def load_snapshot_history(symbol: str, settings) -> pd.DataFrame:
+    """Return ``symbol``'s accumulated snapshot history as a date-indexed frame.
+
+    Empty (with ``SNAPSHOT_COLUMNS``, so callers need no special case) until at
+    least ``MIN_SNAPSHOT_DAYS`` distinct days have been recorded -- before that,
+    the feature would be structurally missing from nearly every training row.
+    """
+    symbol = symbol.upper()
+    path = Path(settings.options_history_dir) / f"{symbol}.jsonl"
+    empty = pd.DataFrame(columns=SNAPSHOT_COLUMNS, dtype=float)
+    if not path.exists():
+        return empty
+
+    lines = [line for line in path.read_text().splitlines() if line.strip()]
+    if not lines:
+        return empty
+    rows = [json.loads(line) for line in lines]
+
+    df = pd.DataFrame(rows)
+    df["Date"] = pd.to_datetime(df["date"])
+    # The same day recorded more than once (re-running `snapshot`): keep the
+    # latest observation rather than averaging or taking the first.
+    df = df.sort_values("observed_at").drop_duplicates("Date", keep="last")
+    df = df.set_index("Date").sort_index()
+    if df.index.nunique() < MIN_SNAPSHOT_DAYS:
+        return empty
+
+    out = pd.DataFrame(
+        {
+            "OptionsPutCallRatio": df["put_call_ratio"],
+            "OptionsATMIV": df["atm_iv"],
+            "OptionsIVSkew": df["iv_skew"],
+        }
+    )
+    return out.astype(float)

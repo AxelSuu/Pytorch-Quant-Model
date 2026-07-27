@@ -70,8 +70,13 @@ jobs:
         #
         # Only on 3.12: the docs group resolves the same way on every matrix leg,
         # so building it three times costs ~2 minutes to re-prove one fact.
+        #
+        # --extra api alongside --group docs: pyquant/api/{app,deps,routes/*}.py
+        # import fastapi at module level, autodoc imports every module it
+        # documents, and this step runs under -W -- omitting the extra fails
+        # the build on a missing dependency, not a real docs defect (PYQ-264).
         if: matrix.python-version == '3.12'
-        run: uv run --group docs sphinx-build -W --keep-going -b html docs docs/_build/html
+        run: uv run --group docs --extra api sphinx-build -W --keep-going -b html docs docs/_build/html
 
       - name: Backlog consistency
         # Cheap, dependency-free guard against duplicate/out-of-range IDs and

@@ -44,7 +44,7 @@ Next free ID: **PYQ-141**.
 | [PYQ-137](#pyq-137) | Low | Resolved | EMA seed bias survives `min_periods`: the first surviving panel rows are still ~0.08% off |
 | [PYQ-138](#pyq-138) | Low | Resolved | CLI output tests assert on ANSI-coloured stdout, so they pass or fail by ambient terminal |
 | [PYQ-139](#pyq-139) | Critical | Resolved | PYQ-257's vintage fetch fails against the live FRED API: every FRED macro feature silently vanished |
-| [PYQ-140](#pyq-140) | High | Open | Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros |
+| [PYQ-140](#pyq-140) | High | Resolved | Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros |
 
 ---
 
@@ -1927,7 +1927,7 @@ that the integration worked; see also features.md#pyq-243, which this promotes f
 
 ## [PYQ-140]
 Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros
-Status: Open
+Status: Resolved (pending, 2026-07-27)
 Priority: High
 Files: `pyquant/data/sentiment.py` (module docstring, `fetch_news`), `pyquant/data/dataset.py`
 
@@ -1985,4 +1985,29 @@ indicator that makes either arm measurable); or pricing a paid tier / alternativ
 (features.md#pyq-214, #pyq-258). The decision needs a backtest arm, not an opinion.
 
 Acceptance criteria: the docstring states the measured coverage; a decision recorded here
+
+Resolution: docstring corrected immediately (`sentiment.py`'s module docstring and the
+`_MAX_HISTORY_DAYS` comment now state the measured ~6-day reality and cross-reference this
+ticket, rather than the vendor's advertised-but-undelivered ~365 days).
+
+The policy decision waited for investigations.md#pyq-316's feature-group ablation, which is
+the backtest arm this ticket asked for rather than an opinion: adding sentiment on top of
+price+technicals+macro+sectors moved measured skill from **+0.0453 to +0.0177** on one
+AAPL walk-forward run (3 windows, 15 points) — sentiment made the result *worse*, not
+neutral, undoing more than half of the previous arm's gain. That is independent, converging
+evidence for the mechanism this ticket already established (Sentiment is a
+near-constant-zero column carrying a train/serve shift concentrated exactly where the
+prediction encoder reads).
+
+**Decision: keep `DataConfig.use_sentiment=True` as the default, do not flip it in this
+pass.** This is the same restraint investigations.md#pyq-312/PYQ-247 already established for
+a comparably-sized result: one symbol, 15 points, one run is not this project's bar for
+changing every user's default, however clean the mechanism looks. What this ticket *does*
+close: the docstring is fixed (the acceptance criteria's first half, unconditionally
+correct regardless of what happens to the default), and the decision is now a recorded,
+evidence-backed recommendation — disable sentiment by default, or gate it on
+`has_sentiment_data` coverage — pending the multi-symbol repeat already on the backlog's
+`## Now` list. Filed as a recommendation attached to existing follow-up work rather than a
+new ticket, since it is the same "needs more than one symbol" gate as PYQ-247's own default
+change.
 with a backtest comparing sentiment-on vs sentiment-off on equal footing.

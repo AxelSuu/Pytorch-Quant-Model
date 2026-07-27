@@ -1,0 +1,69 @@
+{
+  "yfinance_prices_aapl.pkl": {
+    "recorded_at": "2026-07-27T20:34:10",
+    "vendor": "yfinance",
+    "library_version": "1.4.1",
+    "symbol": "AAPL",
+    "rows": 62,
+    "columns": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ]
+  },
+  "yfinance_vix.pkl": {
+    "recorded_at": "2026-07-27T20:34:10",
+    "vendor": "yfinance",
+    "library_version": "1.4.1",
+    "symbol": "^VIX",
+    "rows": 63,
+    "columns": [
+      "Open",
+      "High",
+      "Low",
+      "Close",
+      "Volume",
+      "Dividends",
+      "Stock Splits"
+    ]
+  },
+  "yfinance_sectors.pkl": {
+    "recorded_at": "2026-07-27T20:34:10",
+    "vendor": "yfinance",
+    "library_version": "1.4.1",
+    "symbols": [
+      "XLK",
+      "SPY"
+    ],
+    "rows": 62
+  },
+  "yfinance_options_aapl.pkl": {
+    "recorded_at": "2026-07-27T20:34:11",
+    "vendor": "yfinance",
+    "library_version": "1.4.1",
+    "symbol": "AAPL",
+    "expiry": "2026-07-27",
+    "n_calls": 46,
+    "n_puts": 39
+  },
+  "fred_dff.json": {
+    "recorded_at": "2026-07-27T20:34:16",
+    "vendor": "FRED (fredapi)",
+    "library_version": "0.5.2",
+    "series_id": "DFF",
+    "rows": 90,
+    "note": "trimmed to reference dates within 90 days of the latest realtime_start (see script)"
+  },
+  "finnhub_news_aapl.json": {
+    "recorded_at": "2026-07-27T20:34:16",
+    "vendor": "Finnhub",
+    "library_version": "REST v1 (requests)",
+    "symbol": "AAPL",
+    "rows": 247,
+    "note": "headline/summary/url/image text sanitized"
+  }
+}

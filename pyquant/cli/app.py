@@ -17,10 +17,11 @@ from pyquant.analysis import serialize
 from pyquant.analysis.forecast import Forecast, generate_forecast
 from pyquant.analysis.interpret import attention_to_series, explain_forecast
 from pyquant.analysis.metrics import moving_block_bootstrap_interval
+from pyquant.analysis.signals import evaluate_signals
 from pyquant.cli import charts
 from pyquant.config import Settings, load_settings
 from pyquant.data import cache as data_cache
-from pyquant.data.options import OptionsSnapshot, fetch_options_snapshot
+from pyquant.data.options import OptionsSnapshot, append_snapshot, fetch_options_snapshot
 from pyquant.models import tft
 
 app = typer.Typer(
@@ -284,6 +285,12 @@ def backtest(
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
     no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+    signals: bool = typer.Option(
+        False,
+        "--signals",
+        help="Also score scan()'s BUY/SELL/HOLD signal: hit rate, turnover, P&L vs. buy-and-hold",
+    ),
+    cost_bps: float = typer.Option(5.0, help="Per-trade round-trip cost in basis points, with --signals"),
 ):
     """Walk-forward backtest SYMBOL across multiple rolling origins."""
     try:
@@ -294,7 +301,12 @@ def backtest(
     def _run():
         """Run the backtest; a closure so it can be called with or without the spinner."""
         return tft.walk_forward_backtest(
-            symbol, settings, n_windows=windows, max_epochs=epochs, progress=False
+            symbol,
+            settings,
+            n_windows=windows,
+            max_epochs=epochs,
+            progress=False,
+            compute_signals=signals,
         )
 
     try:
@@ -307,8 +319,17 @@ def backtest(
     except EXPECTED_FAILURES as exc:
         _fail(exc)
 
+    signal_eval = (
+        evaluate_signals(result.signals, result.signal_returns_pct, cost_bps=cost_bps)
+        if signals
+        else None
+    )
+
     if _output.json:
-        _emit_json(serialize.backtest_to_dict(result))
+        data = serialize.backtest_to_dict(result)
+        if signal_eval is not None:
+            data["signal_evaluation"] = serialize.signal_evaluation_to_dict(signal_eval)
+        _emit_json(data)
         return
 
     table = Table(
@@ -326,6 +347,103 @@ def backtest(
     console.print(table)
     if len(result.per_window) > 1:
         console.print(_per_window_table(result, settings.tft.quantiles))
+
+    if signal_eval is not None:
+        sig_table = Table(title="Signal evaluation (scan's BUY/SELL/HOLD)", show_header=False)
+        sig_table.add_row("Signals", f"{signal_eval.n_buy} BUY / {signal_eval.n_sell} SELL / {signal_eval.n_hold} HOLD")
+        sig_table.add_row(
+            "Hit rate, conditional on firing",
+            f"BUY {signal_eval.hit_rate_buy:.1%}  SELL {signal_eval.hit_rate_sell:.1%}",
+        )
+        sig_table.add_row(
+            "Avg. return when fired",
+            f"BUY {signal_eval.avg_return_buy_pct:+.2f}%  SELL {signal_eval.avg_return_sell_pct:+.2f}%",
+        )
+        sig_table.add_row("Turnover", f"{signal_eval.turnover:.1%}")
+        sig_table.add_row(f"Strategy P&L (cost {cost_bps:.0f}bps/trade)", f"{signal_eval.strategy_pnl_pct:+.2f}%")
+        sig_table.add_row("Buy-and-hold P&L, same period", f"{signal_eval.buy_and_hold_pnl_pct:+.2f}%")
+        console.print(sig_table)
+        console.print(
+            "[dim]Note: thresholds tuned on this same data are a selection event; "
+            "the band guard rarely fires without conformal calibration on "
+            "(PYQ-248 default is off).[/dim]"
+        )
+
+
+@app.command()
+def tune(
+    symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
+    trials: int = typer.Option(15, "--trials", help="Number of Optuna trials"),
+    held_out_days: int = typer.Option(
+        None, help="Days reserved for the honest final score (default: TrainingConfig.validation_days)"
+    ),
+    epochs: int = typer.Option(5, help="Max epochs per trial and for the final retrain"),
+    config: Path = typer.Option(
+        None, "--config", help="YAML experiment config (see configs/); CLI flags still win"
+    ),
+    period: str = typer.Option(None, help="History to pull, e.g. 5y, 10y"),
+    no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
+    no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
+    no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+):
+    """Optuna hyperparameter search for SYMBOL (PYQ-253); writes the winner to configs/.
+
+    Every trial selects on the same data, so the winning configuration is retrained
+    and scored on a held-out period no trial ever saw -- report that number, not
+    the in-search validation loss, which is optimistically biased.
+    """
+    try:
+        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
+
+    def _run():
+        return tft.tune(
+            symbol,
+            settings,
+            n_trials=trials,
+            held_out_days=held_out_days,
+            max_epochs=epochs,
+            progress=not _output.quiet,
+        )
+
+    try:
+        if _output.quiet:
+            result = _run()
+        else:
+            console.print(f"[bold cyan]Optuna search for {symbol.upper()}: {trials} trial(s)[/bold cyan]")
+            result = _run()
+    except (*EXPECTED_FAILURES, ImportError) as exc:
+        _fail(exc)
+
+    if _output.json:
+        _emit_json(
+            {
+                "symbol": result.symbol,
+                "n_trials": result.n_trials,
+                "best_params": result.best_params,
+                "best_value": result.best_value,
+                "held_out_evaluation": serialize.evaluation_to_dict(result.held_out_evaluation),
+                "config_path": str(result.config_path),
+            }
+        )
+        return
+
+    table = Table(title=f"Optuna search complete — {result.symbol}", show_header=False)
+    table.add_row("Trials", str(result.n_trials))
+    table.add_row("Best in-search value (val_loss)", f"{result.best_value:.5f}")
+    for name, value in result.best_params.items():
+        table.add_row(f"  {name}", f"{value:.4g}" if isinstance(value, float) else str(value))
+    table.add_row("Config written to", str(result.config_path))
+    console.print(table)
+    console.print("[bold]Held-out evaluation (data no trial saw):[/bold]")
+    held_out_table = Table(show_header=False)
+    _add_metric_rows(held_out_table, result.held_out_evaluation, settings.tft.quantiles)
+    console.print(held_out_table)
+    console.print(
+        "[dim]Note: the in-search value above is a selection-event score, not this "
+        "model's real performance -- the held-out numbers are the ones to trust.[/dim]"
+    )
 
 
 def _forecast_table(fc: Forecast) -> Table:
@@ -452,6 +570,16 @@ def explain(
     console.print(
         f"[dim]Peak attention on {peak.date()} ({att.max() / att.sum():.0%} of focus)[/dim]"
     )
+    # An interpretation of a model that does not beat persistence describes what
+    # it attends to, not what moves the price (investigations.md#pyq-314) -- and
+    # a reader will not naturally draw that distinction from the table alone.
+    if interp.bundle_skill is not None and interp.bundle_skill <= 0:
+        console.print(
+            f"[yellow]Note:[/yellow] this bundle's skill vs. persistence is "
+            f"{interp.bundle_skill:+.1%} — at or below the naive baseline. The "
+            "importances above describe what the model attends to, not "
+            "necessarily what moves the price."
+        )
 
     if not no_chart and not _output.quiet:
         charts.importance_chart(interp.top_features(top))
@@ -479,32 +607,10 @@ def scan(
             logger.warning("Could not forecast %s: %s", ticker, exc)
             rows.append({"symbol": ticker, "status": "error", "error": str(exc)})
             continue
-        pct = fc.expected_return_pct()
-        lo = fc.quantile_series(fc.quantiles[0])[-1]
-        hi = fc.quantile_series(fc.quantiles[-1])[-1]
-        lo_pct = (lo - fc.current_price) / fc.current_price * 100
-        hi_pct = (hi - fc.current_price) / fc.current_price * 100
-        band = (hi - lo) / fc.current_price * 100
-        # Beyond a minimum move, require the *whole* uncertainty band to sit
-        # on one side of 0% -- a wide, zero-straddling band isn't a real BUY
-        # or SELL signal even if the median alone looks confident.
-        if pct > 2 and lo_pct > 0:
-            signal = "BUY"
-        elif pct < -2 and hi_pct < 0:
-            signal = "SELL"
-        else:
-            signal = "HOLD"
-        rows.append(
-            {
-                "symbol": ticker,
-                "status": "ok",
-                "current_price": fc.current_price,
-                "median_target": float(fc.median[-1]),
-                "expected_return_pct": pct,
-                "band_width_pct": band,
-                "signal": signal,
-            }
-        )
+        # scan_row_to_dict applies the same threshold+guard classify_signal uses
+        # elsewhere (PYQ-255) -- shared with the PYQ-261 API's /scan route so the
+        # two front-ends cannot drift.
+        rows.append(serialize.scan_row_to_dict(ticker, fc))
 
     if _output.json:
         _emit_json(rows)
@@ -534,6 +640,26 @@ def scan(
                 _signal_markup[r["signal"]],
             )
     console.print(table)
+
+
+@app.command()
+def snapshot(
+    symbol: str = typer.Argument(..., help="Ticker symbol"),
+):
+    """Record today's options snapshot for SYMBOL into its accumulated history.
+
+    yfinance exposes only a *current* option chain, not history, so this is the
+    only way this project can ever build a historical options-implied series
+    (PYQ-254): run it once a day and the recorded file grows into real training
+    data. `build_panel` picks it up automatically as `OptionsPutCallRatio`/
+    `OptionsATMIV`/`OptionsIVSkew` once enough days have accumulated.
+    """
+    settings = load_settings()
+    path = append_snapshot(symbol, settings)
+    if _output.json:
+        _emit_json({"symbol": symbol.upper(), "path": str(path)})
+        return
+    console.print(f"[green]Recorded options snapshot for {symbol.upper()} to {path}[/green]")
 
 
 cache_app = typer.Typer(

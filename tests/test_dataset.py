@@ -7,7 +7,7 @@ import pandas as pd
 import pytest
 
 from pyquant import provenance
-from pyquant.data import cache, dataset, sentiment
+from pyquant.data import cache, dataset, options, sentiment
 from pyquant.data.prices import add_technical_indicators
 from pyquant.data.sentiment import _EXCHANGE_TZ
 
@@ -50,6 +50,82 @@ def test_build_panel_drops_indicator_warmup_rows(monkeypatch, sample_ohlcv_df, s
     assert panel.index[0] == expected_start
     assert len(panel) == len(indicators.dropna())
     assert panel.notna().all().all()
+
+
+def test_build_panel_can_disable_technical_indicators(monkeypatch, sample_ohlcv_df, settings):
+    """DataConfig.use_indicators gates a price-only ablation arm (PYQ-316). There was
+    previously no way to ask for one short of hand-editing prices.py: use_indicators=True
+    was hardcoded in the fetch_prices() call build_panel() makes.
+    """
+    seen = {}
+
+    def fake_fetch_prices(symbol, **kwargs):
+        seen["use_indicators"] = kwargs.get("use_indicators")
+        return sample_ohlcv_df.copy()
+
+    monkeypatch.setattr(dataset, "fetch_prices", fake_fetch_prices)
+    settings.data.use_indicators = False
+
+    panel = dataset.build_panel("AAPL", settings)
+
+    assert seen["use_indicators"] is False
+    assert "RSI_14" not in panel.columns
+    assert "Close" in panel.columns
+
+
+def test_build_panel_joins_options_history_respecting_observation_time(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """PYQ-254: a snapshot observed on day T must never appear on a row dated
+    before T, and rows before the accumulated history begins must be neutral-filled
+    with a has_options_history flag -- not dropped, which is what the panel's
+    generic ffill()+dropna() would otherwise do to nearly the whole window, since
+    the history only ever grows forward from whenever `snapshot` was first run.
+    """
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    settings.data.use_options = True
+
+    price_index = add_technical_indicators(sample_ohlcv_df).dropna().index
+    first_covered = price_index[200]  # history "begins" partway through the panel
+    history = pd.DataFrame(
+        {
+            "OptionsPutCallRatio": [1.5],
+            "OptionsATMIV": [0.4],
+            "OptionsIVSkew": [0.05],
+        },
+        index=pd.DatetimeIndex([first_covered]),
+    )
+    monkeypatch.setattr(options, "load_snapshot_history", lambda *a, **k: history)
+
+    panel = dataset.build_panel("AAPL", settings)
+
+    before = panel.loc[panel.index < first_covered]
+    on_or_after = panel.loc[panel.index >= first_covered]
+    assert not before.empty and not on_or_after.empty  # both slices non-trivial
+
+    # No row before the observation date carries the observed value or a "covered" flag.
+    assert (before["has_options_history"] == 0.0).all()
+    assert (before["OptionsPutCallRatio"] == 0.0).all()
+    # Every row on/after it does (forward-filled from the single recorded day).
+    assert (on_or_after["has_options_history"] == 1.0).all()
+    assert (on_or_after["OptionsPutCallRatio"] == 1.5).all()
+    # No row was dropped for the sparse coverage -- the whole panel survives.
+    assert len(panel) == len(price_index)
+
+
+def test_build_panel_skips_options_join_below_the_minimum_history(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    settings.data.use_options = True
+    _patch_prices(monkeypatch, sample_ohlcv_df)
+    monkeypatch.setattr(
+        options, "load_snapshot_history", lambda *a, **k: pd.DataFrame(columns=options.SNAPSHOT_COLUMNS)
+    )
+
+    panel = dataset.build_panel("AAPL", settings)
+
+    assert "OptionsPutCallRatio" not in panel.columns
+    assert "has_options_history" not in panel.columns
 
 
 def test_build_panel_joins_enabled_sources(monkeypatch, sample_ohlcv_df, settings):

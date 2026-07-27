@@ -34,6 +34,7 @@ Each vendor gets a module; {py:mod}`pyquant.data.dataset` is where they meet.
    pyquant.data.sectors
    pyquant.data.sentiment
    pyquant.data.options
+   pyquant.data.providers
    pyquant.data.trading_calendar
    pyquant.data.dataset
    pyquant.data.cache
@@ -66,10 +67,15 @@ Library-agnostic: plain numpy arrays and dataclasses, no torch, no Typer, no Ric
    pyquant.analysis.interpret
    pyquant.analysis.metrics
    pyquant.analysis.calibrate
+   pyquant.analysis.signals
    pyquant.analysis.serialize
+   pyquant.analysis.doctor
 ```
 
 ## CLI
+
+A thin caller over `analysis/` and `models/`; for the commands themselves, their flags and
+exit codes, see the [CLI reference](../cli.md).
 
 ```{eval-rst}
 .. autosummary::
@@ -78,6 +84,28 @@ Library-agnostic: plain numpy arrays and dataclasses, no torch, no Typer, no Ric
 
    pyquant.cli.app
    pyquant.cli.charts
+```
+
+## API service
+
+A second front-end over the same `analysis`/`models` layers (PYQ-261), optional
+(`uv sync --extra api`). To run it, see [HTTP API](../http-api.md); for why it is shaped
+this way, [the design note](../api-design.md); and for the concurrency/auth model in
+particular, {py:mod}`pyquant.api.deps`.
+
+```{eval-rst}
+.. autosummary::
+   :toctree: _generated
+   :template: autosummary/module.rst
+
+   pyquant.api.app
+   pyquant.api.deps
+   pyquant.api.jobs
+   pyquant.api.schemas
+   pyquant.api.routes.health
+   pyquant.api.routes.forecast
+   pyquant.api.routes.explain
+   pyquant.api.routes.train
 ```
 
 ## Notes on this reference

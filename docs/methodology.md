@@ -3,10 +3,11 @@
 How PyQuant decides whether its forecasts are any good, and what the current numbers do
 and do not license you to conclude.
 
-:::{admonition} Headline result
+:::{admonition} Headline result: two configurations, two sample sizes
 :class: warning
 
-Over **56 walk-forward windows / 280 predictions** at the default configuration:
+**Default configuration** (`TrainingConfig.target = "close"`, price *level*), over **56
+walk-forward windows / 280 predictions**:
 
 | Metric | Value | Reading |
 |---|---|---|
@@ -14,10 +15,60 @@ Over **56 walk-forward windows / 280 predictions** at the default configuration:
 | Directional accuracy | **57.5%** | Slightly better than a coin flip, on 280 points. |
 | Calibration coverage (p10–p90) | **99.3%** | A nominal 80% band that contains 99.3% of outcomes is far too wide to be useful. |
 
-Measured on commit `a7a2b5f`, `pyquant train NVO` at defaults. **The forecaster does not
-currently beat a naive persistence baseline.** That is the project's central open problem,
+Measured on commit `a7a2b5f`, `pyquant train NVO` at defaults. **The default forecaster
+does not beat a naive persistence baseline.** That is the project's central open problem,
 and it is reported rather than tuned out of sight.
+
+**`log_return` target** (PYQ-247, everything else — seed, epoch budget, window count —
+held fixed), over **one symbol, 25 predictions, effective n≈5**:
+
+| Metric | Value | Reading |
+|---|---|---|
+| Skill vs. persistence baseline | **+2.4%** (+3.8% purged) | The *only* configuration measured so far that beats "predict no change". |
+| Directional accuracy | **52–56%** | *Falls* from 80%, not a typo — see below. |
+| Calibration coverage (p10–p90) | **76–80%** | Close to nominal, with **no conformal correction applied**. |
+
+Both are real, reproducible measurements, not a before/after of the same thing — different
+target, different geometry, different sample size. The second result is the more
+interesting one and the less trustworthy one, for the same reason: n≈5 is not enough to
+change what every user gets by default (non-negotiable #1), so `TrainingConfig.target`
+still defaults to `"close"` pending a multi-symbol repeat. See {ref}`negative-result` for
+why the first number is close to what the *formulation* predicts regardless of tuning, and
+{ref}`related-open-questions` for what happened when the same discipline was applied to
+pooling and to the feature set.
 :::
+
+## A third number, from a third protocol — and why it is not in the table above
+
+`pyquant backtest NVO --windows 5` at the same default configuration (target `"close"`,
+2026-07-27, git `90afcf8`), measured freshly for this page, reports **+36.2% skill**, 88%
+directional accuracy, 100% coverage. That is a *better* number than the headline table's
+−23.5%, and it is deliberately **not** promoted to the table above, for one reason: it is
+not the same measurement.
+
+`pyquant train`'s 56-window figure comes from **one** trained model, scored on every
+overlapping window in a single 60-day validation holdout. `backtest --windows 5` trains
+**five independent models** at five rolling origins and scores each *only* on its own
+5-day horizon — 25 points total, `effective_n_samples = 1`. The two protocols answer
+related but different questions ("how good is the one model I'd actually deploy" versus
+"how stable is training across time"), and per-window results here make the instability
+concrete rather than abstract:
+
+| Window | Skill | Directional acc. | Coverage |
+|---|---|---|---|
+| 1 | +55.7% | 80% | 100% |
+| 2 | −24.3% | 100% | 100% |
+| 3 | +33.7% | 100% | 100% |
+| 4 | +25.0% | 60% | 100% |
+| 5 | +52.1% | 100% | 100% |
+
+Four of five origins are positive, one is not, and the aggregate is positive mainly because
+four positive windows outweigh one negative one — not because the model is reliably
+skillful. At `effective_n_samples = 1` this is barely more than a single data point wearing
+five costumes; the honest reading is "highly variable across origins, sign not yet settled,"
+not "the default configuration works." It is recorded here, not discarded, in the same
+spirit as every other number on this page: a result that complicates the headline is not a
+reason to leave it out.
 
 ## Why there is a baseline at all
 
@@ -73,6 +124,7 @@ CRPS, Winkler score, PIT
   well-calibrated band from an absurdly wide one — a band from −∞ to +∞ scores 100%
   coverage.
 
+(split-geometry)=
 ## Split geometry
 
 This is where most of the historical defects lived, so it is worth stating precisely. A
@@ -167,35 +219,78 @@ Reproducibility rests on three legs, all recorded in the bundle's `meta.json`:
 
 A change that breaks any one of those needs a ticket.
 
+**Verified, not just claimed (PYQ-246):** two consecutive `train()` calls with the same
+seed against the same pinned data produce bit-identical `val_loss` and every
+`EvaluationMetrics` field, on this project's CPU-only test environment — checked with both
+`num_workers=0` (the default) and `num_workers=2`. This was previously only tested as "the
+seed is passed and recorded," not as "the run is actually reproducible," which is a real
+gap: `seed_everything` does not by itself guarantee determinism on every backend. **GPU
+determinism is untested** — there is no GPU in the environment this was verified on, and
+cuDNN autotuning is a real, materially different nondeterminism source a CPU-only check
+cannot see. Do not assume bit-identical reproducibility across GPU-trained bundles in
+`runs.jsonl` on the strength of this result; it has only been shown on CPU.
+
 ## Caveats on the headline numbers
 
-- The reference run was **3 epochs**. It is not a verdict on model quality; the point is
-  that the numbers are now measured on enough data to mean something.
-- 56 overlapping windows on one symbol is a small, serially-correlated sample. Treat the
-  figures as "the model is not obviously working", not as a precise effect size.
+- The default-config reference run was **3 epochs**; the log-return comparison held epoch
+  budget, seed and window count fixed at whatever PYQ-247's run used. Neither is a verdict
+  on model quality — the point of both is that the numbers are measured on enough data to
+  mean something, at the scale that was actually feasible to run.
+- 56 overlapping windows on one symbol (default config) and 25 predictions on one symbol
+  (log-return config) are both small, serially-correlated samples. Treat the figures as
+  directional — "the default doesn't obviously work, the alternative might" — not as
+  precise effect sizes. `EvaluationMetrics.effective_n_samples` is the honest denominator
+  for either.
 - Coverage and skill are reported over the *whole* holdout, not conditioned on regime.
-- MAE in price space is denominated in dollars, so it is not comparable across symbols.
-  Return-space metrics fix that, which is one more argument for the target change below.
+- MAE in price space is denominated in dollars, so it is not comparable across symbols;
+  the log-return target fixes that as a side effect, which is one more argument for it
+  beyond the skill number itself.
 
-## In flight
+## Landed since this page was first written
 
-Three changes that bear directly on this page are landing separately and are **not**
-reflected in the numbers above, which are as of commit `a7a2b5f`:
+Three changes were "in flight" here as of commit `a7a2b5f`; all three have since shipped,
+with measured before/after numbers rather than being merely described:
 
-- **A log-return target** — `TrainingConfig.target` accepts `"log_return"`, making the
-  baseline "predict zero return", which is beatable in principle. The result may well be
-  that skill stays near zero; that is a legitimate outcome and will be recorded rather than
-  tuned away.
-- **Conformal calibration of the band** — a distribution-free split-conformal offset fitted
-  on the calibration slice above, which directly attacks the 99.3%-on-80% figure without
-  retraining. `TrainingConfig.calibration_days` defaults to `0`, i.e. off, precisely because
-  switching it on changes every reported coverage number and that has to be a measured,
-  deliberate change rather than a silent one.
-- **Purged and embargoed splits** — see
-  {ref}`invariant 10 <invariant-purge-embargo>`.
-  Expect reported performance to get *worse*, not better: purging removes an optimistic
-  bias.
+- **Log-return target** (PYQ-247) — `TrainingConfig.target: Literal["close", "log_return"]`.
+  The headline box above is that measurement. `TrainingConfig.target` still defaults to
+  `"close"`: the result needs a multi-symbol repeat before it earns a default change, per
+  non-negotiable #1. See {ref}`related-open-questions`.
+- **Conformal calibration of the band** (PYQ-248) — a distribution-free split-conformal
+  offset, fitted on a calibration slice disjoint from both training and the scored
+  validation window. Verified to pull a 100%-coverage band to within 5 points of nominal,
+  and to *widen* a too-narrow one rather than only shrinking. `TrainingConfig.
+  calibration_days` still defaults to `0` (off): PYQ-247 showed the 99.3%-on-80% pathology
+  is largely a property of the price-level target, not something calibration alone should
+  paper over, so turning it on is deferred to the same multi-symbol decision as the target
+  itself.
+- **Purged and embargoed splits** (PYQ-250) — see
+  {ref}`invariant 10 <invariant-purge-embargo>`, now unconditionally part of every split
+  (`purge_horizon` defaults to one horizon, `embargo_days` to 2). This is the one change of
+  the three that is *always on*: the +2.4%→+3.8% jump in the log-return comparison above is
+  purging removing an optimistic bias that survived every earlier measurement on this page,
+  the default-config −23.5% included.
 
-When those land with measured before/after numbers, this page's headline table is what
-needs updating — and per the project's first non-negotiable, a number here may not improve
-without the model improving.
+(related-open-questions)=
+## Related open questions, same discipline applied elsewhere
+
+Three further investigations repeated PYQ-247's "measure a controlled comparison, report
+the sample size, don't move a default on it" approach against other assumptions this
+project used to state as rationale rather than result:
+
+- **Is pooling actually helping?** (`investigations.md#pyq-315`) — measured *worse*, not
+  better, on an AAPL+ARM comparison. The README's pooling section now states the measured
+  numbers.
+- **Which features earn their place?** (`investigations.md#pyq-316`) — a feature-group
+  ablation found technicals added ~nothing over price alone, and sentiment *hurt*
+  measurably, consistent with `bugs.md#pyq-140`'s finding that Finnhub's free tier delivers
+  ~6 days of news, not 365.
+- **Does `explain` mean what it claims?** (`investigations.md#pyq-314`) — permutation
+  importance agrees with the TFT's own variable-selection weights on the single top
+  feature, but only weakly beyond it. `explain` now prints a caveat when a bundle's
+  recorded skill is non-positive, tying interpretation confidence to model quality rather
+  than presenting both with equal authority.
+
+All three share the same caveat as the headline log-return result: one run, small samples,
+directional rather than definitive. The pattern across all four is itself worth noting —
+every one of them moved in the direction of "the rationale was optimistic," which is why
+this project's non-negotiable #1 exists.

@@ -43,6 +43,25 @@ dependencies = [
 sentiment = [
     "transformers>=4.40",
 ]
+# Optuna-backed hyperparameter search (PYQ-253, `pyquant tune`). pytorch-forecasting
+# itself gates optimize_hyperparameters() behind its own "tuning" extra with these
+# same bounds; matched here rather than widened, since it is pytorch-forecasting's
+# own compatibility contract, not ours to loosen.
+tuning = [
+    "optuna>=3.1,<5",
+    "optuna-integration",
+    "statsmodels",
+    # optimize_hyperparameters() unconditionally constructs a TensorBoardLogger
+    # (not passed through trainer_kwargs) -- a hard runtime dependency pytorch-
+    # forecasting's own "tuning" extra doesn't declare but its error message
+    # points straight at.
+    "tensorboard",
+]
+# FastAPI service layer (PYQ-261), per the design note in docs/api-design.md.
+api = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+]
 dev = [
     "pytest>=8.0",
     "pytest-mock>=3.12",

@@ -20,12 +20,12 @@ Next free ID: **PYQ-321**.
 | [PYQ-311](#pyq-311) | Low | Resolved | Should `scripts/backlog.py check` run in CI? |
 | [PYQ-312](#pyq-312) | High | Answered | Is a 5-day horizon learnable at all from these features — what should "good" look like? |
 | [PYQ-313](#pyq-313) | High | Answered | Are predictions, actuals and last_observed genuinely in the same space? |
-| [PYQ-314](#pyq-314) | Medium | Open | Does the TFT's variable selection / attention output mean what `explain` claims? |
-| [PYQ-315](#pyq-315) | Medium | Open | Is pooling actually helping, now that PYQ-116 aligned the calendar? |
-| [PYQ-316](#pyq-316) | Medium | Open | Which of the 25+ features earn their place? |
+| [PYQ-314](#pyq-314) | Medium | Answered | Does the TFT's variable selection / attention output mean what `explain` claims? |
+| [PYQ-315](#pyq-315) | Medium | Answered | Is pooling actually helping, now that PYQ-116 aligned the calendar? |
+| [PYQ-316](#pyq-316) | Medium | Answered | Which of the 25+ features earn their place? |
 | [PYQ-317](#pyq-317) | Medium | Answered | Is `softplus` the right target transformation for prices? |
 | [PYQ-318](#pyq-318) | Low | Answered | pytorch-forecasting vendor risk vs. neuralforecast / Darts |
-| [PYQ-319](#pyq-319) | Medium | Open | What is the latency and cost budget of one `forecast` call? |
+| [PYQ-319](#pyq-319) | Medium | Answered — 2026-07-27 | What is the latency and cost budget of one `forecast` call? |
 | [PYQ-320](#pyq-320) | Low | Answered | Data-source licensing and ToS review before anything public-facing |
 
 ---
@@ -500,9 +500,10 @@ durable guard is features.md#pyq-240's
 
 ## [PYQ-314]
 Does the TFT's variable selection / attention output mean what `explain` claims?
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Medium
-Files: `pyquant/models/tft.py` (`interpret`), `pyquant/analysis/interpret.py`
+Files: `pyquant/models/tft.py` (`interpret`, `permutation_importance`),
+`pyquant/analysis/interpret.py`, `pyquant/analysis/serialize.py`, `pyquant/cli/app.py`
 
 Question: `explain` presents encoder variable-selection weights as "which features drove
 it" and attention weights as "which days drove it." The TFT paper supports this framing —
@@ -529,13 +530,65 @@ and compare rankings — agreement is evidence the weights mean something, disag
 worth knowing before the docs site (PYQ-232) makes the current framing more prominent.
 Ties to PYQ-316, which needs a trustworthy importance measure to be worth running.
 
+Answer (2026-07-27): built `tft.permutation_importance()` (shuffle one feature column,
+measure the validation-set MAE degradation, normalise to fractions the same way
+`interpret()` does) and ran it against two real AAPL bundles, chosen to bracket the
+project's actual skill range:
+
+```
+bundle                    skill_vs_baseline   Spearman rho (TFT vs permutation)   top feature (both methods agree)
+AAPL (2 epochs, close)          -4.315                     0.296                  High   (TFT 0.958, perm 1.000)
+AAPL_LR (20 epochs, log_return)  0.010                     0.273                  BB_Width (TFT 0.936, perm 0.746)
+```
+
+Two findings, and they point in different directions on the ticket's two options:
+
+1. **The #1-ranked feature is trustworthy.** Both bundles show the two independent methods
+   converging almost completely on which single feature dominates, despite the methods
+   sharing no machinery — `interpret()` reads the TFT's internal variable-selection
+   network, `permutation_importance()` only calls `predict()` and never looks inside the
+   model. That agreement is real evidence `explain`'s headline "most important feature" is
+   not an artifact.
+2. **Rankings beyond #1 are not.** Spearman rho is only ~0.27-0.30 in both cases, and both
+   importance distributions are extremely concentrated (one feature carries >90% of the
+   normalised weight in both bundles, in both methods) — so the "agreement" is mostly one
+   shared top pick, and the remaining ~25+ features are close to noise in *both* rankings,
+   not just one. `top_features(10)`'s ordering past the first one or two entries should not
+   be read as a reliable ranking.
+
+This also stress-tests the caveat line added below: the *second* bundle has slightly
+**positive** skill (+1.0%), so the new skill-gated caveat does not fire for it — yet its
+importance ranking is barely more trustworthy (rho 0.273) than the badly negative-skill
+bundle's (rho 0.296). A skill-sign gate catches the worst case (the ticket's explicit ask)
+but is not sufficient on its own to certify a ranking as trustworthy; that would need the
+rho comparison itself surfaced, which is future scope, not this ticket's.
+
+Decision taken, per the ticket's own options: added a caveat line (`explain`'s CLI output,
+and `bundle_skill` in `--format json` / `Interpretation`) tying interpretation confidence to
+the bundle's recorded skill, rather than restricting `explain` outright or claiming
+`permutation_importance` validates every rank. `EvaluationMetrics.skill_vs_baseline` is a
+`@property`, not a stored field, so it was never actually present in `meta["evaluation"]`
+in the first place (only `vars(evaluation)`'s real fields were serialised) — `explain_forecast`
+now recomputes it from `model_mae`/`baseline_mae`, the two fields that are recorded.
+
+Guarded by `tests/test_tft.py::test_permutation_importance_ranks_the_injected_signal_above_pure_noise_features`
+(a mechanics check: the function must find a truly informative synthetic feature when one
+exists — the first version of this test used real technical indicators, which are
+smoothings of Close, and Close's own path necessarily encodes whatever the synthetic
+injected signal drove, so every indicator carried a correlated echo of it and the
+raw `Signal` column scored *zero* -- a genuine, useful illustration of permutation
+importance's blind spot with collinear features, and part of the evidence behind PYQ-316),
+`tests/test_interpret.py::test_explain_forecast_records_the_bundles_skill_vs_baseline`, and
+three CLI tests asserting the caveat fires/stays quiet correctly and reaches `--format json`.
+
 ---
 
 ## [PYQ-315]
 Is pooling actually helping, now that PYQ-116 aligned the calendar?
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Medium
-Files: `pyquant/models/tft.py` (`_build_pooled_long_df`, `train`)
+Files: `pyquant/models/tft.py` (`_build_pooled_long_df`, `train`), `README.md`,
+`scripts/compare_pooling.py` (new)
 
 Question: PYQ-204 built pooling, and the README argues for it — "meaningfully more data for
 the same architecture." PYQ-116 then found that pooled groups were aligned by *position*
@@ -556,13 +609,53 @@ embedding is doing all the work, pooling is just a shared prior with extra steps
 Whichever way it goes, update the README to state the measured result rather than the
 expected one.
 
+Answer (2026-07-27): measured with `scripts/compare_pooling.py` — per-symbol AAPL and ARM
+models against one pooled AAPL+ARM model (ARM being the deliberately mixed-history pair the
+ticket names: it IPO'd in 2023, so at the shared 5-year window it has far less history than
+AAPL), same seed/epochs/architecture (`log_return` target, 15 epochs, `hidden_size=16`),
+scored on each symbol's own validation window either way. Getting a per-symbol read on the
+*pooled* model required new plumbing: `train()`'s own reported metric for a pooled bundle is
+aggregated across every group, which cannot say whether pooling helped any *one* symbol — the
+script re-scores the pooled bundle against each symbol's own filtered slice of the same
+validation window instead.
+
+```
+        per-symbol   pooled   pooled - per-symbol
+AAPL     +0.0016    -0.0016         -0.0032
+ARM      -0.0036    -0.0202         -0.0167
+```
+
+**Pooling made both symbols worse, not better**, at this scale — and hurt the
+shorter-history symbol (ARM) roughly 5x more than the longer one. That is directionally the
+opposite of the README's previous rationale ("meaningfully more data for the same
+architecture"), now corrected. Both the calendar-alignment fix (PYQ-116) and this
+measurement can be true at once: PYQ-116 fixed a correctness bug (a shared shock landing at
+different indices per group), which is a precondition for pooling to possibly help, not a
+guarantee that it does — capacity and epochs still have to be enough for the shared model to
+actually exploit cross-sectional structure, and this run's budget was deliberately smoke-scale.
+
+This does not distinguish between the two explanations the suggested approach flagged: "not
+enough capacity/epochs to benefit from pooling" vs. "genuinely little cross-sectional
+structure between these two tickers at this history length" vs. "the mixed-history mismatch
+itself costs more than pooling's extra data buys." Answering that would need a larger run
+(more epochs, more symbol pairs, possibly same-history-length pairs as a control) — out of
+scope for this pass's compute budget. What this result does settle is the one thing the
+ticket actually asked for: the README's claim was a rationale, not a result, and is now the
+latter. `README.md`'s pooling section states the measured numbers and recommends pooling
+deliberately rather than by default until a larger run says otherwise.
+
+Caveats, stated plainly: one run, two symbols, no repeated seeds, smoke-scale epoch budget
+(consistent with the "small-scale, fast" depth chosen for this investigation pass) — this is
+directional evidence, not a verdict at production scale.
+
 ---
 
 ## [PYQ-316]
 Which of the 25+ features earn their place?
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Medium
-Files: `pyquant/data/prices.py` (`INDICATOR_COLUMNS`), `pyquant/data/dataset.py`
+Files: `pyquant/data/prices.py` (`INDICATOR_COLUMNS`), `pyquant/data/dataset.py`,
+`pyquant/config.py` (`DataConfig.use_indicators`, new), `scripts/ablate_features.py` (new)
 
 Question: the panel carries 14 technical indicators plus macro, sector and sentiment
 columns. Several are near-duplicates by construction — `SMA_10`/`SMA_20`/`SMA_50` are
@@ -585,6 +678,56 @@ to be distinguishable, so it pairs with PYQ-251.
 Expected outcome worth stating up front: a smaller feature set that performs the same is a
 *win*, not a null result — it trains faster, explains more clearly, and reduces the number
 of vendor dependencies the pipeline must keep alive.
+
+Answer (2026-07-27): ran `scripts/ablate_features.py` — AAPL, 3 walk-forward windows per
+group, `log_return` target, cumulative feature groups. Needed one small prerequisite:
+`DataConfig.use_indicators` (new), since there was previously no way to ask for a
+price-only panel — `fetch_prices(..., use_indicators=True)` was hardcoded in `build_panel`.
+
+```
+group          skill    dir_acc   coverage   crps     n_points
+price_only    +0.0274   0.600      0.800    0.0044      15
++technicals   +0.0246   0.600      0.800    0.0043      15
++macro        +0.0345   0.533      0.800    0.0043      15
++sectors      +0.0453   0.667      0.867    0.0043      15
++sentiment    +0.0177   0.600      0.867    0.0043      15
+```
+
+Correlation matrix over `INDICATOR_COLUMNS` confirms the ticket's construction argument
+directly: `SMA_10/SMA_20/SMA_50/EMA_12/EMA_26` are pairwise correlated **r > 0.97** with
+each other (six columns, roughly one degree of freedom), plus `MACD ~ MACD_Signal` (r=0.947)
+and `RSI_14 ~ BB_PercentB` (r=0.916). PYQ-314's permutation importance (same day, different
+bundle) independently found the same pattern from the model side: importance concentrated
+almost entirely in one or two features with the rest near-zero in both TFT and
+permutation-importance rankings.
+
+Reading the group deltas: **technicals alone did not clearly help over price-only**
+(+0.0246 vs +0.0274 — a decrease, though within likely noise at 15 points). **Macro and
+sectors each added measurably** (+0.0345, then +0.0453 — sectors gave the largest single
+jump). **Sentiment made it measurably worse** (+0.0453 → +0.0177, undoing more than half of
+the sectors-arm gain). That last number is the evidence bugs.md#pyq-140 was waiting on: it
+independently found Finnhub's free tier delivers ~6 days of news, not ~365, making
+`Sentiment`/`HeadlineCount` structurally zero for 99.7% of training rows and populated only
+at the very end of the panel — a mechanism, on its own, sufficient to expect exactly this
+kind of degradation (capacity spent weighting a near-constant column, and a train/serve
+distribution shift on the few rows that are non-zero). A measured negative delta plus an
+independently-understood mechanism both pointing the same way is stronger evidence than
+either alone.
+
+**Decision, and why it stops short of flipping a default:** the same discipline PYQ-247
+established applies here — one symbol, 15 points, one run is not the bar this project uses
+to change what every user gets by default (see investigations.md#pyq-312's own restraint
+on the log-return target with a comparably small sample). So `DataConfig.use_sentiment`
+**stays `True`** in this pass. What changes: this finding is now recorded as the backtest
+arm bugs.md#pyq-140 asked for, with an explicit recommendation to disable sentiment by
+default (or gate it on `has_sentiment_data` coverage) once a multi-symbol repeat confirms
+the direction — filed alongside the existing multi-symbol PYQ-247 repeat on the backlog's
+`## Now` list rather than as a new ticket, since it is the same class of "needs more than
+one symbol before it can move a default" work.
+
+Caveats: one symbol (AAPL), one run, 3 windows (15 points) per arm, smoke-scale epochs —
+directional evidence, consistent with the "small-scale, fast" depth chosen for this
+investigation pass, not a production-grade ablation.
 
 ---
 
@@ -700,9 +843,10 @@ pytorch-forecasting 2.0 announcement.
 
 ## [PYQ-319]
 What is the latency and cost budget of one `forecast` call?
-Status: Open
+Status: Answered — 2026-07-27
 Priority: Medium
-Files: `pyquant/analysis/forecast.py`, `pyquant/models/tft.py`, `docs/api-design.md`
+Files: `pyquant/analysis/forecast.py`, `pyquant/models/tft.py`, `docs/api-design.md`,
+`scripts/profile_forecast.py` (new)
 
 Question: `docs/api-design.md` decides the *shape* of the API — background jobs for
 training, LRU bundle cache, per-bundle locking — but no number anywhere says how long a
@@ -722,6 +866,31 @@ predict in `raw` mode); measure the effect of the panel cache. Record the number
 design note. Also worth quantifying the *quota* cost per call — FRED and Finnhub free tiers
 have real limits, and PYQ-213 already flags that a public API would spend the operator's
 quota.
+
+Answer (2026-07-27): the guessed decomposition was right, and the effect is larger than
+"probably surprising" suggested. `scripts/profile_forecast.py` timed a real cold and warm
+`forecast`/`explain` call for AAPL at the default `period=5y`:
+
+```
+                                        cold        warm
+bundle_load                            261 ms      203 ms
+fetch_and_panel_build               64,300 ms        5 ms
+predict()                              812 ms      632 ms
+interpret()'s extra raw predict        835 ms      740 ms
+forecast total                       ~65.4 s      ~0.84 s
+```
+
+Fetch/panel-build is **98% of cold latency**; the forward pass this section's locking and
+LRU-cache design is built around costs under a second either way. Request counts behind the
+cold call: 8 yfinance calls, 15 `fredapi.get_series_all_releases` calls (5 yearly vintage
+chunks × 3 FRED series, at the default 5-year period), 1 `yfinance.download`, 1 Finnhub
+`requests.get`. Full table and discussion recorded in `docs/api-design.md` §4, including the
+practical implication: a **panel** cache (not just the bundle LRU cache) is what actually
+decides whether the endpoint feels instant or feels like a timeout risk, and FRED's 15
+requests/call means quota, not compute, is the first thing an operator serving many symbols
+cold will hit. One symbol, one run, live-vendor latency at measurement time — not a
+controlled benchmark, but the qualitative conclusion (fetch dominates, predict is cheap) is
+not sensitive to that noise.
 
 ---
 

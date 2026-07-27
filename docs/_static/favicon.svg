@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="PyQuant">
+  <title>PyQuant</title>
+  <!-- The fan mark, cropped square and thickened so it survives 16px. -->
+  <rect width="32" height="32" rx="7" fill="#0f6b73"/>
+  <path d="M13 17 L28 6 L28 27 Z" fill="#ffffff" fill-opacity="0.3"/>
+  <path d="M13 17 L28 6" fill="none" stroke="#ffffff" stroke-opacity="0.75" stroke-width="2" stroke-linecap="round"/>
+  <path d="M13 17 L28 27" fill="none" stroke="#ffffff" stroke-opacity="0.75" stroke-width="2" stroke-linecap="round"/>
+  <path d="M4 25 L8 21 L13 17" fill="none" stroke="#ffffff" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>
+</svg>

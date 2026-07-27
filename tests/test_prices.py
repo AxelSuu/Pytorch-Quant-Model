@@ -1,11 +1,15 @@
 """Tests for price data + technical indicators."""
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
 import yfinance
 
 from pyquant.data import prices
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
 def test_rsi_in_range(sample_ohlcv_df):
@@ -309,3 +313,37 @@ def test_ema_warmup_spans_is_configurable_and_trades_rows_for_accuracy(sample_oh
 
     assert len(short.dropna()) > len(long.dropna())
     assert short["EMA_26"].first_valid_index() < long["EMA_26"].first_valid_index()
+
+
+def test_fetch_prices_parses_a_real_recorded_yfinance_payload(monkeypatch):
+    """PYQ-243: every other test here mocks at our own function boundary, which
+    verifies our logic against our own assumptions about the payload -- it cannot
+    catch the failure that actually happens in production, the vendor changing its
+    response shape (PYQ-228: yfinance silently jumped 0.2.x -> 1.4.1 and flipped
+    auto_adjust's default mid-series). This drives the real fetch_prices()/
+    normalize_ohlcv() path from one real recorded Ticker.history() response instead
+    of a hand-built frame.
+    """
+    real_response = pd.read_pickle(FIXTURES / "yfinance_prices_aapl.pkl")
+    # The real payload carries Dividends/Stock Splits alongside OHLCV -- a detail a
+    # hand-built fixture would only include if someone thought to add it.
+    assert "Dividends" in real_response.columns
+
+    class RecordedTicker:
+        def __init__(self, symbol):
+            self.symbol = symbol
+
+        def history(self, **kwargs):
+            return real_response
+
+    monkeypatch.setattr(yfinance, "Ticker", RecordedTicker)
+
+    out = prices.fetch_prices("AAPL", period="3mo")
+
+    assert list(out.columns[:5]) == ["Open", "High", "Low", "Close", "Volume"]
+    assert "Dividends" not in out.columns
+    assert "Stock Splits" not in out.columns
+    assert out.index.tz is None
+    assert out.index.is_monotonic_increasing
+    for col in prices.INDICATOR_COLUMNS:
+        assert col in out.columns

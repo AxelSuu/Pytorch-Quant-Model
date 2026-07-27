@@ -140,6 +140,12 @@ class DataConfig(BaseModel):
     use_options: bool = True
     use_sentiment: bool = True
     use_sectors: bool = True
+    # Technical indicators (SMA/EMA/RSI/MACD/Bollinger/...) computed from the
+    # target's own OHLCV. Unlike the other toggles this defaults on with no
+    # graceful-degradation path -- there is no vendor to lose -- but a feature
+    # ablation needs a "price-only" arm to compare against (PYQ-316), and there
+    # was previously no way to ask for one short of hand-editing prices.py.
+    use_indicators: bool = True
     # Sector ETFs used for cross-asset features.
     sector_etfs: list[str] = Field(
         default_factory=lambda: ["XLK", "XLF", "XLE", "XLV", "XLY", "SPY"]
@@ -182,6 +188,19 @@ class Settings(BaseSettings):
     @field_validator("checkpoint_dir")
     @classmethod
     def _anchor_checkpoint_dir(cls, v: Path) -> Path:
+        return _anchor(v)
+
+    # An append-only accumulated options-snapshot history (PYQ-254 route 1), one
+    # JSONL file per symbol. Deliberately not under `data.cache_dir`: the panel
+    # cache is a TTL-pruned, rebuildable convenience, while this is meant to be
+    # a permanent, slowly-growing dataset -- useless on day one, the only source
+    # of historical options-implied data this project can have at all once
+    # enough days accumulate, since yfinance exposes only a current chain.
+    options_history_dir: Path = Field(default=Path("data/options_history"), validate_default=True)
+
+    @field_validator("options_history_dir")
+    @classmethod
+    def _anchor_options_history_dir(cls, v: Path) -> Path:
         return _anchor(v)
 
     # Nested config sections

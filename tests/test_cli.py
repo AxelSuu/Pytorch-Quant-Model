@@ -12,7 +12,10 @@ from typer.testing import CliRunner
 from pyquant.analysis.forecast import Forecast
 from pyquant.analysis.metrics import EvaluationMetrics
 from pyquant.cli import app as app_mod
-from pyquant.models.tft import BacktestResult, TrainResult
+from pyquant.data import dataset as ds_mod
+from pyquant.data import options as options_mod
+from pyquant.data.prices import add_technical_indicators
+from pyquant.models.tft import BacktestResult, TrainResult, TuneResult
 
 runner = CliRunner()
 
@@ -129,6 +132,130 @@ def test_backtest_command_reports_aggregated_metrics(monkeypatch):
     assert "3 windows" in result.stdout
     assert "55.0%" in result.stdout
     assert "75.0%" in result.stdout
+
+
+def test_backtest_signals_flag_reports_pnl_and_reaches_json(monkeypatch):
+    """PYQ-255: --signals wires walk_forward_backtest's per-window signals through
+    evaluate_signals() and into both the Rich table and --format json."""
+    from pyquant.models.tft import BacktestResult
+
+    ev = EvaluationMetrics(
+        model_mae=1.2, baseline_mae=1.6, directional_accuracy=0.55, calibration_coverage=0.75
+    )
+    fake_result = BacktestResult(
+        symbol="AAPL",
+        n_windows=3,
+        per_window=[ev, ev, ev],
+        aggregated=ev,
+        signals=["BUY", "SELL", "HOLD"],
+        signal_returns_pct=[3.0, -2.0, 0.5],
+    )
+
+    captured = {}
+
+    def fake_backtest(symbol, settings, **kwargs):
+        captured["compute_signals"] = kwargs.get("compute_signals")
+        return fake_result
+
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", fake_backtest)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL", "--signals"])
+    assert result.exit_code == 0
+    assert captured["compute_signals"] is True
+    assert "Signal evaluation" in result.stdout
+    assert "1 BUY / 1 SELL / 1 HOLD" in result.stdout
+
+    json_result = runner.invoke(app_mod.app, ["--format", "json", "backtest", "AAPL", "--signals"])
+    assert json_result.exit_code == 0
+    payload = json.loads(json_result.stdout)
+    assert payload["signal_evaluation"]["n_buy"] == 1
+    assert "strategy_pnl_pct" in payload["signal_evaluation"]
+
+
+def test_backtest_without_signals_flag_skips_the_extra_pass(monkeypatch):
+    from pyquant.models.tft import BacktestResult
+
+    ev = EvaluationMetrics(
+        model_mae=1.2, baseline_mae=1.6, directional_accuracy=0.55, calibration_coverage=0.75
+    )
+    fake_result = BacktestResult(symbol="AAPL", n_windows=1, per_window=[ev], aggregated=ev)
+    captured = {}
+
+    def fake_backtest(symbol, settings, **kwargs):
+        captured["compute_signals"] = kwargs.get("compute_signals")
+        return fake_result
+
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", fake_backtest)
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL"])
+
+    assert result.exit_code == 0
+    assert captured["compute_signals"] is False
+    assert "Signal evaluation" not in result.stdout
+
+
+def test_tune_command_reports_the_held_out_score_not_the_in_search_value(monkeypatch, tmp_path):
+    """PYQ-253: the in-search value and the held-out evaluation are different numbers
+    for a reason -- both must reach the user, clearly distinguished."""
+    ev = EvaluationMetrics(
+        model_mae=1.0, baseline_mae=1.2, directional_accuracy=0.6, calibration_coverage=0.8
+    )
+    fake_result = TuneResult(
+        symbol="AAPL",
+        n_trials=5,
+        best_params={"hidden_size": 32, "learning_rate": 0.01},
+        best_value=0.1234,
+        held_out_evaluation=ev,
+        bundle_dir=tmp_path / "AAPL_TUNED",
+        config_path=tmp_path / "aapl_tuned.yaml",
+    )
+    captured = {}
+
+    def fake_tune(symbol, settings, **kwargs):
+        captured.update(kwargs)
+        return fake_result
+
+    monkeypatch.setattr(app_mod.tft, "tune", fake_tune)
+
+    result = runner.invoke(app_mod.app, ["tune", "AAPL", "--trials", "5"])
+
+    assert result.exit_code == 0
+    assert captured["n_trials"] == 5
+    assert "0.1234" in result.stdout  # in-search value shown...
+    assert "held-out" in result.stdout.lower()  # ...clearly labelled apart from it
+    assert "60.0%" in result.stdout  # the held-out directional accuracy
+
+
+def test_tune_command_json_output(monkeypatch, tmp_path):
+    ev = EvaluationMetrics(
+        model_mae=1.0, baseline_mae=1.2, directional_accuracy=0.6, calibration_coverage=0.8
+    )
+    fake_result = TuneResult(
+        symbol="AAPL",
+        n_trials=3,
+        best_params={"hidden_size": 32},
+        best_value=0.5,
+        held_out_evaluation=ev,
+        bundle_dir=tmp_path / "AAPL_TUNED",
+        config_path=tmp_path / "aapl_tuned.yaml",
+    )
+    monkeypatch.setattr(app_mod.tft, "tune", lambda symbol, settings, **kwargs: fake_result)
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "tune", "AAPL"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["best_params"] == {"hidden_size": 32}
+    assert payload["held_out_evaluation"]["directional_accuracy"] == 0.6
+
+
+def test_tune_command_reports_a_missing_extra_clearly(monkeypatch):
+    def raise_missing_extra(symbol, settings, **kwargs):
+        raise ImportError("pyquant tune needs the 'tuning' extra: uv sync --extra tuning")
+
+    monkeypatch.setattr(app_mod.tft, "tune", raise_missing_extra)
+    result = runner.invoke(app_mod.app, ["tune", "AAPL"])
+    assert result.exit_code == 1
+    assert "tuning" in result.output
 
 
 def test_default_logging_level_is_warning(monkeypatch):
@@ -256,6 +383,58 @@ def test_cache_list_and_prune_commands(monkeypatch, tmp_path):
     assert "Pruned 0" in pruned.stdout
 
 
+def test_snapshot_command_records_to_the_configured_history_dir(monkeypatch, tmp_path):
+    """PYQ-254: `pyquant snapshot SYMBOL` -- the only way to ever accumulate a
+    historical options-implied series, since yfinance exposes only a current chain.
+    """
+    from pyquant.config import Settings
+    from pyquant.data.options import OptionsSnapshot
+
+    def fake_load_settings():
+        s = Settings()
+        s.options_history_dir = tmp_path / "options_history"
+        return s
+
+    monkeypatch.setattr(app_mod, "load_settings", fake_load_settings)
+    # append_snapshot() calls fetch_options_snapshot() from within options.py's own
+    # namespace, not app_mod's imported reference -- that one is only used by the
+    # `forecast` command's display snapshot.
+    monkeypatch.setattr(
+        options_mod,
+        "fetch_options_snapshot",
+        lambda symbol: OptionsSnapshot(put_call_ratio=1.1, atm_iv=0.3, iv_skew=0.02, expiry="2024-06-21"),
+    )
+
+    result = runner.invoke(app_mod.app, ["snapshot", "aapl"])
+
+    assert result.exit_code == 0
+    written = tmp_path / "options_history" / "AAPL.jsonl"
+    assert written.exists()
+    assert json.loads(written.read_text().splitlines()[0])["put_call_ratio"] == 1.1
+
+
+def test_snapshot_command_json_output(monkeypatch, tmp_path):
+    from pyquant.config import Settings
+    from pyquant.data.options import OptionsSnapshot
+
+    def fake_load_settings():
+        s = Settings()
+        s.options_history_dir = tmp_path / "options_history"
+        return s
+
+    monkeypatch.setattr(app_mod, "load_settings", fake_load_settings)
+    monkeypatch.setattr(
+        options_mod, "fetch_options_snapshot", lambda symbol: OptionsSnapshot(None, None, None, None)
+    )
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "snapshot", "AAPL"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["symbol"] == "AAPL"
+    assert "path" in payload
+
+
 def test_train_json_output_serializes_result(monkeypatch):
     fake_result = TrainResult(
         symbols=["AAPL"],
@@ -376,6 +555,53 @@ def _settings_in(tmp_path):
     s = Settings()
     s.checkpoint_dir = tmp_path / "checkpoints"
     return s
+
+
+def _fake_interpretation(bundle_skill):
+    from pyquant.analysis.interpret import Interpretation
+
+    dates = pd.bdate_range("2024-01-01", periods=5)
+    return Interpretation(
+        symbol="AAPL",
+        feature_importance={"RSI_14": 0.6, "SMA_10": 0.4},
+        attention=np.array([0.1, 0.2, 0.3, 0.2, 0.2]),
+        panel_index=dates,
+        bundle_skill=bundle_skill,
+    )
+
+
+def test_explain_warns_when_the_bundle_does_not_beat_the_baseline(monkeypatch):
+    """PYQ-314: an interpretation of a model that does not beat persistence describes
+    what it attends to, not what moves the price -- explain must say so."""
+    monkeypatch.setattr(app_mod, "explain_forecast", lambda *a, **k: _fake_interpretation(-0.05))
+    monkeypatch.setattr(app_mod.tft, "load", lambda *a, **k: object())
+
+    result = runner.invoke(app_mod.app, ["explain", "AAPL", "--no-chart"])
+
+    assert result.exit_code == 0
+    assert "skill vs. persistence" in result.stdout
+    assert "-5.0%" in result.stdout
+
+
+def test_explain_stays_quiet_when_the_bundle_beats_the_baseline(monkeypatch):
+    monkeypatch.setattr(app_mod, "explain_forecast", lambda *a, **k: _fake_interpretation(0.12))
+    monkeypatch.setattr(app_mod.tft, "load", lambda *a, **k: object())
+
+    result = runner.invoke(app_mod.app, ["explain", "AAPL", "--no-chart"])
+
+    assert result.exit_code == 0
+    assert "skill vs. persistence" not in result.stdout
+
+
+def test_explain_json_carries_bundle_skill(monkeypatch):
+    monkeypatch.setattr(app_mod, "explain_forecast", lambda *a, **k: _fake_interpretation(0.12))
+    monkeypatch.setattr(app_mod.tft, "load", lambda *a, **k: object())
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "explain", "AAPL", "--no-chart"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["bundle_skill"] == 0.12
 
 
 # --- PYQ-124: a crossed band must never reach display or signalling ----------
@@ -605,3 +831,125 @@ def test_doctor_succeeds_with_no_bundles_at_all(monkeypatch, tmp_path):
 
     assert result.exit_code == 0
     assert "No trained bundles" in result.stdout
+
+
+def test_full_cli_journey_across_every_command_and_both_output_formats(
+    monkeypatch, tmp_path, sample_ohlcv_df
+):
+    """PYQ-241: train -> forecast -> explain -> scan -> backtest -> cache list, using
+    each command's *real* output as the next command's input, run once per --format.
+
+    Every other CLI test in this file starts from a mocked mid-state (a fake
+    Forecast, a fake TrainResult). That's the right tool for testing one command in
+    isolation, but it cannot catch a write-side/read-side contract break -- a bundle
+    `train` writes that `forecast` can't read, a field `explain` expects that `train`
+    stopped writing (PYQ-119 was exactly this class of bug, found by reasoning rather
+    than a test). Here only the network boundary (fetch_prices) and the
+    options-snapshot call are stubbed; everything else -- the bundle on disk, the
+    dataset params, meta.json, the cache dir -- is the real thing, isolated to a temp
+    PYQUANT_HOME.
+    """
+    monkeypatch.setenv("PYQUANT_HOME", str(tmp_path))
+    monkeypatch.delenv("FRED_API_KEY", raising=False)
+    monkeypatch.delenv("FINNHUB_API_KEY", raising=False)
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(ds_mod, "fetch_prices", lambda *a, **k: panel)
+
+    class NoOptions:
+        put_call_ratio = None
+
+    monkeypatch.setattr(app_mod, "fetch_options_snapshot", lambda s: NoOptions())
+
+    # A real YAML experiment config (PYQ-209), not a mocked Settings object -- CLI
+    # commands other than train/backtest have no settings-injection point at all,
+    # so keeping the model/encoder tiny has to go through the same front door a
+    # user would use.
+    config = tmp_path / "tiny.yaml"
+    config.write_text(
+        "tft:\n  hidden_size: 8\n  hidden_continuous_size: 4\n"
+        "training:\n  max_encoder_length: 15\n  max_prediction_length: 3\n"
+        "  batch_size: 32\n  max_epochs: 1\n  validation_days: 20\n"
+        "data:\n  use_macro: false\n  use_sentiment: false\n  use_sectors: false\n"
+    )
+
+    for fmt in ("rich", "json"):
+        args = ["--format", fmt]
+
+        result = runner.invoke(app_mod.app, [*args, "train", "TEST", "--config", str(config)])
+        assert result.exit_code == 0, result.output
+        if fmt == "json":
+            payload = json.loads(result.stdout)
+            for key in ("symbols", "bundle_dir", "val_loss", "n_features", "epochs_run", "evaluation"):
+                assert key in payload, f"train JSON missing {key!r}: {payload}"
+            assert payload["symbols"] == ["TEST"]
+        else:
+            assert "Training complete" in result.stdout
+
+        result = runner.invoke(app_mod.app, [*args, "forecast", "TEST", "--no-chart"])
+        assert result.exit_code == 0, result.output
+        if fmt == "json":
+            payload = json.loads(result.stdout)
+            for key in (
+                "symbol",
+                "last_date",
+                "current_price",
+                "horizon",
+                "forecast_dates",
+                "quantiles",
+                "predictions",
+                "n_quantile_crossings",
+            ):
+                assert key in payload, f"forecast JSON missing {key!r}: {payload}"
+            assert len(payload["forecast_dates"]) == payload["horizon"]
+        else:
+            assert "forecast" in result.stdout.lower()
+
+        result = runner.invoke(app_mod.app, [*args, "explain", "TEST", "--no-chart"])
+        assert result.exit_code == 0, result.output
+        if fmt == "json":
+            payload = json.loads(result.stdout)
+            for key in ("symbol", "feature_importance", "attention"):
+                assert key in payload, f"explain JSON missing {key!r}: {payload}"
+            assert payload["feature_importance"], "no features reported"
+        else:
+            assert "importance" in result.stdout.lower()
+
+        result = runner.invoke(app_mod.app, [*args, "scan", "TEST"])
+        assert result.exit_code == 0, result.output
+        if fmt == "json":
+            rows = json.loads(result.stdout)
+            assert rows and rows[0]["symbol"] == "TEST"
+            assert rows[0]["status"] == "ok", rows
+            for key in (
+                "current_price",
+                "median_target",
+                "expected_return_pct",
+                "band_width_pct",
+                "signal",
+            ):
+                assert key in rows[0], f"scan JSON missing {key!r}: {rows[0]}"
+        else:
+            assert "TEST" in result.stdout
+
+        result = runner.invoke(
+            app_mod.app, [*args, "backtest", "TEST", "--windows", "2", "--config", str(config)]
+        )
+        assert result.exit_code == 0, result.output
+        if fmt == "json":
+            payload = json.loads(result.stdout)
+            for key in ("symbol", "n_windows", "aggregated", "per_window"):
+                assert key in payload, f"backtest JSON missing {key!r}: {payload}"
+            assert payload["n_windows"] == 2
+            assert len(payload["per_window"]) == 2
+        else:
+            assert "backtest" in result.stdout.lower()
+
+        result = runner.invoke(app_mod.app, [*args, "cache", "list"])
+        assert result.exit_code == 0, result.output
+        if fmt == "json":
+            payload = json.loads(result.stdout)
+            for key in ("entry_count", "total_bytes", "pins"):
+                assert key in payload, f"cache list JSON missing {key!r}: {payload}"
+        else:
+            assert "Cache dir" in result.stdout
