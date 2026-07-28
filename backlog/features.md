@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-265**.
+Next free ID: **PYQ-275**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -69,6 +69,16 @@ Next free ID: **PYQ-265**.
 | [PYQ-262](#pyq-262) | Low | Resolved | Pre-commit configuration |
 | [PYQ-263](#pyq-263) | Low | Resolved | `pyquant doctor` — environment and bundle health check |
 | [PYQ-264](#pyq-264) | Medium | Resolved | Fold PYQ-247/248/250 into the docs; deploy to GitHub Pages; nightly docs-drift check |
+| [PYQ-265](#pyq-265) | High | Open | Report skill across seeds, not from a single seed |
+| [PYQ-266](#pyq-266) | High | Open | Paired significance test for comparing two configurations |
+| [PYQ-267](#pyq-267) | High | Open | Break every metric down by horizon step |
+| [PYQ-268](#pyq-268) | High | Open | A reusable multi-symbol sweep harness, replacing the one-off scripts |
+| [PYQ-269](#pyq-269) | Medium | Open | Split `models/tft.py` (1075 lines) without breaking Lightning containment |
+| [PYQ-270](#pyq-270) | Medium | Open | Put a confidence interval on the headline skill number |
+| [PYQ-271](#pyq-271) | Medium | Open | `/backtest` endpoint: close the CLI/API front-end gap |
+| [PYQ-272](#pyq-272) | Medium | Open | Dedicated tests for `serialize`, `doctor`, `provenance` and `charts` |
+| [PYQ-273](#pyq-273) | Medium | Open | Replay tests against recorded vendor payloads, not our own mocks |
+| [PYQ-274](#pyq-274) | Low | Open | CHANGELOG and a release/tagging workflow |
 
 ---
 
@@ -3192,5 +3202,435 @@ from a previous pass; both docs-build invocations updated to `--group docs --ext
 Verified: `sphinx-build -W --keep-going` exits 0 from a clean `docs/_build/` +
 `docs/api/_generated/` after every content change in this ticket (four rebuilds, the last
 one clean); all three workflow YAML files parse; `scripts/backlog.py check` clean.
+
+---
+
+## [PYQ-265]
+Report skill across seeds, not from a single seed
+Status: Open
+Priority: High
+Files: `pyquant/config.py`, `pyquant/models/tft.py`, `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`
+
+Problem/Ask: `TrainingConfig.seed` is a single int defaulting to 42, and
+`seed_everything(settings.training.seed)` is called before every fit (`tft.py:295`, `:530`,
+`:661`). Every number this project has ever reported — the -23.5% headline, PYQ-247's
++2.4%, investigations.md#pyq-315's "pooling is worse", investigations.md#pyq-316's
+"sentiment hurts" — is **one draw from one seed**. Nothing in the codebase has ever
+measured how much of any of those deltas is run-to-run initialisation noise.
+
+That matters most exactly where the project's conclusions are thinnest. PYQ-247 moved skill
+by 61.9 points and is trusted; investigations.md#pyq-316 moved it by 0.027 (+0.045 to
++0.018 when sentiment was added) and is described as "sentiment measurably hurts". If
+seed-to-seed standard deviation on this data is anywhere near 0.03, the second finding is
+indistinguishable from noise and the ticket's recommendation rests on nothing. Nobody
+knows which, because the experiment has never been run — see investigations.md#pyq-321,
+which this ticket is the tooling half of.
+
+Build: `TrainingConfig.seeds: list[int]` (defaulting to `[42]`, so existing behaviour and
+existing bundles are unchanged), a `train`/`backtest` path that fits once per seed, and
+metric reporting that carries **mean, standard deviation and min/max across seeds** rather
+than a point. `--seeds 5` on the CLI as sugar for the first N of a deterministic sequence.
+The per-seed `EvaluationMetrics` should all be retained, not just their summary, so
+PYQ-266's paired test can consume them.
+
+Cost is the obvious objection and should be stated rather than hidden: this multiplies
+training time by the seed count. That is the correct price for the claim, and it is why the
+default stays at one seed and the multi-seed run is opt-in — the same shape as PYQ-248
+shipping conformal calibration defaulted off.
+
+Note this interacts with reproducibility's three legs (seed + pinned data + code version).
+A multi-seed run has no single seed to record, so `meta.json` must record the seed *list*
+and the per-seed results; a bundle trained across seeds needs to say which seed's weights
+it actually kept.
+
+Acceptance criteria: `pyquant backtest SYMBOL --seeds 5` reports skill as `mean ± sd (min, max)` over five
+fits; `--format json` carries the per-seed metrics; `meta.json` records the seed list; a
+test asserts that two runs at the same seed list produce identical results and that a
+different seed list produces different ones.
+
+---
+
+## [PYQ-266]
+Paired significance test for comparing two configurations
+Status: Open
+Priority: High
+Files: `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `docs/methodology.md`
+
+Problem/Ask: this project decides things by comparing two configurations — level vs.
+log-return target (PYQ-247), pooled vs. solo (investigations.md#pyq-315), sentiment on vs.
+off (investigations.md#pyq-316), conformal on vs. off (PYQ-248). Every one of those
+comparisons is currently **two point estimates, eyeballed**. There is no test of whether
+the difference is distinguishable from zero.
+
+`moving_block_bootstrap_interval()` exists (PYQ-251) but is used for a single
+configuration's directional accuracy, and an interval on A and an interval on B is the
+wrong instrument anyway: the two configurations are scored on the *same walk-forward
+windows*, so the comparison is paired, and a paired test on the per-window differences is
+strictly more powerful than comparing two marginal intervals. Overlapping intervals do not
+imply no difference, which is precisely the error this shape of reporting invites.
+
+Build: a paired comparison over the per-window skill (or loss) differences of two
+`BacktestResult`s scored on identical windows — a moving-block bootstrap of the mean
+difference, reusing the existing block machinery, with the block length keyed to the
+horizon so overlapping windows do not inflate significance. A Diebold-Mariano test on the
+per-point loss differential is the textbook alternative and worth considering, but the
+block bootstrap reuses code already here and makes fewer assumptions; pick one, record why.
+
+The function must **refuse** to compare results whose windows do not align, rather than
+silently comparing unlike things. That guard is the whole value of the paired framing.
+
+Consumed by PYQ-268's sweep harness, and the natural reporting home for
+investigations.md#pyq-322's decision rule: "flip the default when the paired interval
+excludes zero" is a pre-registrable statement, "when the number looks better" is not.
+
+Acceptance criteria: `compare_backtests(a, b)` returns the mean per-window skill difference with a confidence
+interval, raises on window misalignment, and is exercised by tests covering: identical
+inputs give a difference of zero, a constant offset is recovered, and misaligned windows
+raise. `docs/methodology.md` re-states PYQ-247's +2.4% and #pyq-316's sentiment delta with
+an interval attached, or says plainly that the sample is too small to place one.
+
+---
+
+## [PYQ-267]
+Break every metric down by horizon step
+Status: Open
+Priority: High
+Files: `pyquant/analysis/metrics.py`, `pyquant/analysis/serialize.py`, `pyquant/cli/app.py`
+
+Problem/Ask: `evaluate_predictions()` receives predictions shaped
+`(n_samples, horizon, n_quantiles)` and immediately collapses the horizon axis —
+`model_mae(actuals, median)` averages over all five steps at once, as do coverage,
+directional accuracy, CRPS and Winkler. Every number this project reports is therefore a
+mean over h=1..5, and the per-step structure has never been looked at.
+
+That structure is where the answer probably lives. Persistence is near-unbeatable at h=1
+and progressively less so as h grows, so a model that is genuinely learning something
+should show skill *increasing* with horizon while a model that is only tracking the last
+close shows the opposite. A flat -23.5% mean and a profile of `[-60%, -35%, -10%, +5%,
++15%]` are the same headline number and completely different findings — the second would
+say "keep the model, shorten nothing, the horizon is where it earns its place," and the
+first says the opposite. Right now the two are indistinguishable in every artifact the
+project produces.
+
+The same applies to calibration. A 99.3% empirical coverage on a nominal 80% band is
+reported as one number; if that is 100% at h=1 (band far too wide where uncertainty is
+smallest) decaying to 85% at h=5, the pathology is "the band does not widen with horizon,"
+which is a specific, fixable modelling statement rather than a general "too wide."
+docs/architecture.md's logo and `nvo.png` both draw a band that fans; investigations.md
+#pyq-324 asks whether the real one does.
+
+Build: retain the horizon axis. Add `per_horizon: list[EvaluationMetrics]` (or a compact
+per-step MAE/coverage/skill record) to `EvaluationMetrics`, aggregate it position-wise
+across windows in `aggregate_metrics()`, surface it in `--format json` and as an optional
+Rich table. Cheap — the arrays are already the right shape and are being discarded.
+
+Acceptance criteria: `evaluate_predictions` exposes per-step MAE, skill, coverage and directional accuracy;
+`aggregate_metrics` pools them position-wise across windows; `--format json` carries them;
+a test asserts that a synthetic case with skill deliberately varying by step recovers the
+profile rather than its mean. `docs/methodology.md` shows the per-horizon profile for at
+least the default and log-return configurations.
+
+---
+
+## [PYQ-268]
+A reusable multi-symbol sweep harness, replacing the one-off scripts
+Status: Open
+Priority: High
+Files: `pyquant/experiments/` (new), `pyquant/cli/app.py`, `scripts/ablate_features.py`, `scripts/compare_pooling.py`
+
+Problem/Ask: `backlog/README.md`'s `## Now` list has had the same item at #1 across two
+passes — a multi-symbol repeat of PYQ-247's target comparison and of
+investigations.md#pyq-315/#pyq-316's pooling and feature findings — with the standing note
+that it has "still no ticket, because each is a *run* rather than a code change."
+
+That reasoning is what has kept it unstarted. It is not purely a run: there is no tool that
+performs it. `scripts/ablate_features.py` and `scripts/compare_pooling.py` are both
+self-described one-off investigation scripts, each hard-wired to one question and, between
+them, to one or two symbols. Repeating either across fifteen symbols today means editing a
+script, running it by hand, and reconciling the output by hand — which is exactly why three
+findings that each explicitly name a multi-symbol repeat as their prerequisite have all sat
+un-repeated. The missing artifact is a harness, and a harness *is* a code change.
+
+Build: `pyquant/experiments/` — a library-agnostic sweep runner that takes a list of
+symbols, a list of config overrides (arms), and a window count; runs the walk-forward
+backtest for every (symbol, arm) cell; and returns a tidy per-cell result set. Plus
+`pyquant sweep` to drive it. Aggregation across symbols is the part that must be got right:
+report per-symbol results **and** the pooled figure, because "helped 11 of 15 symbols" and
+"mean skill +0.3%" answer different questions and only the pair is honest. Reuse
+PYQ-266's paired test for the arm-vs-arm comparison and PYQ-265's seed handling for the
+within-cell repeat.
+
+The two existing scripts then become thin callers or get deleted — they should not be
+reimplemented inside the harness, and whichever way that goes should be recorded, since
+they carry investigation context the harness itself does not.
+
+Explicitly *not* in scope: running the sweep. This ticket delivers the instrument; the
+three pending repeats are separate runs, and the results they produce are what
+investigations.md#pyq-322's decision rule consumes. Keeping those apart is deliberate —
+shipping the harness should not be blocked on GPU time, and running it should not be
+blocked on writing code.
+
+Acceptance criteria: `pyquant sweep --symbols A,B,C --arm target=close --arm target=log_return --windows 5`
+runs every cell, reports per-symbol and pooled skill with a paired interval per arm pair,
+and writes a machine-readable result set. Tests cover the cell matrix (arms x symbols),
+the "helped N of M" summary, and that a failing symbol degrades to a recorded gap rather
+than taking the sweep down. `scripts/ablate_features.py` and `scripts/compare_pooling.py`
+are either rewritten over the harness or removed with their reasoning preserved.
+
+---
+
+## [PYQ-269]
+Split `models/tft.py` (1075 lines) without breaking Lightning containment
+Status: Open
+Priority: Medium
+Files: `pyquant/models/tft.py`, `pyquant/models/` (new submodules), `tests/test_tft.py`
+
+Problem/Ask: `models/tft.py` is 1075 lines and the single largest module in the project
+by a factor of 1.3 over `cli/app.py` and 3.2 over anything else. It holds `train()`,
+`walk_forward_backtest()`, `tune()`, `predict_quantiles()`, `interpret()`,
+`permutation_importance()`, `load()`, `settings_for_bundle()`, the `ModelBundle`/
+`TrainResult`/`BacktestResult`/`TuneResult` dataclasses, the checkpoint-selection and
+validation-array plumbing, purged-cutoff arithmetic, feature-schema checking and pooled
+long-frame assembly.
+
+The size is a *consequence of a rule this project should keep*, not an accident:
+CLAUDE.md's first structural rule confines all pytorch-forecasting and Lightning imports
+to `models/tft.py` and `data/dataset.py`, so anything touching Lightning has nowhere else
+to go and the module accretes. That is why this is a refactor ticket rather than a
+complaint — the rule earns its keep (it is what made `pyquant/api/` additive rather than a
+rewrite, per PYQ-261), and the fix is to give it more room, not to relax it.
+
+Build: turn `pyquant/models/` into a package with the containment rule applied to the
+*package* rather than the file — e.g. `models/bundle.py` (dataclasses, load/save,
+provenance, schema check), `models/training.py` (`train`, checkpoint selection, validation
+evaluation), `models/backtest.py` (walk-forward, window geometry, purged cutoff),
+`models/tuning.py` (Optuna), `models/inference.py` (predict/interpret/permutation
+importance). `models/tft.py` keeps its public names as re-exports so no import outside
+`models/` changes and no bundle is invalidated.
+
+Two things make this worth doing beyond aesthetics. The window-geometry code — the subject
+of PYQ-115, PYQ-116, PYQ-127 and PYQ-250, four of the pipeline's most expensive bugs —
+currently sits interleaved with training loop and tuning code, and the graph shows it
+clustered with `TimeSeriesDataSet` construction rather than isolated. And PYQ-238's
+invariant module tests those geometry properties from outside; a named module to point at
+makes the invariant/implementation correspondence legible.
+
+Risk to state plainly: this is a pure-motion refactor over the most bug-dense code in the
+project, and a mistake here is the kind that does not fail a test. It should land as
+motion only, with no behaviour change, verified by the full suite plus a byte-identical
+`meta.json` on a re-run at a fixed seed and pinned dataset.
+
+Acceptance criteria: `pyquant/models/` is a package of five focused modules, none over ~350 lines; `from
+pyquant.models.tft import train, load, ...` still works unchanged; `ruff check` clean; the
+full suite passes; a re-train at a fixed seed against a pinned dataset produces a
+`meta.json` identical to one produced before the split, and that comparison is recorded in
+the resolution note.
+
+---
+
+## [PYQ-270]
+Put a confidence interval on the headline skill number
+Status: Open
+Priority: Medium
+Files: `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `README.md`, `docs/methodology.md`
+
+Problem/Ask: `cli/app.py:211` bootstraps a confidence interval over per-window
+**directional accuracy** and prints it. Skill vs. baseline — the number in the README, in
+`docs/methodology.md`'s headline tables, in `explain`'s warning banner (`app.py:576`), and
+in essentially every ticket that has ever argued about model quality — gets no interval at
+all.
+
+The asymmetry is backwards. Directional accuracy is the metric PYQ-247 showed to be
+*flattered* by the level target and least trusted; skill is the one every decision hangs
+on. And skill is precisely the number where an interval would change readings: -23.5% over
+56 windows and +2.4% over 5 windows are quoted side by side in `docs/methodology.md` with
+the sample-size caveat in prose, when the interval would carry it structurally.
+
+Build: bootstrap the per-window skill values with the same moving-block machinery
+(`moving_block_bootstrap_interval`, blocks no shorter than the horizon) and print
+`skill [lo, hi]` wherever skill is printed. Carry it in `--format json` and in `meta.json`
+so `explain`'s banner can say "at or below baseline, and the interval spans zero" rather
+than just quoting a point.
+
+One subtlety to get right rather than inherit: the existing call blocks per-*window*
+directional accuracies with `block_size = max(1, horizon)`, but consecutive walk-forward
+windows are disjoint by invariant 7 (PYQ-127), so a block length measured in horizon steps
+is being applied to a series whose elements are windows. Decide what the correct block
+length is for a window-level series and fix both call sites, or record why the current one
+is right.
+
+Interacts with PYQ-141: once both the pooled headline and the per-window column carry
+intervals, the fact that they are different estimators becomes visible rather than
+confusing.
+
+Acceptance criteria: Skill is reported with an interval everywhere it is currently reported as a point (Rich
+tables, `--format json`, `meta.json`); the block-length question above is resolved in code
+with a comment citing this ticket; `README.md` and `docs/methodology.md` quote intervals
+alongside the three headline configurations, or state that n is too small to place one.
+
+---
+
+## [PYQ-271]
+`/backtest` endpoint: close the CLI/API front-end gap
+Status: Open
+Priority: Medium
+Files: `pyquant/api/routes/`, `pyquant/api/schemas.py`, `docs/http-api.md`, `tests/test_api.py`
+
+Problem/Ask: `docs/architecture.md` states the design as two independent front-ends,
+`cli/` and `api/`, "served by the same calls, without either being a rewrite of the other."
+The API currently exposes `/forecast/{symbol}`, `/scan`, `/explain/{symbol}`, `/train`,
+`/train/{job_id}` and `/healthz`. The CLI additionally has `backtest`, `tune`, `cache`,
+`snapshot`, `doctor` and `calibration`.
+
+`backtest` is the gap that matters. It is the command that produces every quality number
+this project reports, and it is the one an API consumer most plausibly wants — an
+evaluation service is the difference between "here is a forecast" and "here is a forecast
+and here is what it has been worth." Its absence means the parity claim in
+`docs/architecture.md` is aspirational for the one capability that would most test it.
+
+Build: `POST /backtest` returning 202 with a job id, polled via `GET /backtest/{job_id}` —
+the same shape `/train` already established, because a walk-forward backtest trains N
+models and is emphatically not a request-cycle operation (investigations.md#pyq-319
+measured a *single* cold forecast at ~65s). Reuse `JobRegistry` rather than adding a second
+job mechanism. The response body is `analysis/serialize.py`'s `backtest_to_dict` output,
+which already exists and is already what `--format json` emits — this is the test of
+whether the shared-core claim holds.
+
+`tune` is the same shape and the obvious follow-on, but is heavier and less clearly wanted;
+`doctor`/`cache`/`snapshot` are local-operator commands with no obvious remote meaning.
+Scope this ticket to `backtest` and record that judgement rather than silently limiting it.
+
+If `backtest_to_dict` turns out to need reshaping to serve both front-ends, that is the
+finding, and it should be reported as such — it would mean the two-front-end claim has been
+untested rather than true.
+
+Acceptance criteria: `POST /backtest` + `GET /backtest/{job_id}` work end to end against the existing
+`JobRegistry`, return `backtest_to_dict`'s payload behind a Pydantic response model, are
+documented in `docs/http-api.md`, and are covered in `tests/test_api.py` including the
+job-not-found and job-failed paths. The resolution note states whether serving both
+front-ends required changing the shared serializer.
+
+---
+
+## [PYQ-272]
+Dedicated tests for `serialize`, `doctor`, `provenance` and `charts`
+Status: Open
+Priority: Medium
+Files: `tests/test_serialize.py`, `tests/test_doctor.py`, `tests/test_provenance.py`, `tests/test_charts.py` (all new)
+
+Problem/Ask: every module under `pyquant/` has a matching `tests/test_*.py` except
+`analysis/serialize.py`, `analysis/doctor.py`, `provenance.py`, `cli/charts.py`, and
+`cli/app.py` (covered by `test_cli.py` under a different name). The four unnamed ones are
+exercised only incidentally, through CLI and API tests that assert on something else.
+
+That is a poor place for them, because of what they do:
+
+- `serialize.py` is the contract behind `--format json`, `meta.json` and every API
+  response body — it is the machine-readable surface, and PYQ-271 is about to add a second
+  consumer. A silent key rename here breaks downstream consumers with nothing failing.
+- `doctor.py` exists *because* PYQ-139 was invisible: a whole vendor's features vanished
+  from every panel and only a log line said so. A diagnostic whose own failure mode is
+  silence needs direct tests more than most code, not fewer.
+- `provenance.py` is one of reproducibility's three legs (PYQ-225, PYQ-133, PYQ-134 — the
+  last of which was exactly a provenance function resolving against the wrong directory).
+- `charts.py` renders the fan chart, and invariant 8 requires that the dates in the table,
+  the JSON, the PNG and the appended rows are one set. The PNG is the leg with no direct
+  test.
+
+Build: four test modules asserting behaviour, not output shape, per the project's naming
+convention. For `serialize`, round-trip and key-stability assertions (a renamed key should
+fail loudly). For `doctor`, that each unhealthy condition it claims to detect is actually
+detected — construct the broken state, assert the report names it. For `provenance`, that
+git sha/dirty-state resolve against the working tree (PYQ-134's regression) and that
+secrets never appear (the secrets non-negotiable currently has no test naming it). For
+`charts`, that the plotted x-values equal the forecast dates — invariant 8's missing leg.
+
+The `doctor` and secrets items are the ones with real defect-finding odds; PYQ-231's
+precedent is that writing failure-path tests for untested surfaces found two live bugs.
+
+Acceptance criteria: Four new test modules exist and pass offline; `doctor`'s detections are each covered by a
+constructed failure; a test asserts no API-key value can appear in `meta.json`,
+`runs.jsonl` or a cache fingerprint; a test asserts `charts`' plotted dates equal the
+`Forecast`'s dates. Any defect found is filed as its own bug ticket rather than fixed
+inline.
+
+---
+
+## [PYQ-273]
+Replay tests against recorded vendor payloads, not our own mocks
+Status: Open
+Priority: Medium
+Files: `tests/fixtures/`, `scripts/record_fixtures.py`, `tests/test_prices.py`, `tests/test_macro.py`, `tests/test_sentiment.py`
+
+Problem/Ask: PYQ-139 and PYQ-140 were both shipped Resolved with passing tests and both
+were wrong against the live vendor. PYQ-139 was worse than wrong: PYQ-257's ALFRED vintage
+fetch failed three separate ways against the real FRED API, every FRED macro feature
+silently vanished from every panel, and graceful degradation reduced a total vendor loss to
+one log line. `backlog/README.md` records the lesson as features.md#pyq-243's argument —
+"mocking at our own function boundary verifies our logic against our own assumptions, which
+is half a test."
+
+The other half is still missing. `tests/fixtures/` holds seven recorded artifacts
+(`fred_dff.json`, `finnhub_news_aapl.json`, four yfinance pickles, a `MANIFEST.json`) and
+`scripts/record_fixtures.py` exists to refresh them, so the raw material is here. What is
+absent is the discipline that the vendor-facing tests must run against *those payloads*
+rather than against hand-built frames shaped the way we expect the vendor to behave.
+
+Build: for each vendor module, at least one test that patches at the **HTTP/library
+boundary** — feeding the recorded payload in the vendor's own shape — rather than patching
+our `_fetch_*` function and handing it a tidy frame. The three PYQ-139 failure modes are
+the acceptance bar and should each become a named regression case: an unbounded realtime
+window, a `NaT` in the value column on a market holiday, and a `realtime_end` ahead of the
+vendor's clock. PYQ-140's shape (a vendor honouring a request nominally while returning a
+fraction of the requested range) is the fourth.
+
+The nightly live-vendor smoke job (PYQ-244) is the complement, not a substitute: it catches
+drift but only against today's live API, only nightly, and it cannot run in a PR. Replay
+tests catch the same class deterministically and offline, which is what the network-free
+testing convention requires.
+
+Two fixtures currently produce no extractable content (`fred_dff.json`,
+`finnhub_news_aapl.json` were both flagged empty by an external tooling pass); confirm
+whether they are genuinely populated before building on them.
+
+Acceptance criteria: At least one boundary-level replay test per vendor module, running offline against
+`tests/fixtures/`; PYQ-139's three failure modes and PYQ-140's truncation shape each have a
+named regression test that fails against the pre-fix code; `record_fixtures.py` documents
+how to refresh a payload and what to check when a vendor's shape changes; the two suspect
+fixtures are verified or re-recorded.
+
+---
+
+## [PYQ-274]
+CHANGELOG and a release/tagging workflow
+Status: Open
+Priority: Low
+Files: `CHANGELOG.md` (new), `.github/workflows/release.yml` (new), `pyproject.toml`
+
+Problem/Ask: `pyproject.toml` declares `version = "0.2.0"`. There is no `CHANGELOG.md`,
+no tag-driven workflow, and no recorded relationship between that version string and any
+commit. Reproducibility's third leg is code version (PYQ-225, PYQ-133), and a version
+number that never moves and points at nothing does not provide it — a bundle's `meta.json`
+recording `0.2.0` is compatible with any commit in the project's history.
+
+This is genuinely Low priority: the project is not distributed, has no external consumers,
+and its per-bundle git-sha provenance already does the load-bearing work that a version
+string would do for a published package. It is worth a ticket because the version field
+exists and currently asserts something it cannot back, not because releasing is urgent.
+
+Build: a `CHANGELOG.md` in Keep a Changelog form, seeded from `backlog/README.md`'s History
+section — which is already a better changelog than most projects have, and should be
+summarised rather than duplicated, with the backlog remaining the detailed record. Then a
+tag-triggered workflow that verifies the tag matches `pyproject.toml`'s version, runs the
+full suite, and cuts a GitHub release. Publishing to PyPI is explicitly out of scope until
+someone wants it — adding a release channel with no consumers is the kind of unjustified
+addition non-negotiable #5 is about.
+
+Bump to `0.3.0` as part of this, since the three passes recorded in `backlog/README.md` since
+`0.2.0` include target-format work, a new API package and a new CLI command surface.
+
+Acceptance criteria: `CHANGELOG.md` exists and covers the passes recorded in `backlog/README.md`; pushing a
+`v*` tag runs the suite and cuts a release; the workflow fails if the tag and
+`pyproject.toml` disagree; `docs/development.md` documents the release step.
 
 ---

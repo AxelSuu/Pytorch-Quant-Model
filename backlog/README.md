@@ -39,32 +39,59 @@ edit lands.
 ## Now
 
 A hand-curated shortlist, not auto-generated — re-pick this after every review
-pass. (Re-picked 2026-07-27 after a second implementation pass closed 16 more
-tickets — PYQ-140/238/239/241/243/246/254/255/259/253/261 resolved,
-PYQ-314/315/316/319 answered, PYQ-211 superseded by PYQ-253. Only **5 tickets
-remain open in the entire backlog**, so this list is now close to exhaustive
-rather than a curated subset of a much larger open set.)
+pass. (Re-picked 2026-07-28 after a review pass added 15 tickets — PYQ-141,
+PYQ-265..274, PYQ-321..324 — taking the backlog to 139 tickets with **20
+open**. The previous list's #1 item is now three tickets instead of a standing
+note; see the History entry below for why that changed.)
 
-1. **A multi-symbol repeat of PYQ-247's comparison**, now joined by a
-   multi-symbol repeat of investigations.md#pyq-315/#pyq-316's feature and
-   pooling findings. All three are the same shape of open question — one
-   symbol, tens of points, one run said "the effect looks real," and none of
-   them are yet at the sample size this project's own non-negotiable #1
-   requires before changing a default (`TrainingConfig.target`,
-   `DataConfig.use_sentiment`, and whether pooling is on by default). Still no
-   ticket, because each is a *run* rather than a code change.
-2. **PYQ-249** (feature, Medium) — time-series foundation-model baseline.
+1. **investigations.md#pyq-321** (Critical) — how much of every reported number
+   is seed variance? `TrainingConfig.seed` is fixed at 42 and every headline
+   this project has published is one draw from it. Four existing findings
+   (PYQ-247's target change, PYQ-248's conformal band, #pyq-315's pooling
+   result, #pyq-316's sentiment result) span three orders of effect size and
+   are treated with roughly equal confidence. This is the one measurement that
+   decides which of them are real, and it is cheaper than the multi-symbol
+   repeats below — if one symbol at ten seeds already spans the effect being
+   claimed, the multi-symbol run is not the missing evidence.
+2. **The multi-symbol repeat, now with tickets.** The previous `## Now` carried
+   this at #1 across two passes with the note "still no ticket, because each is
+   a *run* rather than a code change." That reasoning is what kept it
+   unstarted: there is no tool that performs it —
+   `scripts/ablate_features.py` and `scripts/compare_pooling.py` are both
+   self-described one-offs wired to one question and one or two symbols. It is
+   now split into the three code changes it actually needs —
+   features.md#pyq-268 (sweep harness), #pyq-266 (paired significance test),
+   #pyq-265 (multi-seed reporting) — plus investigations.md#pyq-322, which
+   writes down *what result would flip a default* before the run rather than
+   after it.
+3. **features.md#pyq-267** (High) — per-horizon-step metrics. Every number is
+   currently a mean over h=1..5. A flat −23.5% and a profile of
+   `[−60%, −35%, −10%, +5%, +15%]` are the same headline and opposite
+   findings. The arrays are already the right shape and are being discarded;
+   this is the cheapest diagnostic on the list.
+4. **bugs.md#pyq-141** (Medium) — `backtest`'s headline skill (ratio of pooled
+   MAEs) and the per-window skill column printed beneath it (mean of ratios)
+   are different estimators. `docs/methodology.md`'s own per-window figures
+   average to −94.8% against a −23.5% headline.
+5. **PYQ-249** (feature, Medium) — time-series foundation-model baseline.
    Explicitly deferred to design-plus-stub in the 2026-07-27 pass (a genuinely
    heavy new dependency, judged not worth the install/runtime risk in that
    session) — `baselines.py`'s actual `chronos_baseline()` integration is
    still unwritten. The CLI plumbing this needs is otherwise ready.
-3. **PYQ-217** (feature, Low) — Dockerfile. Deprioritised from Medium by an
-   explicit user call the same pass; also genuinely blocked on verification —
-   no sandbox used so far in this project's history has had a Docker CLI to
-   confirm `docker build`/`docker run` against.
-4. PYQ-237/242/245 (Low) — doctests, property-based tests, mutation testing on
-   `analysis/metrics.py`. Never picked up across three passes; not urgent, but
-   the only genuinely untouched items left besides the two above.
+6. Structural and coverage work, none of it urgent: features.md#pyq-269
+   (split the 1075-line `models/tft.py`), #pyq-272 (`serialize`/`doctor`/
+   `provenance`/`charts` have no dedicated tests), #pyq-273 (replay tests
+   against recorded vendor payloads — the missing half of the PYQ-139/140
+   lesson), #pyq-271 (`/backtest` endpoint), #pyq-270 (interval on the
+   headline skill number), investigations.md#pyq-323 (`Settings` coupling),
+   #pyq-324 (does the forecast band fan or translate?).
+7. **PYQ-217** (feature, Low) — Dockerfile. Deprioritised from Medium by an
+   explicit user call in the 2026-07-27 pass; also genuinely blocked on
+   verification — no sandbox used so far in this project's history has had a
+   Docker CLI to confirm `docker build`/`docker run` against.
+8. PYQ-237/242/245/274 (Low) — doctests, property-based tests, mutation
+   testing on `analysis/metrics.py`, and a CHANGELOG/release workflow. Never
+   picked up across four passes; not urgent.
 
 ## History
 
@@ -238,3 +265,78 @@ verified-in-part rather than claimed whole.
 Final state: 251 tests passing (was 204), `ruff check` clean with the `D` ruleset newly
 enabled, `scripts/backlog.py check` clean, `uv lock --check` clean, `pre-commit run
 --all-files` clean across nine hooks, and the docs building warning-free.
+
+A review pass (2026-07-28) added **15 tickets** — bugs.md#pyq-141,
+features.md#pyq-265..274, investigations.md#pyq-321..324 — taking the backlog to
+**139 tickets, 20 open**, still `check`-clean. It closed nothing: it was a
+gap-finding pass over the source, the docs, the existing backlog and a generated
+knowledge graph of the repo, not an implementation pass.
+
+Its organising observation is that this project has a well-developed apparatus
+for *reporting* numbers honestly and almost none for *deciding whether a
+difference is real*. The two are not the same discipline, and the second is now
+the binding constraint. Concretely: `TrainingConfig.seed` is fixed at 42, so
+every headline the project has published is one draw from one seed and the
+seed-to-seed spread has never been measured (investigations.md#pyq-321).
+Configurations are compared by eyeballing two point estimates, with no paired
+test on the windows they share (features.md#pyq-266). Skill — the number in the
+README, in `docs/methodology.md` and in `explain`'s warning banner — carries no
+confidence interval, while directional accuracy, the metric PYQ-247 showed to be
+*flattered* by the level target, does (features.md#pyq-270). And every metric is
+a mean over h=1..5, so a model whose skill rises with horizon and one whose skill
+collapses at h=5 produce the same headline (features.md#pyq-267).
+
+That reframes the standing `## Now` #1. Two passes carried "a multi-symbol repeat
+of PYQ-247/#pyq-315/#pyq-316" with the note that it had no ticket "because each
+is a *run* rather than a code change." That reasoning is why it never started —
+it is not purely a run, because no tool performs it. `scripts/ablate_features.py`
+and `scripts/compare_pooling.py` are both self-described one-off scripts, each
+wired to one question and between them to one or two symbols; repeating either
+across fifteen symbols means editing a script and reconciling output by hand,
+which is exactly why three findings that each name a multi-symbol repeat as
+their prerequisite have all sat un-repeated. It is now features.md#pyq-268 (the
+harness), #pyq-266 and #pyq-265 (the statistics), and investigations.md#pyq-322
+— which asks the project to write down *what result would flip a default* before
+running the sweep rather than after. An unspecified threshold is a deferred
+decision, not a conservative one, and it fails in both directions: never met, or
+met retrospectively by whichever run looks convincing.
+
+One real defect was found by reading `analysis/metrics.py` against `cli/app.py`.
+**bugs.md#pyq-141** (Medium): `backtest` prints an aggregate skill computed as a
+ratio of `n_points`-weighted pooled MAEs, and directly beneath it a per-window
+table whose skill column is a mean of per-window ratios. The two can diverge
+without limit, and already do — `docs/methodology.md` records the level-target
+per-window skills as `[+0.28, +0.47, +0.35, −2.71, −3.13]`, mean **−94.8%**,
+beside a **−23.5%** headline, with nothing on screen or on the page reconciling
+them. This is PYQ-136 one level up: that ticket fixed numerator and denominator
+being computed two ways *inside* the aggregate; this is the aggregate and its own
+detail rows being computed two ways.
+
+The remaining tickets are structural and were found by inventory rather than
+inference. `models/tft.py` is 1075 lines holding train, backtest, tune, predict,
+interpret and the window geometry that produced PYQ-115/116/127/250 — the
+project's four most expensive bugs — and the containment rule that causes the
+accretion is worth keeping, so the fix is a package rather than a relaxation
+(features.md#pyq-269). Four modules have no dedicated test file, and they are the
+wrong four: `serialize.py` (the machine-readable contract), `doctor.py` (which
+exists *because* PYQ-139 was invisible), `provenance.py` (PYQ-134 was a
+provenance function resolving against the wrong directory) and `charts.py` (the
+only leg of invariant 8 with no direct test) — features.md#pyq-272. Vendor tests
+still patch at our own function boundary rather than replaying the recorded
+payloads in `tests/fixtures/`, which is the half of the PYQ-139/140 lesson that
+was diagnosed but never built (features.md#pyq-273). The API has no `/backtest`,
+which is the one capability that would actually test `docs/architecture.md`'s
+two-front-ends-one-core claim (features.md#pyq-271).
+
+Two tickets came from a generated knowledge graph of the repository rather than
+from reading it. `Settings` is the highest-betweenness node in the codebase
+(0.092, bridging 28 communities) — investigations.md#pyq-323 asks whether passing
+it whole costs more than it saves, and is deliberately framed as a question, not
+a refactor, since PYQ-310's precedent is that declining on evidence is a valid
+outcome. And an automated read of the committed `nvo.png` reports the forecast
+median opening ~10% below the last observed close with a band that translates
+rather than fans; that reading is unverified and possibly pre-PYQ-115, but the
+figure is the README's most-viewed claim about the project's own output, so
+investigations.md#pyq-324 asks for it to be confirmed or regenerated.
+
+No existing ticket's status, priority or content was changed by this pass.

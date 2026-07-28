@@ -3,7 +3,7 @@
 Open questions that need reasoning/experimentation before they become a bug
 or feature ticket (or get answered and closed as-is) — see
 [`README.md`](README.md) for the format.
-Next free ID: **PYQ-321**.
+Next free ID: **PYQ-325**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -27,6 +27,10 @@ Next free ID: **PYQ-321**.
 | [PYQ-318](#pyq-318) | Low | Answered | pytorch-forecasting vendor risk vs. neuralforecast / Darts |
 | [PYQ-319](#pyq-319) | Medium | Answered — 2026-07-27 | What is the latency and cost budget of one `forecast` call? |
 | [PYQ-320](#pyq-320) | Low | Answered | Data-source licensing and ToS review before anything public-facing |
+| [PYQ-321](#pyq-321) | Critical | Open | How much of every reported number is seed variance? |
+| [PYQ-322](#pyq-322) | High | Open | A pre-registered rule for what evidence flips a default |
+| [PYQ-323](#pyq-323) | Medium | Open | Is passing `Settings` everywhere costing more than it saves? |
+| [PYQ-324](#pyq-324) | Medium | Open | Does the forecast band actually fan, or does it translate? |
 
 ---
 
@@ -953,3 +957,194 @@ suggested approach, so this is a dated recorded judgement to reason from — the
 ticket says is better than an unexamined assumption — and explicitly not the review itself.
 Anyone taking this project public-facing should do the clause-level read before relying on
 any of the above.
+
+## [PYQ-321]
+How much of every reported number is seed variance?
+Status: Open
+Priority: Critical
+Files: `pyquant/models/tft.py`, `pyquant/config.py`, `docs/methodology.md`, `backlog/README.md`
+
+Question: `TrainingConfig.seed` is fixed at 42 and every headline this project has ever
+published is a single draw from it. What is the seed-to-seed standard deviation of skill,
+directional accuracy and coverage on this data, at the default configuration?
+
+Until that number exists, the project cannot say which of its own findings are real. The
+current results span three orders of difference in effect size and are all treated with
+roughly equal confidence:
+
+| Finding | Effect | Currently read as |
+|---|---|---|
+| PYQ-247 target change | skill -59.5% to +2.4% | trusted, pending multi-symbol repeat |
+| features.md#pyq-248 conformal | coverage 100% to ~85% | trusted, shipped defaulted off |
+| investigations.md#pyq-315 pooling | pooling "measured worse" | recorded as a corrected claim in the README |
+| investigations.md#pyq-316 sentiment | skill +0.045 to +0.018 | "sentiment measurably hurts" |
+
+If seed sd is ~0.005, all four survive. If it is ~0.03, the fourth is noise and the third
+is unsupported — and investigations.md#pyq-316's recommendation to flip `use_sentiment`,
+plus the README's *corrected* pooling claim, are both resting on a coin flip. The
+project's central non-negotiable is that a reported number must be real before it is
+reported; this is the one measurement that decides whether four existing reported numbers
+are.
+
+It also bears directly on the standing `## Now` item. All three pending repeats are
+described as needing more *symbols*. Seed variance is a different axis and possibly the
+cheaper one: if the same symbol at ten seeds already spans the effect being claimed, the
+multi-symbol repeat is not the missing evidence and running it first would waste the GPU
+time.
+
+Method: fix the symbol, the pinned dataset (PYQ-205), the window count and every other
+config; vary only the seed across >=10 values; report the full distribution of skill,
+directional accuracy, coverage and CRPS. Then re-express each finding above as an effect
+size in units of that sd. features.md#pyq-265 is the tooling this needs; it can be run by
+hand first if that is faster.
+
+Two secondary questions worth answering in the same run. Does seed variance scale with the
+sample size the metric is computed over — i.e. is the 25-point log-return result noisier
+than the 280-point default one by roughly the factor you would expect? And is the variance
+concentrated in particular horizon steps (features.md#pyq-267)?
+
+Expected outcome: either a number small enough that the existing findings stand and this is
+closed Answered with the sd recorded in `docs/methodology.md` next to every headline, or a
+number large enough to supersede investigations.md#pyq-316's recommendation and the
+README's pooling claim — in which case say so loudly, per the precedent PYQ-307 set.
+
+---
+
+## [PYQ-322]
+A pre-registered rule for what evidence flips a default
+Status: Open
+Priority: High
+Files: `backlog/README.md`, `docs/methodology.md`, `CLAUDE.md`
+
+Question: what, exactly, would be enough to change `TrainingConfig.target`,
+`DataConfig.use_sentiment`, or whether pooling is on by default?
+
+Three findings now recommend a default change and all three decline to make it: PYQ-247
+(log-return target, +2.4%), investigations.md#pyq-315 (pooling measured worse),
+investigations.md#pyq-316 (sentiment measurably hurts). Each stops for the same stated
+reason — one symbol, tens of points, one run — and each names "a multi-symbol repeat" as
+the prerequisite. None of them says **how many symbols, how many windows, or how large a
+difference**. `backlog/README.md`'s `## Now` has carried the resulting item at #1 across
+two passes without it being started.
+
+An unspecified threshold is not a conservative decision rule, it is a deferred one, and it
+has a predictable failure mode in both directions. It can never be met, so the finding sits
+forever. Or it gets met retrospectively by whichever run happens to look convincing — which
+is the exact move non-negotiable #1 exists to prevent, arrived at honestly. "We will change
+the default when the evidence is strong enough" is only a discipline if "strong enough" was
+written down first.
+
+This should be settled once, in the abstract, and then applied. Roughly: N symbols spanning
+more than one sector, M walk-forward windows each, K seeds (investigations.md#pyq-321),
+with the paired interval on the arm-vs-arm skill difference (features.md#pyq-266) excluding
+zero — and a stated position on what happens in the mixed case, where an arm helps 11
+symbols and hurts 4. That last one is the case most likely to actually occur and the one
+where an unwritten rule will be argued about after the fact.
+
+Also worth settling: whether the bar differs by what is being changed. Flipping
+`use_sentiment` off is a low-risk change that removes a feature which is 99.7% structural
+zeros (bugs.md#pyq-140) and is *suspected* of hurting; flipping `target` to log-return
+changes what every existing bundle means and makes older ones non-comparable, the way
+PYQ-121 did for a single feature. Equal evidence bars for unequal blast radii is probably
+the wrong answer.
+
+Expected outcome: a written rule in `docs/methodology.md`, cross-referenced from
+`CLAUDE.md`'s non-negotiable #1, that a future pass can mechanically check a sweep result
+against. Answered when the rule exists, not when the sweep is run.
+
+---
+
+## [PYQ-323]
+Is passing `Settings` everywhere costing more than it saves?
+Status: Open
+Priority: Medium
+Files: `pyquant/config.py`, `pyquant/models/tft.py`, `pyquant/data/`, `pyquant/analysis/`
+
+Question: `Settings` is the second-most-connected node in this codebase — 58 edges, and
+the highest betweenness of any node at 0.092, bridging 28 of the graph's communities
+(measured from a full AST + semantic knowledge graph of the repo, 2026-07-28). Only
+`add_technical_indicators()` has more edges, and it has almost no betweenness. `Settings`
+is the connective tissue.
+
+Is that a problem or just what a config object looks like?
+
+The case that it is fine: config genuinely is cross-cutting, pydantic-settings gives one
+typed load path with a documented precedence order (CLI > env > .env > YAML > defaults),
+and `settings_for_bundle()` depends on being able to reconstitute a whole `Settings` from a
+bundle. Splitting it would trade one wide dependency for many narrow ones and could easily
+be worse.
+
+The case that it is worth examining: every function that takes `settings: Settings` can
+read *any* configuration value, so the signature says nothing about what a function
+actually depends on. That matters here more than in most projects, because this pipeline's
+recurring bug shape is "correct in each individual file and wrong across files" — seven
+look-ahead leaks, every one of them a composition failure. A function whose signature
+declares `settings.data.lookback` and `settings.tft.horizon` is auditable against
+invariant 1 by reading its signature; a function taking the whole `Settings` is not. The
+graph's own bridge structure says `Settings` is where the pipeline's layers actually meet,
+which is precisely where the leaks have been.
+
+Method: for each function taking `Settings`, count which fields it actually reads
+(statically or with a recording proxy). If most read one or two sub-configs, the narrowing
+is mechanical and cheap. If most genuinely span three or more, the current design is
+correct and this closes Answered.
+
+Explicitly do **not** prejudge this into a refactor ticket. features.md#pyq-269 already
+proposes real motion in `models/`, and stacking a config refactor on top of it without
+evidence is how a codebase acquires churn. Non-negotiable #5's disposition — decline on
+evidence, and record the reason — is the model here; PYQ-310 declining mypy is the
+precedent.
+
+Expected outcome: the field-usage distribution, and a yes/no on narrowing with the numbers
+attached either way.
+
+---
+
+## [PYQ-324]
+Does the forecast band actually fan, or does it translate?
+Status: Open
+Priority: Medium
+Files: `pyquant/cli/charts.py`, `pyquant/analysis/metrics.py`, `nvo.png`, `docs/_static/logo.svg`
+
+Question: does the p10-p90 band widen with horizon, and does the median start from the
+last observed close?
+
+This project's own iconography asserts both. `docs/_static/logo.svg` is documented in its
+own source comment as drawn to the shape the product actually emits, with a dashed rule
+that *is* pipeline invariants 3 and 4, and a band that widens only to the right of it.
+`docs/index.md`'s hero SVG draws the same fan. Both encode "uncertainty grows with horizon"
+as a claim about the output.
+
+An automated read of the committed `nvo.png` — the figure in the README — reports something
+different: the forecast median opens roughly 5 points (~10%) *below* the last observed
+close, the last close sits at the very top edge of the initial p10-p90 band, and the band
+appears to translate downward rather than widen with horizon. That reading is
+machine-generated from the image and **has not been verified**; it may also predate
+PYQ-115, which is exactly the class of defect (a forecast anchored to the wrong window)
+that would produce a discontinuity at the origin. Confirming or dismissing it is step one,
+and re-generating the figure against current code is probably the cheapest way.
+
+If it survives verification against current code, there are three candidate explanations
+and they have very different consequences. A denormalisation or level-reconstruction error
+at the decode boundary would be a real bug — `log_returns_to_prices()` reconstructing a
+path from per-step quantiles is the obvious suspect, and PYQ-247's target change made that
+path load-bearing. A genuinely bearish forecast whose band is legitimately wide is not a
+bug at all. And a band that translates rather than fans would be a modelling finding: it
+would mean the model has learned a level offset rather than horizon-dependent uncertainty,
+which is a specific and interesting statement about *why* coverage is 99.3% on a nominal
+80% band.
+
+features.md#pyq-267's per-horizon breakdown is the quantitative form of this question and
+should answer it directly — band width at h=1 versus h=5 is a number, not an eyeball. This
+ticket is the qualitative prompt and the check that the README's own figure is currently
+telling the truth.
+
+Note also: `nvo.png` is committed and rendered at the top of the README, so whatever it
+shows is the project's most-viewed claim about its own output. If it is stale it should be
+regenerated regardless of the outcome here.
+
+Expected outcome: the discontinuity confirmed or dismissed; if confirmed, a bug ticket for
+the reconstruction path or a recorded finding about band geometry; `nvo.png` regenerated
+against current code either way.
+
+---

@@ -1,7 +1,7 @@
 # Bugs (PYQ-1xx)
 
 Concrete, reproducible defects — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-141**.
+Next free ID: **PYQ-142**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -45,6 +45,7 @@ Next free ID: **PYQ-141**.
 | [PYQ-138](#pyq-138) | Low | Resolved | CLI output tests assert on ANSI-coloured stdout, so they pass or fail by ambient terminal |
 | [PYQ-139](#pyq-139) | Critical | Resolved | PYQ-257's vintage fetch fails against the live FRED API: every FRED macro feature silently vanished |
 | [PYQ-140](#pyq-140) | High | Resolved | Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros |
+| [PYQ-141](#pyq-141) | Medium | Open | Headline skill and the per-window skill column beneath it are different estimators |
 
 ---
 
@@ -2011,3 +2012,49 @@ evidence-backed recommendation — disable sentiment by default, or gate it on
 new ticket, since it is the same "needs more than one symbol" gate as PYQ-247's own default
 change.
 with a backtest comparing sentiment-on vs sentiment-off on equal footing.
+
+---
+
+## [PYQ-141]
+Headline skill and the per-window skill column beneath it are different estimators
+Status: Open
+Priority: Medium
+Files: `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `docs/methodology.md`
+
+Problem/Ask: `backtest` prints one "Skill vs. baseline" figure (`cli/app.py:154`) and,
+directly beneath it, a per-window table with a skill column (`cli/app.py:201`). The two
+are not the same statistic and can disagree without limit.
+
+The headline comes from `aggregate_metrics()`, which pools `model_mae` and `baseline_mae`
+as `n_points`-weighted averages; `skill_vs_baseline` is then computed *from the pooled
+MAEs* — a **ratio of means**. Each per-window row computes skill from that window's own
+MAEs — a **mean of ratios** once you read down the column. Windows where the baseline MAE
+is small make the per-window ratio explode while contributing almost nothing to the pooled
+denominator, so the column can be dominated by windows the headline barely sees.
+
+This is not hypothetical. `docs/methodology.md` records the level-target per-window skills
+as `[+0.28, +0.47, +0.35, -2.71, -3.13]`, whose mean is **-94.8%**, alongside a headline
+of **-23.5%**. A reader who averages the printed column gets a number four times worse
+than the number printed above it, and nothing on screen or on the page says why.
+
+Neither estimator is wrong on its own — the pooled ratio is the defensible aggregate, and
+per-window rows exist precisely so a mean cannot hide its own dispersion (PYQ-117's
+lesson, and the reason `_per_window_table` was added at all). The defect is presenting
+them as one table with one label. This is PYQ-136 one level up: that ticket fixed
+numerator and denominator being computed two different ways *inside* the aggregate; this
+is the aggregate and its own detail rows being computed two different ways.
+
+Note the same seam in the interval: `cli/app.py:211` bootstraps a confidence interval over
+per-window **directional accuracy** only. The headline skill — the number the README, the
+docs and every ticket quote — has no interval at all (see PYQ-270).
+
+Reproduction: run `pyquant backtest NVO --windows 5` at defaults, average the skill column
+by hand, and compare to the headline row.
+
+Acceptance criteria: the two numbers are either reconciled or explicitly distinguished.
+Either label the header row as pooled ("Skill (pooled MAE ratio)") and the column as
+per-window, and state in `docs/methodology.md` that the column does not average to the
+header; or report both statistics explicitly. A test asserts the divergence is
+deliberate — construct windows with unequal baseline MAEs and assert the pooled skill is
+*not* the mean of the per-window skills, so the distinction cannot be silently refactored
+away.
