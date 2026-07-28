@@ -1,7 +1,7 @@
 # Bugs (PYQ-1xx)
 
 Concrete, reproducible defects — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-142**.
+Next free ID: **PYQ-160**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -46,6 +46,24 @@ Next free ID: **PYQ-142**.
 | [PYQ-139](#pyq-139) | Critical | Resolved | PYQ-257's vintage fetch fails against the live FRED API: every FRED macro feature silently vanished |
 | [PYQ-140](#pyq-140) | High | Resolved | Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros |
 | [PYQ-141](#pyq-141) | Medium | Open | Headline skill and the per-window skill column beneath it are different estimators |
+| [PYQ-142](#pyq-142) | High | Open | The displayed log-return forecast band compounds marginal per-step quantiles, ~√h too wide |
+| [PYQ-143](#pyq-143) | High | Open | `train()`/`walk_forward_backtest()` select checkpoints and report metrics from the same window |
+| [PYQ-144](#pyq-144) | High | Open | Conformal offset is pooled across horizon steps and fit on an inflated sample size |
+| [PYQ-145](#pyq-145) | High | Open | API accepts unvalidated `symbol`/`bundle_name`; auth header comparison throws on non-ASCII input |
+| [PYQ-146](#pyq-146) | High | Open | `load_settings()` mutates a module global; concurrent API requests can read the wrong config |
+| [PYQ-147](#pyq-147) | Medium | Open | `interpret()` zips variable names to weights with `strict=False` |
+| [PYQ-148](#pyq-148) | Medium | Open | `use_options` is missing from the panel cache fingerprint |
+| [PYQ-149](#pyq-149) | Medium | Open | `backtest --signals` scores an uncalibrated rule while `scan` ships a calibrated one |
+| [PYQ-150](#pyq-150) | High | Open | Finnhub API key travels in the query string and can reach WARNING logs on retry failure |
+| [PYQ-151](#pyq-151) | Low | Open | `with_retry` retries non-retryable errors (401/404) by default |
+| [PYQ-152](#pyq-152) | Medium | Open | `compute_rsi` returns 100, not 50, on a flat/halted series |
+| [PYQ-153](#pyq-153) | Low | Open | PIT values saturate at the outer quantile edges instead of extending into the tails |
+| [PYQ-154](#pyq-154) | Low | Open | `next_sessions` is not total for very large `max_prediction_length` |
+| [PYQ-155](#pyq-155) | Medium | Open | Cache writes (pickle + meta) are two separate, non-atomic operations |
+| [PYQ-156](#pyq-156) | Low | Open | `cli/app.py` hides a metric row at exactly 0.0; `aggregate_metrics([])` raises `ZeroDivisionError` |
+| [PYQ-157](#pyq-157) | Medium | Open | `Settings` swallows misspelled nested env keys; `TFTConfig.quantiles` allows a bandless config |
+| [PYQ-158](#pyq-158) | Medium | Open | `tests/conftest.py`'s `settings` fixture leaves `use_options` pointed at the real repo |
+| [PYQ-159](#pyq-159) | Low | Open | `TrainRequest.period` is dead; `JobRegistry` never evicts and indexes `_jobs` unguarded |
 
 ---
 
@@ -2058,3 +2076,646 @@ header; or report both statistics explicitly. A test asserts the divergence is
 deliberate — construct windows with unequal baseline MAEs and assert the pooled skill is
 *not* the mean of the per-window skills, so the distinction cannot be silently refactored
 away.
+
+---
+
+## [PYQ-142]
+The displayed log-return forecast band compounds marginal per-step quantiles, ~√h too wide
+Status: Open
+Priority: High
+Files: `pyquant/analysis/forecast.py` (`log_returns_to_prices`, `generate_forecast`), `pyquant/models/tft.py` (`_window_signal`, `predict_quantiles`)
+
+Problem: `log_returns_to_prices` (`forecast.py:16-18`) does
+`last_close * exp(cumsum(log_returns, axis=0))`. `generate_forecast` (`forecast.py:106-112`)
+passes the full `(horizon, n_quantiles)` array from `predict_quantiles` through it whenever
+`target == "log_return"`, so `cumsum(axis=0)` runs down the horizon axis *independently
+within each quantile column*. That computes the path where every step simultaneously
+realizes its own marginal quantile — which is not the quantile of the cumulative h-step
+return. `tft.py:492-496` (`_window_signal`, what `backtest --signals` scores) has the
+identical call shape on the same function.
+
+Under an iid-steps assumption the error is exactly `√h`: a 400k-path simulation at σ=2%/day
+gives a naive-cumsum p90 edge that is 1.000/1.412/1.734/2.004/2.233× the true p90 of the
+summed return at h=1..5 — matching `√1..√5` (1.000/1.414/1.732/2.000/2.236) almost exactly.
+At the default `max_prediction_length=5` the band a `log_return`-target user is shown is
+**~2.2× wider** than the model's own distribution implies.
+
+This is checkable against the codebase's own correct implementation: `_evaluate_validation`
+(`tft.py:847-866`) scores `calibration_coverage`/`crps`/`winkler_score`/`pit` on the *raw*
+`(n_samples, horizon, n_quantiles)` per-step arrays via `evaluate_predictions(...,
+target="log_return")` (`metrics.py:240-285`) — it never calls `log_returns_to_prices`. So
+every number written to `meta.json`, printed by the CLI, and reported by PYQ-247's
+measurement is unaffected. What's wrong is only what's *displayed*: the compounded path
+`forecast`/`scan`/`explain` shows, and the P&L `backtest --signals` computes.
+
+Two compounding consequences: `scan`'s "whole band on one side of zero" guard is far less
+likely to fire than the reported (correct) coverage would suggest, since the displayed band
+is wider than the one that coverage describes. And `predict_quantiles` (`tft.py:926-936`)
+applies any PYQ-248 conformal offset in per-step space *before* `generate_forecast`
+compounds — so a calibration fitted to correct per-step coverage is not calibrated for the
+wider object it ends up widening further.
+
+Scope: only `TrainingConfig.target == "log_return"` bundles are affected
+(`config.py:92` — default is `"close"`), but that is the configuration PYQ-247 measured and
+`docs/methodology.md` documents as a live alternative, not a hypothetical one.
+
+Reproduction: `tests/test_forecast.py::test_log_return_price_round_trip` currently locks in
+the buggy behavior as intended — it asserts `log_returns_to_prices` on a `(2, 3)` array
+produces per-column-independent compounding (`prices[1] = [104*101/100, 105*102/100,
+106*103/100]`), i.e. exactly the marginal-quantile compounding this ticket describes.
+
+Ask: either (a) train on cumulative-return targets so each decoder step's quantile is
+already the h-step quantile, or (b) keep per-step targets, compound only the median path,
+and derive band edges from a horizon-scaled dispersion under an explicit, documented
+distributional assumption. (a) is the more honest option and avoids inventing a
+distributional assumption the model doesn't actually make.
+
+Acceptance criteria: the displayed band's coverage (measured the same way
+`_evaluate_validation` measures it, but on the *compounded* path actual/prediction pairs)
+matches its nominal level within the same tolerance PYQ-248 already holds itself to; a test
+asserts the fixed reconstruction does not simply reproduce the old √h-wide band; the fix
+composes with PYQ-248's conformal offset (apply calibration in the space the band is
+finally displayed/scored in, not before compounding).
+
+---
+
+## [PYQ-143]
+`train()`/`walk_forward_backtest()` select checkpoints and report metrics from the same window
+Status: Open
+Priority: High
+Files: `pyquant/models/tft.py` (`train`, `walk_forward_backtest`, `tune`)
+
+Problem: `train()` builds one `validation` `TimeSeriesDataSet`/`val_loader`
+(`tft.py:335-342`), then uses it for three different purposes: `ModelCheckpoint(monitor=
+"val_loss", save_top_k=1, ...)` and `EarlyStopping(monitor="val_loss", ...)`
+(`tft.py:350-355`) select the best of up to `settings.training.max_epochs` epochs *against
+this window*, and `_evaluate_validation(best_model, val_loader, ...)` (`tft.py:409-411`)
+computes the `EvaluationMetrics` written to `meta.json`, printed by the CLI, and returned by
+`POST /train` — from the *same* `val_loader` object. Reported skill, directional accuracy,
+coverage, CRPS and Winkler are therefore max-over-epochs statistics, not out-of-sample ones.
+
+The project already has the correct pattern and the correct argument for it, in the same
+file: `TuneResult`'s docstring (`tft.py:78-85`) states *"every trial is a selection event,
+so the in-search score ... is optimistically biased and must not be reported as the model's
+real performance"*, and `tune()` reserves `held_out_days` of the panel that no trial ever
+sees (`tft.py:641-645, 667-683`). An epoch is a selection event by the identical argument —
+`ModelCheckpoint`/`EarlyStopping` are themselves a 30-trial (one per epoch) search over
+`val_loss` on the validation window, and the rule is applied in exactly one of the two
+places it structurally applies. `TrainingConfig.calibration_days` (`tft.py:305,391-407`)
+already carves out a slice between the training cutoff and the validation window, but it is
+used only to fit the PYQ-248 conformal offset — never for early-stopping/checkpoint
+selection.
+
+It is worse in `walk_forward_backtest`: `_window_validation_dataset` uses `predict=True`
+(`tft.py:455-470`), giving **one sample per origin**. That single `val_loader` is passed to
+both `EarlyStopping`/`ModelCheckpoint` (`tft.py:591`, inside the per-window `trainer.fit`)
+and `_evaluate_best_checkpoint(..., val_loader, ...)` (`tft.py:592-600`) — so a 5-point
+window is what early stopping is tuned on *and* what becomes that window's reported metrics
+in the per-window table and the aggregate PYQ-117/PYQ-251 report on top of.
+`walk_forward_backtest` has no `calibration_days`-equivalent slice at all.
+
+The bias is largest exactly where the sample is smallest: `effective_sample_size`
+(`metrics.py:162-165`, PYQ-251) puts a 60-day/horizon-5 holdout at ~12 independent windows;
+selecting the best of ~30 epochs against 11-12 effective points is a substantial upward bias
+on every rate the project reports as "the honest number" (PYQ-117's own framing).
+
+Ask: extend the `[train][purge+embargo][calibration][validation]` geometry `train()`
+already has to `[train][purge+embargo][selection][purge][test]`, and point
+`EarlyStopping`/`ModelCheckpoint` at the selection slice while reporting `EvaluationMetrics`
+from the disjoint test slice. In `walk_forward_backtest`, either disable early stopping
+(fixed epoch count per window) or carve a selection window from each origin's training
+tail — a 5-point selection metric is not usable as a monitor either way. This pairs
+naturally with PYQ-269's planned extraction of the window-geometry arithmetic (`max_idx`,
+`validation_start`, `purged_training_cutoff`) into one object, since `train`,
+`walk_forward_backtest` and `tune` each currently reimplement it and have already drifted
+(`train` accounts for `calibration_days`; the other two don't).
+
+Acceptance criteria: `train()`'s reported `EvaluationMetrics` come from data neither
+`ModelCheckpoint` nor `EarlyStopping` was monitored against; a test constructs a case where
+early-stopping-selected and true-out-of-sample metrics diverge and asserts the reported
+number is the latter; `walk_forward_backtest` either fixes epochs or gets an equivalent
+split, documented as a deliberate tradeoff either way; expect every reported metric in the
+repo to get worse once this lands — that is the point (see PYQ-143's sibling, PYQ-142, for
+the same "expect the honest number to be worse" framing).
+
+---
+
+## [PYQ-144]
+Conformal offset is pooled across horizon steps and fit on an inflated sample size
+Status: Open
+Priority: High
+Files: `pyquant/analysis/calibrate.py` (`fit_conformal_offset`), `pyquant/analysis/metrics.py` (`effective_sample_size`)
+
+Problem: `fit_conformal_offset` (`calibrate.py:95-134`) receives `predictions` shaped
+`(n_samples, horizon, n_quantiles)` and immediately flattens the horizon axis away:
+`scores = conformity_scores(...).reshape(-1)` (`calibrate.py:118`), then fits **one scalar**
+`offset` from all of it. `apply_conformal_offset` (`calibrate.py:137-159`) then broadcasts
+that single offset onto every decoder step identically (`out[..., 0] -= delta; out[...,
+-1] += delta`). Forecast dispersion grows with horizon (see PYQ-142's own √h measurement),
+so one additive correction over-narrows h=1, where the band is already closest to correct,
+and under-widens h=5, where it needs the most correction — the same category error as
+PYQ-142, from the opposite direction. `tests/test_calibrate.py`'s eight tests never mention
+"horizon" — the per-step behavior is untested because the code has no per-step behavior.
+
+Second, independent bug in the same function: `n = scores.size` at `calibrate.py:119` is
+`n_samples * horizon` — every point of every sliding calibration window, which overlap
+heavily (the calibration `TimeSeriesDataSet` at `tft.py:392-397` uses `min_prediction_idx`
+without `predict=True`, so consecutive windows share most of their span). This `n` feeds
+directly into the finite-sample correction `ceil((n+1)·coverage)/n`
+(`calibrate.py:123`) — the same correction PYQ-251 built `effective_sample_size(n_samples,
+horizon)` (`metrics.py:162-165`) specifically to fix for exactly this overlap pattern, used
+today only via `EvaluationMetrics.effective_n_samples`. `fit_conformal_offset` doesn't call
+it, so the "what buys the marginal guarantee" correction the module's own docstring
+describes is computed on a count that overstates the independent evidence by roughly the
+horizon factor — the same "correct in one file, not applied in the analogous one" pattern
+CLAUDE.md's leakage non-negotiable names as the project's recurring bug shape, just outside
+the leakage category this time.
+
+Note: the review that prompted this pass also flagged `apply_conformal_offset`'s trailing
+`np.sort(out, axis=-1)` (`calibrate.py:159`) as contradicting a "interior quantiles are left
+alone" docstring claim. That is **not** a bug — the docstring (`calibrate.py:143-149`)
+explicitly names the re-sort scenario and cites PYQ-124's monotonicity precedent; verified
+correct, no action needed.
+
+Scope: `TrainingConfig.calibration_days` defaults to 0 (calibration off), so this is dormant
+by default — it activates whenever a user turns on split-conformal calibration, which
+PYQ-248's own resolution note frames as something users should consider.
+
+Acceptance criteria: `fit_conformal_offset` accepts and returns a per-horizon-step offset
+(or a documented decision to keep it pooled, defended against the √h evidence in PYQ-142);
+`n` is replaced with `effective_sample_size(n_samples, horizon)` in the finite-sample
+correction; a test with horizon-varying synthetic dispersion asserts the per-step offsets
+differ and each step's post-calibration coverage is closer to nominal than the pooled
+offset's.
+
+---
+
+## [PYQ-145]
+API accepts unvalidated `symbol`/`bundle_name`; auth header comparison throws on non-ASCII input
+Status: Open
+Priority: High
+Files: `pyquant/models/tft.py` (`_bundle_dir`), `pyquant/api/schemas.py`, `pyquant/api/deps.py`
+
+Problem: `_bundle_dir(settings, name)` (`tft.py:148-149`) is `settings.checkpoint_dir /
+name.upper()` with no validation on `name`. `TrainRequest.bundle_name` and
+`ScanRequest.symbols` (`api/schemas.py`) have no `field_validator` restricting their
+character set — confirmed by grep, `field_validator` does not appear anywhere in that file.
+The chain from an API request to the filesystem is direct: `routes/train.py:37` passes
+`request.bundle_name` into `tft.train(..., bundle_name=...)` →
+`tft.py:291,345-346` (`bundle_dir = _bundle_dir(...); bundle_dir.mkdir(parents=True,
+exist_ok=True)`) → `ModelCheckpoint(dirpath=bundle_dir, ...)` and
+`torch.save(training.get_parameters(), bundle_dir / "dataset_params.pt")`. A `bundle_name`
+of `"../../../../tmp/pwn"` reaches `mkdir`/`torch.save` with nothing in between to stop it —
+unlike `GET /forecast/{symbol}`, `POST /train`'s body isn't subject to Starlette's
+`/`-rejecting path-parameter matching. And a crafted `symbol` reaching `tft.load()`
+(`tft.py:1058-1069`, `torch.load(..., weights_only=False)`) moves the file the unpickler
+trusts outside the "your own trained runs" boundary the code comment there assumes.
+
+Related, same trust boundary: `require_api_key` (`api/deps.py:107,132`) calls
+`hmac.compare_digest(x_api_key, k)` on plain `str`. Starlette decodes headers as latin-1, so
+a byte >127 in `X-API-Key` produces a non-ASCII `str`, and `compare_digest` raises
+`TypeError: comparing strings with non-ASCII characters is not supported` (verified
+directly) — unhandled, so FastAPI's default handler turns a bad key into a **500** instead
+of a **401**. Not an auth bypass (no key is ever accepted this way), but it's an unhandled
+exception on attacker-controlled input, and the traceback path is a minor information
+disclosure.
+
+Ask: one shared validator (`^[A-Z0-9][A-Z0-9.\-]{0,15}$` or similar) applied as a pydantic
+`field_validator` on `TrainRequest.bundle_name` and `ScanRequest.symbols`, and as a
+`Path(..., pattern=...)` on route params that take a symbol. Belt and braces: after
+building `bundle_dir`, assert `settings.checkpoint_dir.resolve() in
+bundle_dir.resolve().parents`. For the auth comparison, encode both sides to bytes
+(`.encode("utf-8", errors="surrogateescape")` or reject non-ASCII keys with a clean 401)
+before calling `hmac.compare_digest`.
+
+Acceptance criteria: `POST /train {"bundle_name": "../../etc"}` and `POST /scan
+{"symbols": ["../x"]}` are rejected with 422 before reaching `_bundle_dir`; a test asserts
+`bundle_dir` can never resolve outside `checkpoint_dir`; a non-ASCII `X-API-Key` returns 401
+rather than 500, with a regression test.
+
+---
+
+## [PYQ-146]
+`load_settings()` mutates a module global; concurrent API requests can read the wrong config
+Status: Open
+Priority: High
+Files: `pyquant/config.py` (`load_settings`, `_active_yaml_file`), `pyquant/api/deps.py` (`get_settings`)
+
+Problem: `pyquant/config.py:233,244,256,260` —
+
+```python
+_active_yaml_file: Path | None = None
+
+def load_settings(config_path=None):
+    global _active_yaml_file
+    ...
+    _active_yaml_file = Path(chosen) if chosen else None
+    try:
+        return Settings()
+    finally:
+        _active_yaml_file = None
+```
+
+`get_settings()` (`api/deps.py:22-24`) is `return load_settings()`, called as a FastAPI
+dependency on every request. All routes under `pyquant/api/routes/` are declared `def`, not
+`async def` (confirmed by grep), so Starlette runs them on its shared `anyio` threadpool —
+genuinely concurrent OS threads. `get_settings()` has no `functools.lru_cache` (confirmed
+absent), so two concurrent requests can both call `load_settings()` at once. If thread A
+sets `_active_yaml_file` and thread B's `finally` resets it to `None` before thread A
+reaches `Settings()`, thread A silently builds settings **without** the YAML layer it
+intended — no error, no log, just a request served against different hyperparameters than
+the one it requested. This is exactly the failure mode PYQ-128 was filed to prevent (a
+config path silently ignored), reintroduced one layer up by the mechanism PYQ-128 didn't
+touch.
+
+Ask: thread the YAML path through as an argument instead of a global — e.g. build the
+`YamlConfigSettingsSource` list in a `Settings` subclass constructed per call, or pass the
+path through `settings_customise_sources`'s closure rather than a module global.
+Independently, `get_settings()` re-reads `.env` from disk on every request; wrap it in
+`functools.lru_cache` with an explicit invalidation hook once the global is gone.
+
+Acceptance criteria: a test that calls `load_settings()` from two threads concurrently, one
+with a config path and one without, and asserts neither observes the other's setting; no
+module-global mutation remains in the `Settings()`-construction path.
+
+---
+
+## [PYQ-147]
+`interpret()` zips variable names to weights with `strict=False`
+Status: Open
+Priority: Medium
+Files: `pyquant/models/tft.py` (`interpret`)
+
+Problem: `tft.py:953` — `importance = dict(zip(enc_names, enc_weights.tolist(),
+strict=False))`. `enc_names` is `bundle.model.encoder_variables`; `enc_weights` comes from
+`interpretation["encoder_variables"]`. This is the only `strict=False` zip in the file
+(confirmed by grep) — `_build_pooled_long_df` (`tft.py:182`) and `metrics.pit_values`
+(`metrics.py:158`) both use `strict=True` for the identical names-to-values pattern, and the
+comment immediately above `tft.py:182`'s `strict=True` explains why (PYQ-111/PYQ-302: a
+length mismatch should fail loudly, not silently misattribute). If a pytorch-forecasting
+version bump ever changes the ordering or length of either array — the library has done
+both across minor versions — `strict=False` truncates silently and hands back a
+user-facing, apparently-authoritative explainability table with weights attached to the
+wrong feature names.
+
+Ask: flip to `strict=True`.
+
+Acceptance criteria: `strict=True` at `tft.py:953`; a regression test constructs mismatched-
+length `enc_names`/`enc_weights` and asserts `interpret()` raises rather than silently
+truncating.
+
+---
+
+## [PYQ-148]
+`use_options` is missing from the panel cache fingerprint
+Status: Open
+Priority: Medium
+Files: `pyquant/data/dataset.py` (`_cache_fingerprint`)
+
+Problem: `_cache_fingerprint` (`dataset.py:42-58`) covers `use_macro`, `use_sectors`,
+`use_sentiment`, `use_indicators`, `sector_etfs`, `period`, `code_version`,
+`has_fred_key`/`has_finnhub_key` — not `use_options`, even though `build_panel` branches on
+it (`dataset.py:147`) and `_SCHEMA_DATA_FIELDS` in `tft.py:1024-1031` lists it. Toggling
+`use_options` with `cache_enabled=True` can therefore return a cached panel built under the
+opposite setting, silently, within the cache's TTL.
+
+This is not what PYQ-133 (Resolved) covers — that ticket's problem statement predates
+`use_options` existing as a fingerprint-relevant field and was specifically about
+`code_version`. It's a regression surfaced by PYQ-254 (Resolved), which added `use_options`
+to `tft.py`'s `_SCHEMA_DATA_FIELDS` without touching `dataset.py`'s fingerprint — its
+resolution note doesn't mention `_cache_fingerprint` at all, and no test
+(`tests/test_dataset.py:300-324`) checks `use_options` there.
+
+Ask: add `use_options` (and its own key-presence flag, if a data key is ever required for
+it) to `_cache_fingerprint`. Enumerate the fields programmatically from `DataConfig` rather
+than listing them by hand a fourth time, so the next toggle can't be forgotten the same way.
+
+Acceptance criteria: a test that toggles only `use_options` and asserts the fingerprint
+(and therefore the cache key) changes; ideally a parametrized test over every
+`DataConfig` field `build_panel` reads, so a future field is covered by construction rather
+than by remembering to add it here.
+
+---
+
+## [PYQ-149]
+`backtest --signals` scores an uncalibrated rule while `scan` ships a calibrated one
+Status: Open
+Priority: Medium
+Files: `pyquant/models/tft.py` (`_window_signal`, `walk_forward_backtest`, `predict_quantiles`)
+
+Problem: `_window_signal` (`tft.py:473-506`), used when `walk_forward_backtest(...,
+compute_signals=True)`, reads raw arrays straight from `_raw_validation_arrays` — no
+conformal offset is fitted or applied anywhere in `walk_forward_backtest`
+(`calibration_days`/`ConformalOffset` machinery exists only in `train()`, `tft.py:386-410`).
+Meanwhile `generate_forecast` → `predict_quantiles` (`tft.py:926-936`) applies
+`apply_conformal_offset(..., bundle_conformal_offset(bundle))` — the trained bundle's
+calibrated offset — to every band `scan` shows. `_window_signal`'s own docstring
+(`tft.py:480-484`) claims to reproduce *"the (signal, realized_return_pct) `scan()` would
+have shown"*, which is only true when `calibration_days == 0` (today's default). The moment
+a user turns on calibration — which PYQ-248/PYQ-255 both frame as the fix that lets the band
+guard fire meaningfully at all — `backtest --signals`'s measured P&L and `scan`'s live
+behavior silently diverge: the backtest keeps measuring the pessimistic, uncalibrated case.
+
+Ask: either apply the same conformal fit/offset path inside `walk_forward_backtest` before
+computing signals, or clearly label `--signals` output as pre-calibration and cross-link to
+PYQ-248 so the divergence is documented rather than silent.
+
+Acceptance criteria: with `calibration_days > 0`, a test asserts `_window_signal`'s
+classification uses the same offset `scan` would apply for an equivalent bundle/window; or,
+if intentionally left uncalibrated, `--signals`' CLI/JSON output and docstring say so
+explicitly.
+
+---
+
+## [PYQ-150]
+Finnhub API key travels in the query string and can reach WARNING logs on retry failure
+Status: Open
+Priority: High
+Files: `pyquant/data/sentiment.py`, `pyquant/data/retry.py`
+
+Problem: `sentiment.py:90` builds `params = {"symbol": ..., "from": ..., "to": ...,
+"token": api_key}` passed to `requests.get(_FINNHUB_NEWS_URL, params=params, ...)` — the key
+travels in the URL query string rather than an `X-Finnhub-Token` header (Finnhub supports
+header auth; this module hand-rolls the request rather than using an official client).
+`with_retry` (`retry.py:48-55`) logs `logger.warning("%s failed (attempt %d/%d): %s; ...",
+..., exc, ...)` on every failed attempt, and `requests.exceptions.HTTPError.__str__()`
+embeds the full request URL including its query string. `fetch_news` calls `with_retry`
+with the default `exceptions=(Exception,)` (see PYQ-151), so any retryable failure —
+including an ordinary transient 5xx, not just a bad key — writes `token=<the actual key>`
+into the log stream at WARNING, every attempt, until it either succeeds or exhausts
+retries. `FINNHUB_API_KEY` is a configured repository secret (per this project's own
+CI setup), so this reaches CI logs too. This is a direct violation of CLAUDE.md's own
+non-negotiable: *"Secrets never enter meta.json, runs.jsonl, logs, or cache fingerprints."*
+
+Ask: move the token to a header (`headers={"X-Finnhub-Token": api_key}`, dropped from
+`params`), and/or redact `token=...` from the message `with_retry` logs before it's written,
+as a second line of defense for any other query-string secret that might be added later.
+
+Acceptance criteria: the key is not present in `params`/the request URL; a test constructs
+a failing request and asserts the logged output (at any level) never contains the
+configured key; if header-auth isn't viable for some reason, `with_retry`'s log line is
+proven to redact `token=`/`api_key=`-shaped query fragments.
+
+---
+
+## [PYQ-151]
+`with_retry` retries non-retryable errors (401/404) by default
+Status: Open
+Priority: Low
+Files: `pyquant/data/retry.py`
+
+Problem: `with_retry`'s default is `exceptions: tuple[type[BaseException], ...] =
+(Exception,)` (`retry.py:30`) — every call site (`fetch_prices`, `fetch_news`) uses this
+default, so a definitively non-retryable failure (invalid API key → 401, unknown symbol →
+404) still costs the full retry budget and every configured sleep, per call, per symbol,
+before surfacing. No call site narrows `exceptions` to connection/timeout/5xx/429.
+
+Ask: narrow the default (or each call site's override) to retryable failure modes —
+connection errors, timeouts, 429, 5xx — and let 4xx other than 429 fail immediately. Add
+jitter to the backoff while touching this, since the current fixed/exponential delay makes
+concurrent callers (e.g. the API's threadpool) retry in lockstep.
+
+Acceptance criteria: a test asserts a 401/404-raising callable is not retried (single
+attempt, immediate raise); a separate test asserts a 5xx/timeout-raising callable still
+retries per the existing backoff schedule.
+
+---
+
+## [PYQ-152]
+`compute_rsi` returns 100, not 50, on a flat/halted series
+Status: Open
+Priority: Medium
+Files: `pyquant/data/prices.py` (`compute_rsi`)
+
+Problem: `prices.py:90-93` —
+
+```python
+rsi = 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
+return rsi.mask((avg_loss == 0) & avg_gain.notna(), 100.0)
+```
+
+On a flat series, `avg_gain == avg_loss == 0.0`, so `avg_gain / avg_loss` is `0.0/0.0 =
+NaN` and `rsi` is `NaN`. The mask condition `(avg_loss == 0) & avg_gain.notna()` is `True`
+even when `avg_gain` is exactly `0.0` — `0.0` is not `NaN`, so `.notna()` passes — and the
+mask overwrites with `100.0`. Verified directly: `compute_rsi(pd.Series([100.0]*30),
+period=14).iloc[-1] == 100.0`. A halted or pegged instrument therefore reads as maximally
+overbought instead of neutral. This is a distinct edge case from PYQ-121 (Resolved), which
+fixed simple-MA vs. Wilder's smoothing and doesn't touch this 0/0 branch.
+
+Ask: add `& (avg_gain > 0)` to the mask condition so the 100.0 override only fires on a
+genuine "all gains, no losses" run, and emit `50.0` (neutral) for the degenerate
+`avg_gain == avg_loss == 0` case.
+
+Acceptance criteria: `compute_rsi` on a constant-price series returns 50.0 (not 100.0), with
+a regression test alongside the existing Wilder's-smoothing tests from PYQ-121.
+
+---
+
+## [PYQ-153]
+PIT values saturate at the outer quantile edges instead of extending into the tails
+Status: Open
+Priority: Low
+Files: `pyquant/analysis/metrics.py` (`pit_values`)
+
+Problem: `pit_values` (`metrics.py:152-159`) uses `np.interp(actual, sorted_predictions,
+quantiles)` per point, which saturates outside the knot range by construction. With the
+default three quantiles (`TFTConfig.quantiles = [0.1, 0.5, 0.9]`, `config.py:62`), every
+actual below the predicted p10 maps to exactly `0.1` and every actual above p90 maps to
+exactly `0.9` — point masses at the band edges rather than a spread into the tails. The PIT
+histogram PYQ-252 added is documented as showing "U-shaped means overconfident," but with
+this clamping the histogram is structurally incapable of showing a shape past those two
+edge bins — it can only show *how many* points landed outside the band, not how far.
+
+Ask: either extrapolate the tails under an explicit, documented parametric assumption (the
+options review flags this needs justification, not just more interpolation), or state the
+truncation directly next to wherever the PIT histogram is rendered/described so it isn't
+read as a calibration verdict it can't actually support.
+
+Acceptance criteria: either PIT values for out-of-band actuals are no longer clamped to
+exactly 0.1/0.9 (with the extrapolation assumption stated in the docstring), or the CLI/docs
+output next to the histogram explicitly notes the edge-clamping limitation.
+
+---
+
+## [PYQ-154]
+`next_sessions` is not total for very large `max_prediction_length`
+Status: Open
+Priority: Low
+Files: `pyquant/data/trading_calendar.py` (`next_sessions`), `pyquant/config.py` (`TrainingConfig.max_prediction_length`)
+
+Problem: `next_sessions` (`trading_calendar.py:96-102`) over-fetches a **fixed** 15-business-
+day margin (`pd.bdate_range(start, periods=count + 15)`) rather than looping until
+satisfied. Verified directly: at `count=377` it already returns fewer than `count` dates
+(376), and by `count=380` `extend_for_prediction` (`dataset.py:286`) raises `ValueError:
+Length of values (379) does not match length of index (380)`. `TrainingConfig
+.max_prediction_length` (`config.py:85`) has no upper-bound validator, so an
+operator-supplied horizon in that range is accepted at config time and fails later, deep in
+the pipeline, with a pandas-internal error rather than a clear one.
+
+Ask: loop `next_sessions` until `len(result) >= count` rather than fetching a fixed margin,
+so it is total for any `count`. Low practical severity — realistic horizons are single
+digits to low dozens — but cheap to fix and removes a confusing failure mode for anyone
+who fat-fingers the config.
+
+Acceptance criteria: `next_sessions(start, count=400)` (or similar) returns exactly `count`
+dates; a test pins this at a horizon past the current ~377 threshold.
+
+---
+
+## [PYQ-155]
+Cache writes (pickle + meta) are two separate, non-atomic operations
+Status: Open
+Priority: Medium
+Files: `pyquant/data/cache.py` (`write_cache`, `write_pin`)
+
+Problem: `write_cache` (`cache.py:71-76`) does `panel.to_pickle(path)` then
+`_meta_path(path).write_text(json.dumps({"cached_at": ...}))` as two separate,
+unlocked filesystem operations; `write_pin` (`cache.py:114-131`) has the identical
+pattern. A crash mid-`to_pickle` (or between the two calls) can leave a truncated pickle
+that a stale-but-present meta file will happily present as valid, and `pd.read_pickle` will
+raise from inside `build_panel` on the next read. Two API worker threads (see PYQ-146's note
+on the threadpool) building the same panel concurrently can interleave the two writes.
+
+Ask: write to a temp path (`path.with_suffix(".tmp")`) and `os.replace()` into place for
+both the pickle and its meta sidecar, so a reader never observes a partially-written file;
+guard reads in a `try/except` that falls back to a refetch on a corrupt cache entry rather
+than propagating a raw unpickling error.
+
+Acceptance criteria: a test that kills a simulated write mid-way (or directly writes a
+truncated file at the target path) and asserts a subsequent read either succeeds against the
+last good state or triggers a clean refetch, never a raw exception from `build_panel`.
+
+---
+
+## [PYQ-156]
+`cli/app.py` hides a metric row at exactly 0.0; `aggregate_metrics([])` raises `ZeroDivisionError`
+Status: Open
+Priority: Low
+Files: `pyquant/cli/app.py`, `pyquant/analysis/metrics.py` (`aggregate_metrics`)
+
+Problem: two small robustness gaps in the same reporting path.
+
+`cli/app.py:171,173` — `if ev.crps:` / `if ev.winkler_score:` are bare truthy checks, not
+`is not None`. `EvaluationMetrics.crps`/`winkler_score` (`metrics.py:217-218`) are plain
+`float` (not `Optional`), always populated by `evaluate_predictions`. A legitimate value of
+exactly `0.0` (e.g. a degenerate/perfect band) silently disappears from the printed summary
+table with no indication a row was suppressed.
+
+`metrics.py:307-312` (`aggregate_metrics`) — with `results=[]`, `weights =
+np.ones(len(results))` is `np.ones(0)`, and `np.average([], weights=[])` raises
+`ZeroDivisionError: Weights sum to zero, can't be normalized` (verified directly).
+Reachable: `cli/app.py:279`'s `--windows` option has no minimum-value validator, so
+`pyquant backtest SYMBOL --windows 0` reaches `walk_forward_backtest(n_windows=0)`, produces
+an empty `cutoffs` list, and calls `aggregate_metrics([])` directly. `ZeroDivisionError` is
+not a `ValueError` and isn't in `cli/app.py:39`'s `EXPECTED_FAILURES` tuple, so the CLI
+surfaces a raw Python traceback instead of a clean error message.
+
+Ask: `is not None` (or drop the guards — both fields are always populated now, per the
+comment already true elsewhere in this file) for the truthiness checks; a guard in
+`aggregate_metrics` (or a `--windows` minimum of 1 at the CLI boundary) for the empty case.
+
+Acceptance criteria: a metrics row with `crps == 0.0` or `winkler_score == 0.0` still
+prints; `pyquant backtest SYMBOL --windows 0` produces a clean, expected error rather than a
+traceback, with a regression test.
+
+---
+
+## [PYQ-157]
+`Settings` swallows misspelled nested env keys; `TFTConfig.quantiles` allows a bandless config
+Status: Open
+Priority: Medium
+Files: `pyquant/config.py` (`Settings`, `TFTConfig`), `pyquant/models/tft.py` (`_window_signal`, `permutation_importance`)
+
+Problem: two related validation gaps in `config.py`.
+
+`Settings.model_config` (`config.py:172-177`) sets `extra="ignore"`; the nested
+`TFTConfig`/`TrainingConfig`/`DataConfig` `BaseModel`s have no `model_config` override, so
+they inherit pydantic v2's equivalent default. Verified directly: `TRAINING__MAX_EPOCH=999`
+(missing the trailing "S") leaves `settings.training.max_epochs` at its default with no
+error or warning, while the correctly-spelled `TRAINING__MAX_EPOCHS=999` works. This is the
+same failure shape PYQ-128 (Resolved) fixed for a missing `--config` *file* — silent
+divergence between what an operator intended and what actually ran — just one level down,
+at the *key* rather than the file.
+
+Separately, `TFTConfig.quantiles`'s validator (`config.py:64-78`) only checks the list is
+sorted ascending — nothing requires `0.5 in quantiles` or `0 < q < 1`. Four call sites do
+`quantiles.index(0.5)`: `metrics.py:253-260` (`evaluate_predictions`) raises a clear,
+named `ValueError` first; `tft.py:489` (`_window_signal`) and `tft.py:985`
+(`permutation_importance`) do not, and raise a bare `ValueError: 0.5 is not in list` from
+deep in the stack with no indication which setting caused it.
+
+Ask: consider `extra="forbid"` on the nested config models (at minimum) so a misspelled key
+fails at startup the way a missing config file already does. Validate `0.5 in quantiles` and
+`0 < q < 1` once, in `TFTConfig`'s validator, so the error names the actual setting instead
+of surfacing from three different unguarded call sites.
+
+Acceptance criteria: a misspelled nested env key raises at `Settings()` construction rather
+than silently defaulting; `TFTConfig(quantiles=[0.1, 0.9])` (no 0.5) raises a validation
+error naming `quantiles`, with a test; `_window_signal`/`permutation_importance` no longer
+need their own guard because the invalid state is unreachable by construction.
+
+---
+
+## [PYQ-158]
+`tests/conftest.py`'s `settings` fixture leaves `use_options` pointed at the real repo
+Status: Open
+Priority: Medium
+Files: `tests/conftest.py`
+
+Problem: the `settings` fixture disables `use_macro`/`use_sectors`/`use_sentiment` and
+redirects `cache_dir` to `tmp_path`, with a comment stating the intent is *"so tests never
+read/write the real project directory"* — but leaves `use_options=True` (the `DataConfig`
+default, `config.py:140`) and `options_history_dir` pointed at the real
+`data/options_history/` directory (`config.py:199`'s default). `build_panel`
+(`dataset.py:147-150`) reads `load_snapshot_history(symbol, settings)` from that path
+whenever `use_options` is true, so any test using this fixture reads real accumulated
+snapshot data if `pyquant snapshot` has been run locally — a developer who has run it 20+
+times gets measurably different test behavior than CI, which never has. (The leak is
+read-only: `append_snapshot` is only invoked by the `pyquant snapshot` CLI command, never by
+`build_panel`, so tests can't contaminate the real directory, only be silently influenced by
+it.)
+
+Ask: add `s.data.use_options = False` and `s.options_history_dir = tmp_path / "options"` to
+the fixture, matching the treatment already given to macro/sectors/sentiment/cache.
+
+Acceptance criteria: the `settings` fixture disables `use_options` and redirects
+`options_history_dir` into `tmp_path`; a test (or an assertion added to an existing one)
+confirms panel-building under the fixture never touches the real `data/options_history/`
+directory.
+
+---
+
+## [PYQ-159]
+`TrainRequest.period` is dead; `JobRegistry` never evicts and indexes `_jobs` unguarded
+Status: Open
+Priority: Low
+Files: `pyquant/api/schemas.py`, `pyquant/api/jobs.py`
+
+Problem: two small API hygiene gaps.
+
+`TrainRequest.period` (`api/schemas.py:101`) is declared, appears in the generated OpenAPI
+schema, and is never read — `_run_train_job` (`api/routes/train.py:25-44`) only consumes
+`request.symbols`/`bundle_name`/`epochs`. Grepping `period` across `pyquant/api/` returns
+only the declaration. A documented request field that silently does nothing.
+
+`JobRegistry` (`api/jobs.py`) appends to `self._jobs` on every `create()` (`jobs.py:41-45`)
+with no eviction, TTL, or size cap anywhere in the file — unlike `BundleCache` in
+`api/deps.py`, which has explicit LRU eviction. `mark_running`/`mark_succeeded`/`mark_failed`
+(`jobs.py:56-73`) all index `self._jobs[job_id]` directly with no existence check, so a call
+with an unregistered `job_id` raises `KeyError`. Under the current design `create()` always
+runs synchronously before the job is scheduled, so this `KeyError` path isn't demonstrated
+as reachable today — a latent robustness gap rather than a live bug, worth guarding before
+the job lifecycle grows more entry points (e.g. cancellation, PYQ-261's noted follow-up).
+(Note: `POST /train` sharing Starlette's threadpool with other routes for the duration of a
+fit is a separate, already-documented and deliberate v1 tradeoff — see `docs/api-design.md`
+and PYQ-261's resolution note — not a new finding here.)
+
+Ask: either thread `period` into `settings.data.period` or delete the field. Add a bound
+(size cap and/or TTL-based eviction) to `JobRegistry`, and use `.get(job_id)` with a clear
+error (or a no-op with a logged warning) instead of unguarded `__getitem__` in the three
+`mark_*` methods.
+
+Acceptance criteria: `period` either does something or is removed from the schema; a test
+asserts `JobRegistry` bounds its size under sustained job creation; a test asserts calling
+`mark_running`/`mark_succeeded`/`mark_failed` with an unknown `job_id` fails predictably
+rather than raising a bare `KeyError` from inside a background task.

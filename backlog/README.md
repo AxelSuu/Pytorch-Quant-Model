@@ -427,3 +427,65 @@ later produced PYQ-139 and PYQ-140, four live-vendor failure modes its happy-pat
 recordings could not exercise. The ticket now asks for those four as named regressions on
 the harness that already exists. Recorded as a correction, per this file's own convention
 that a wrong premise is superseded in place and explained rather than quietly rewritten.
+
+A second external review pass (2026-07-28) audited the repo cold, structured around three
+severity tiers rather than a full-source read, and its 20-ish findings were verified against
+current source (not trusted at face value — several of its line numbers and one of its
+priority claims had already drifted) before being merged as **22 new tickets** —
+bugs.md#pyq-142..159, features.md#pyq-277..280 — bringing the total to **163, 44 open**.
+Every finding was independently confirmed by direct code reading or a background research
+pass before filing; one claim (`apply_conformal_offset`'s re-sort "contradicting" its own
+docstring) was checked and refuted — the sort is deliberate, documented, and cites PYQ-124's
+precedent — and was not filed. Nothing was filed on the review's word alone.
+
+The two headline findings are both **High**, not Critical, calibrated against this
+backlog's own bar (PYQ-115/116/139's total, silently-wrong output) rather than the
+review's: **bugs.md#pyq-142** — `log_returns_to_prices`'s `cumsum` compounds each
+quantile column independently down the horizon axis, so the *displayed* band for
+`target="log_return"` bundles is ~√h too wide (verified by a 400k-path simulation matching
+√1..√5 almost exactly, and by the fact that `tests/test_forecast.py
+::test_log_return_price_round_trip` currently locks the buggy behavior in as intended). It
+does not touch any number this project has actually published — `_evaluate_validation`
+scores the correct raw per-step arrays, so PYQ-247's 76-80% coverage figure is unaffected —
+only what `forecast`/`scan`/`explain` show and what `backtest --signals` scores. And
+**bugs.md#pyq-143** — `train()` and `walk_forward_backtest()` both monitor
+`EarlyStopping`/`ModelCheckpoint` against the identical loader that later becomes the
+reported `EvaluationMetrics`, the exact "every trial is a selection event" bias
+`TuneResult`'s own docstring already names and guards against one function over. Worst in
+the backtest, where `predict=True` makes it a 5-point window doing both jobs at once.
+
+Two more (both High) are security/correctness gaps in the `pyquant/api/` scaffold added by
+PYQ-261: **bugs.md#pyq-145** — `_bundle_dir` joins an unvalidated `symbol`/`bundle_name`
+straight into `mkdir`/`torch.load(weights_only=False)`, reachable from `POST /train` and
+`POST /scan` with no path-escape guard; and **bugs.md#pyq-146** — `load_settings()`'s
+module-global `_active_yaml_file` races under FastAPI's threadpool, letting one concurrent
+request silently drop another's `--config` layer, the PYQ-128 failure mode reintroduced one
+level up. **bugs.md#pyq-150** (High) is a secrets-non-negotiable violation: Finnhub's key
+travels in the query string and a retried failure logs the full URL at WARNING, reaching CI
+logs where the key is a real secret.
+
+One finding corrects the backlog's own record rather than the code:
+**features.md#pyq-277** — PYQ-258 is marked Resolved with acceptance criteria stating Tiingo
+is "implemented **and selectable**," but no `DataConfig` field, CLI flag, or `build_panel`
+argument makes it reachable outside a Python REPL. Per this file's convention, PYQ-258's
+content and status were left untouched — a new ticket records the gap rather than
+retroactively editing a closed one. **features.md#pyq-280** turns that same discovery into
+a proposed extension of `scripts/backlog.py check`, so a Resolved ticket's named tests can
+be verified to exist rather than taken on faith.
+
+The remaining 16 are smaller, independently confirmed defects and hardening gaps spread
+across `analysis/calibrate.py` (conformal offset pooled across horizon steps, and not
+reusing PYQ-251's own `effective_sample_size` for the finite-sample correction — a fresh
+instance of the "correct in one file, not applied in the analogous one" shape this backlog
+keeps finding), `data/prices.py` (RSI reads 100, not 50, on a flat series), `analysis
+/metrics.py` (PIT values clamp at the outer quantiles), `data/cache.py` (non-atomic writes),
+`data/trading_calendar.py`, `config.py` (`extra="ignore"`, an unenforced `0.5 in quantiles`
+invariant), `tests/conftest.py` (an `options_history_dir` hermeticity gap), and CI's
+formatting-drift check (33 files now adrift, not the 20-22 baseline it was scoped against).
+Full detail, evidence and acceptance criteria are in each ticket; none were resolved by this
+pass — it was a verify-and-file pass, same discipline as the 2026-07-26 review's merge.
+
+No existing ticket's status, priority or content was changed. The `## Now` list above was
+not re-picked against these additions — several (PYQ-142/143/145/146/150) are plausible
+candidates for it on a future pass, but that call is deliberately left to one, rather than
+made as a side effect of filing.

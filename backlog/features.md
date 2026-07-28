@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-277**.
+Next free ID: **PYQ-281**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -81,6 +81,10 @@ Next free ID: **PYQ-277**.
 | [PYQ-274](#pyq-274) | Low | Open | CHANGELOG and a release/tagging workflow |
 | [PYQ-275](#pyq-275) | High | Open | Baselines beyond persistence: a negative result is only as strong as what it failed against |
 | [PYQ-276](#pyq-276) | Medium | Open | Execute PYQ-312's reframing: the README still sells a forecaster |
+| [PYQ-277](#pyq-277) | Medium | Open | Tiingo isn't actually selectable anywhere; PYQ-258's own acceptance criterion is unmet |
+| [PYQ-278](#pyq-278) | Low | Open | Ruff format drift has grown to 33 files vs. the CI comment's 20-22 baseline |
+| [PYQ-279](#pyq-279) | Low | Open | `git_sha()`/`code_version()` shells out uncached on every `build_panel` call |
+| [PYQ-280](#pyq-280) | Low | Open | `backlog.py check` should verify a resolved ticket's acceptance-criteria tests actually exist |
 
 ---
 
@@ -3730,4 +3734,116 @@ sample size; the headline number is stated against the strongest baseline availa
 records which sweep result licensed the rewrite.
 
 ---
+
+## [PYQ-277]
+Tiingo isn't actually selectable anywhere; PYQ-258's own acceptance criterion is unmet
+Status: Open
+Priority: Medium
+Files: `pyquant/data/providers.py`, `pyquant/config.py` (`DataConfig`), `pyquant/data/dataset.py` (`build_panel`), `pyquant/cli/app.py`
+
+Problem: PYQ-258 (Resolved) states its acceptance criteria as *"one alternative provider is
+implemented **and selectable**"* and *"switching is a config change rather than a
+rewrite."* `providers.py` implements a well-tested `PriceProvider` protocol with a licensed
+Tiingo backend, but nothing wires it to an entry point: `DataConfig`
+(`config.py`) has no `provider`/`price_provider` field; `build_panel`
+(`dataset.py:90-92`) calls `fetch_prices(symbol, period=..., start=..., end=...,
+use_indicators=...)` and never passes `provider=`, so `fetch_prices`'s own default
+(`provider: str | object = "yfinance"`, `prices.py:253`) is always what runs; and no CLI
+flag exists anywhere in `cli/app.py` (confirmed by grep). Today, Tiingo is reachable only by
+calling `fetch_prices(..., provider="tiingo")` from a Python REPL — which is exactly the
+"argument you can only pass from a Python REPL" state PYQ-258's own acceptance criteria were
+written to rule out. The ticket is marked Resolved with a stated criterion its own
+implementation doesn't meet.
+
+This is filed as a new ticket rather than reopening PYQ-258 directly, per this backlog's
+convention that a ticket's `Status:` line changes but its content/ID doesn't move — the
+gap is a fresh, separately-actionable finding, and PYQ-258's resolution note is the correct
+place to record what actually shipped versus what the criteria asked for.
+
+Ask: add `DataConfig.price_provider: Literal["yfinance", "tiingo"] = "yfinance"`, thread it
+through `build_panel → fetch_prices`, add a `--provider`/config-file knob at the CLI layer,
+and add the field to `_cache_fingerprint` (see bugs.md#pyq-148 for the general pattern of a
+`DataConfig` toggle missing from the fingerprint — don't repeat it a third time).
+
+Acceptance criteria: `pyquant train AAPL` (or an equivalent config-file setting) can select
+Tiingo without touching Python; a test asserts `build_panel` passes `settings.data
+.price_provider` through to `fetch_prices`; the cache fingerprint changes when only
+`price_provider` changes.
+
+---
+
+## [PYQ-278]
+Ruff format drift has grown to 33 files vs. the CI comment's 20-22 baseline
+Status: Open
+Priority: Low
+Files: `.github/workflows/ci.yml`, repo-wide formatting
+
+Problem: `ruff format --check .` currently reports **33 files** would be reformatted
+(verified directly, run twice for stability — not the 36 the review that prompted this pass
+claimed, but still real drift). `.github/workflows/ci.yml`'s comment states the count was
+"20-22 unformatted files (~250 lines)" when PYQ-229 (Resolved) added this as a
+`continue-on-error: true`, non-blocking step, with the stated intent that reporting the
+count "stops it growing." It has grown ~50-65% since. `ruff check` (the blocking linter) is
+already clean, so a mechanical `ruff format .` pass carries near-zero review risk.
+
+Ask: either land a one-off `ruff format .` pass now, while the number is still small enough
+to review as a pure-formatting diff, or accept explicitly that the non-blocking check is
+decorative and stop citing a baseline it isn't holding to.
+
+Acceptance criteria: `ruff format --check .` reports 0 files (post-pass), or the CI comment
+is updated to state the check is informational-only and not expected to hold a baseline.
+
+---
+
+## [PYQ-279]
+`git_sha()`/`code_version()` shells out uncached on every `build_panel` call
+Status: Open
+Priority: Low
+Files: `pyquant/provenance.py`
+
+Problem: `git_sha()` (`provenance.py:45-66`) makes two `subprocess.run` calls (`rev-parse
+--show-toplevel`, then `rev-parse --short HEAD`) with no memoization anywhere in the module.
+It's called from `dataset.py`'s `_cache_fingerprint` (via `provenance.code_version()`) on
+**every** `build_panel()` call, and separately from `cache.py`'s `read_pin`/`write_pin`,
+`tft.py` (bundle provenance), and `doctor.py`. In the API, that's two subprocess spawns per
+request that touches any of those paths — cheap individually, but pure overhead: the working
+tree's SHA can't change mid-process in any way that matters for a single run.
+
+Ask: `functools.lru_cache` (or a simple module-level memo) on `git_sha`/`code_version`,
+since nothing in-process ever needs the working tree's SHA to be re-read after the first
+call.
+
+Acceptance criteria: `git_sha()`/`code_version()` shell out at most once per process; a
+test asserts a second call doesn't invoke `subprocess.run` again (mock/count-based).
+
+---
+
+## [PYQ-280]
+`backlog.py check` should verify a resolved ticket's acceptance-criteria tests actually exist
+Status: Open
+Priority: Low
+Files: `scripts/backlog.py`, `backlog/README.md`
+
+Problem: this pass found a concrete instance of the exact failure mode `backlog/README.md`'s
+own History section already names as a known risk: *"two tickets are marked Resolved with
+unmet acceptance criteria."* features.md#pyq-277 documents PYQ-258 closed as Resolved with
+its own stated criterion — "one alternative provider is implemented **and selectable**" —
+unmet in the shipped code. `scripts/backlog.py check` currently verifies table/detail
+consistency and ID ranges, but nothing about whether a ticket's claimed verification (test
+names, acceptance criteria) is real.
+
+Ask, as the review that prompted this pass put it: *"consider requiring that each
+acceptance criterion name the test that proves it, and have `scripts/backlog.py check`
+verify those test names exist in `tests/`."* That's a real fix for the "resolved but
+unverified" class of drift, and the machinery to extend already exists in this file. Scope
+it narrowly: for tickets whose resolution note or acceptance criteria mention a specific
+`test_*` name (a common existing convention, e.g. PYQ-142's `test_log_return_price_round
+_trip` reference), grep `tests/` for that name and flag a mismatch. This can't catch every
+case (PYQ-277's gap is about a claim, "selectable," not a named-but-missing test), but it
+closes the mechanically-checkable half cheaply.
+
+Acceptance criteria: `backlog.py check` extracts backtick-quoted `test_*`-shaped identifiers
+from Resolved tickets' resolution notes/acceptance criteria and fails if none of them exist
+under `tests/` (allowing tickets that name no test to pass through unchanged); a test on the
+checker itself using a synthetic backlog fixture with a dangling test reference.
 
