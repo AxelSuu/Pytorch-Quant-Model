@@ -38,60 +38,97 @@ edit lands.
 
 ## Now
 
-A hand-curated shortlist, not auto-generated — re-pick this after every review
-pass. (Re-picked 2026-07-28 after a review pass added 15 tickets — PYQ-141,
-PYQ-265..274, PYQ-321..324 — taking the backlog to 139 tickets with **20
-open**. The previous list's #1 item is now three tickets instead of a standing
-note; see the History entry below for why that changed.)
+A hand-curated shortlist, not auto-generated — re-pick this after every review pass.
+Re-picked 2026-07-28. **141 tickets, 22 open.**
 
-1. **investigations.md#pyq-321** (Critical) — how much of every reported number
-   is seed variance? `TrainingConfig.seed` is fixed at 42 and every headline
-   this project has published is one draw from it. Four existing findings
-   (PYQ-247's target change, PYQ-248's conformal band, #pyq-315's pooling
-   result, #pyq-316's sentiment result) span three orders of effect size and
-   are treated with roughly equal confidence. This is the one measurement that
-   decides which of them are real, and it is cheaper than the multi-symbol
-   repeats below — if one symbol at ten seeds already spans the effect being
-   claimed, the multi-symbol run is not the missing evidence.
-2. **The multi-symbol repeat, now with tickets.** The previous `## Now` carried
-   this at #1 across two passes with the note "still no ticket, because each is
-   a *run* rather than a code change." That reasoning is what kept it
-   unstarted: there is no tool that performs it —
-   `scripts/ablate_features.py` and `scripts/compare_pooling.py` are both
-   self-described one-offs wired to one question and one or two symbols. It is
-   now split into the three code changes it actually needs —
-   features.md#pyq-268 (sweep harness), #pyq-266 (paired significance test),
-   #pyq-265 (multi-seed reporting) — plus investigations.md#pyq-322, which
-   writes down *what result would flip a default* before the run rather than
-   after it.
-3. **features.md#pyq-267** (High) — per-horizon-step metrics. Every number is
-   currently a mean over h=1..5. A flat −23.5% and a profile of
-   `[−60%, −35%, −10%, +5%, +15%]` are the same headline and opposite
-   findings. The arrays are already the right shape and are being discarded;
-   this is the cheapest diagnostic on the list.
-4. **bugs.md#pyq-141** (Medium) — `backtest`'s headline skill (ratio of pooled
-   MAEs) and the per-window skill column printed beneath it (mean of ratios)
-   are different estimators. `docs/methodology.md`'s own per-window figures
-   average to −94.8% against a −23.5% headline.
-5. **PYQ-249** (feature, Medium) — time-series foundation-model baseline.
-   Explicitly deferred to design-plus-stub in the 2026-07-27 pass (a genuinely
-   heavy new dependency, judged not worth the install/runtime risk in that
-   session) — `baselines.py`'s actual `chronos_baseline()` integration is
-   still unwritten. The CLI plumbing this needs is otherwise ready.
-6. Structural and coverage work, none of it urgent: features.md#pyq-269
-   (split the 1075-line `models/tft.py`), #pyq-272 (`serialize`/`doctor`/
-   `provenance`/`charts` have no dedicated tests), #pyq-273 (replay tests
-   against recorded vendor payloads — the missing half of the PYQ-139/140
-   lesson), #pyq-271 (`/backtest` endpoint), #pyq-270 (interval on the
-   headline skill number), investigations.md#pyq-323 (`Settings` coupling),
+### The decision this list encodes
+
+The project reached a fork: keep hardening what exists, or start adding vendors, features
+and integrations. It is worth recording that the answer came from the backlog itself rather
+than from taste.
+
+investigations.md#pyq-312 already settled what this project *is*. Its recorded conclusion —
+"the deliverable should be reframed around the measurement apparatus… the honest headline is
+now 'no detectable edge after fixing the formulation'" — chose the measurement apparatus and
+a rigorous negative result over another repo claiming edge. It then named the single thing
+blocking that reframing: **the multi-symbol repeat.**
+
+That is the same item this list carried at #1 across two passes without it starting. So the
+project has committed to a deliverable and stalled on its one prerequisite. Everything below
+is ordered to unstall it.
+
+**Adding data vendors is the worst available move right now**, and the evidence is the
+project's own. investigations.md#pyq-312 puts the mainstream prior at no edge for 5-day
+single-name direction from public daily data. investigations.md#pyq-316 measured that adding
+a *fourth* source made things worse, not better — sentiment cost skill. And
+investigations.md#pyq-321 has not been answered, so nothing here can currently distinguish a
++0.027 effect from seed noise. A fifth vendor would be an input nobody can evaluate, added
+to a panel whose last addition hurt, chasing an edge the project's own analysis says is
+probably absent. Vendor work is not blocked forever — it is blocked on being able to measure
+whether it helped.
+
+### Phase 1 — finish the measurement apparatus (do this now)
+
+Nothing else on this list should start before these. They are cheap relative to their
+leverage and every one of them changes what a later result *means*.
+
+1. **investigations.md#pyq-321** (Critical) — the seed-variance floor. `TrainingConfig.seed`
+   is fixed at 42, so every headline is one draw. Four existing findings span three orders
+   of effect size and are trusted equally. This is one experiment and it decides which of
+   them survive. Cheaper than the multi-symbol sweep and possibly a substitute for it: if
+   one symbol at ten seeds already spans the effect being claimed, more symbols is not the
+   missing evidence.
+2. **features.md#pyq-265/266/267** (High) — the instruments PYQ-321 and everything after it
+   need: metrics across seeds rather than one; a paired test on the windows two configs
+   share, instead of two eyeballed point estimates; and per-horizon-step breakdown, since
+   every number today is a mean over h=1..5 and a model whose skill rises with horizon is
+   currently indistinguishable from one whose skill collapses at h=5.
+3. **features.md#pyq-275** (High) — baselines beyond persistence. The reframed deliverable is
+   a negative result, and a negative result is a claim about the baselines it was measured
+   against. One baseline — which is near-optimal on a random walk by construction — is a weak
+   claim. This is the highest-value build on the list and it is not a data source.
+4. **bugs.md#pyq-141** (Medium) — `backtest`'s headline skill and the per-window column
+   beneath it are different estimators that already disagree by 71 points in
+   `docs/methodology.md`. Fix before generating a lot more of both.
+
+### Phase 2 — run the thing, then say what it showed (gated on Phase 1)
+
+5. **features.md#pyq-268 + investigations.md#pyq-322** — the sweep harness, and the
+   pre-registered rule for what result flips a default, written *before* the run. An
+   unspecified threshold is a deferred decision, not a conservative one.
+6. **Run the sweep.** The three pending repeats — PYQ-247's target comparison,
+   investigations.md#pyq-315's pooling result, #pyq-316's feature ablation — at the sample
+   size non-negotiable #1 requires. This is the step that unblocks everything PYQ-312 was
+   waiting on. It is a run, not a ticket, and it is finally possible once (5) exists.
+7. **features.md#pyq-276** — execute PYQ-312's reframing in `README.md` and `docs/index.md`.
+   Explicitly gated on (6): rewriting the README on today's n≈5 evidence is the same move
+   non-negotiable #1 forbids for `TrainingConfig.target`.
+
+### Phase 3 — only after Phase 2 has a result
+
+8. **features.md#pyq-249** (Medium) — foundation-model baseline. Belongs with
+   features.md#pyq-275's baseline interface rather than growing its own, and is worth running
+   once there is an apparatus that can tell whether it beat anything.
+9. Structural and coverage work, none of it urgent and none of it blocking:
+   features.md#pyq-269 (split the 1075-line `models/tft.py`), #pyq-272 (dedicated tests for
+   `serialize`/`doctor`/`provenance`/`charts`), #pyq-273 (the four PYQ-139/140 failure-mode
+   regressions on PYQ-243's existing harness), #pyq-271 (`/backtest` endpoint), #pyq-270
+   (interval on the headline skill), investigations.md#pyq-323 (`Settings` coupling),
    #pyq-324 (does the forecast band fan or translate?).
-7. **PYQ-217** (feature, Low) — Dockerfile. Deprioritised from Medium by an
-   explicit user call in the 2026-07-27 pass; also genuinely blocked on
-   verification — no sandbox used so far in this project's history has had a
-   Docker CLI to confirm `docker build`/`docker run` against.
-8. PYQ-237/242/245/274 (Low) — doctests, property-based tests, mutation
-   testing on `analysis/metrics.py`, and a CHANGELOG/release workflow. Never
-   picked up across four passes; not urgent.
+10. **PYQ-217** (Low) — Dockerfile. Deprioritised by explicit user call in the 2026-07-27
+    pass, and blocked on verification — no sandbox in this project's history has had a Docker
+    CLI to confirm `docker build`/`docker run` against.
+11. PYQ-237/242/245/274 (Low) — doctests, property-based tests, mutation testing, and a
+    CHANGELOG/release workflow. Never picked up across four passes; not urgent.
+
+### Not now, and why
+
+**New data vendors, alternative data, fundamentals, options-implied history.** See the
+reasoning above. The gate is Phase 2: once a sweep can say "this source moved skill by X,
+and the seed floor is Y," adding a source becomes a measurable proposition instead of a
+hopeful one. Until then it is unfalsifiable work. PYQ-254 is already accumulating options
+snapshots against the day this changes, which is the correct shape for vendor work right
+now — cheap, additive, and costing nothing while the question is unanswerable.
 
 ## History
 
@@ -340,3 +377,53 @@ figure is the README's most-viewed claim about the project's own output, so
 investigations.md#pyq-324 asks for it to be confirmed or regenerated.
 
 No existing ticket's status, priority or content was changed by this pass.
+
+A follow-up pass the same day (2026-07-28) answered the question the previous entry left
+implicit — *solidify or expand?* — and re-picked `## Now` as a gated three-phase plan
+rather than a flat list. It added two tickets (features.md#pyq-275, #pyq-276), corrected
+one filed hours earlier on a false premise, and changed no other ticket. 139 → 141
+tickets, 22 open.
+
+The answer came from the backlog rather than from taste. investigations.md#pyq-312 is
+Answered and already chose the deliverable: "the deliverable should be reframed around the
+measurement apparatus… the honest headline is now 'no detectable edge after fixing the
+formulation', not 'negative skill'." It then named the one blocker — the multi-symbol
+repeat — which is the same item `## Now` carried at #1 across two passes without starting.
+So the project had committed to a deliverable and stalled on its single prerequisite, and
+the correct move was to unstall that rather than to open a new front.
+
+The case against expanding is the project's own evidence, and is recorded in `## Now` so it
+does not have to be re-argued: #pyq-312 puts the mainstream prior at no edge for 5-day
+single-name direction from public daily data; #pyq-316 measured that adding a *fourth*
+source made things worse; and #pyq-321 is unanswered, so nothing here can currently
+distinguish a +0.027 effect from seed noise. A fifth vendor would be an input nobody can
+evaluate. Vendor work is gated, not forbidden — PYQ-254's accumulating options snapshots
+are the right shape for it meanwhile: cheap, additive, costing nothing while the question
+is unanswerable.
+
+**features.md#pyq-275** is the pass's substantive addition and follows directly from
+#pyq-312's choice. `analysis/` has no `baselines.py`; `persistence_baseline_mae()` is the
+only comparator in the codebase. A negative result is a claim about the baselines it was
+measured against, and persistence is near-optimal on a random-walk level series by
+construction — so failing to beat it is weak evidence, and "does not beat persistence" is a
+much weaker publishable claim than "does not beat anything a competent practitioner would
+try." Which baselines the model beats and which it does not is more diagnostic than the
+single signed number the project reports today. This is the groundwork the reframed
+deliverable needs, and it is worth more than any new data source.
+
+**features.md#pyq-276** exists because #pyq-312's reframing was tracked nowhere. An
+Answered investigation records a conclusion, not an open action, so the project's decision
+about what it *is* lived only inside a closed ticket while `README.md` continued to lead
+with "Probabilistic equity forecasting with a Temporal Fusion Transformer." The ticket is
+explicitly gated on the sweep: rewriting the README on n≈5 is the same move non-negotiable
+#1 forbids for `TrainingConfig.target`.
+
+**features.md#pyq-273 was corrected in place rather than deleted.** As filed hours earlier
+it asked for boundary-level vendor replay tests on the reading that vendor tests still
+patch at our own `fetch_*` boundary — but PYQ-243 shipped exactly that and is Resolved, with
+six tests mocking at `yf.Ticker`/`yf.download`/`fredapi.Fred`/`requests.get` against
+recorded fixtures. The residual is narrower and real: PYQ-243 landed in the same pass that
+later produced PYQ-139 and PYQ-140, four live-vendor failure modes its happy-path
+recordings could not exercise. The ticket now asks for those four as named regressions on
+the harness that already exists. Recorded as a correction, per this file's own convention
+that a wrong premise is superseded in place and explained rather than quietly rewritten.

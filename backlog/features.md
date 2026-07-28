@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-275**.
+Next free ID: **PYQ-277**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -77,8 +77,10 @@ Next free ID: **PYQ-275**.
 | [PYQ-270](#pyq-270) | Medium | Open | Put a confidence interval on the headline skill number |
 | [PYQ-271](#pyq-271) | Medium | Open | `/backtest` endpoint: close the CLI/API front-end gap |
 | [PYQ-272](#pyq-272) | Medium | Open | Dedicated tests for `serialize`, `doctor`, `provenance` and `charts` |
-| [PYQ-273](#pyq-273) | Medium | Open | Replay tests against recorded vendor payloads, not our own mocks |
+| [PYQ-273](#pyq-273) | Medium | Open | Regression cases for PYQ-139/140 on PYQ-243's existing replay harness |
 | [PYQ-274](#pyq-274) | Low | Open | CHANGELOG and a release/tagging workflow |
+| [PYQ-275](#pyq-275) | High | Open | Baselines beyond persistence: a negative result is only as strong as what it failed against |
+| [PYQ-276](#pyq-276) | Medium | Open | Execute PYQ-312's reframing: the README still sells a forecaster |
 
 ---
 
@@ -3557,47 +3559,47 @@ inline.
 ---
 
 ## [PYQ-273]
-Replay tests against recorded vendor payloads, not our own mocks
+Regression cases for PYQ-139/140 on PYQ-243's existing replay harness
 Status: Open
 Priority: Medium
-Files: `tests/fixtures/`, `scripts/record_fixtures.py`, `tests/test_prices.py`, `tests/test_macro.py`, `tests/test_sentiment.py`
+Files: `tests/test_macro.py`, `tests/test_sentiment.py`, `tests/fixtures/`, `scripts/record_fixtures.py`
 
-Problem/Ask: PYQ-139 and PYQ-140 were both shipped Resolved with passing tests and both
-were wrong against the live vendor. PYQ-139 was worse than wrong: PYQ-257's ALFRED vintage
-fetch failed three separate ways against the real FRED API, every FRED macro feature
-silently vanished from every panel, and graceful degradation reduced a total vendor loss to
-one log line. `backlog/README.md` records the lesson as features.md#pyq-243's argument —
-"mocking at our own function boundary verifies our logic against our own assumptions, which
-is half a test."
+Problem/Ask: **this ticket was filed on a false premise and is corrected here rather than
+deleted.** As originally written (2026-07-28) it asked for boundary-level replay tests
+against recorded vendor payloads, on the reading that vendor tests still patch at our own
+`fetch_*` boundary. PYQ-243 already built exactly that and is Resolved: six tests mock at
+`yf.Ticker`, `yf.download`, `fredapi.Fred` and `requests.get`, then run the real parsing
+code against `tests/fixtures/`, with a `MANIFEST.json` recording vendor and library version
+per payload. The harness exists and paid for itself twice on the first recording.
 
-The other half is still missing. `tests/fixtures/` holds seven recorded artifacts
-(`fred_dff.json`, `finnhub_news_aapl.json`, four yfinance pickles, a `MANIFEST.json`) and
-`scripts/record_fixtures.py` exists to refresh them, so the raw material is here. What is
-absent is the discipline that the vendor-facing tests must run against *those payloads*
-rather than against hand-built frames shaped the way we expect the vendor to behave.
+What is actually missing is narrower and more specific. PYQ-243 shipped in the same pass
+that later produced **PYQ-139** and **PYQ-140** — two live-vendor failures that the harness
+did not prevent, because a recorded happy-path payload cannot exercise a failure mode that
+only appears against the live API under conditions the recording never hit. PYQ-139 alone
+had three: an unbounded realtime window rejected for exceeding 2000 vintages, a `NaT` in
+the value column that took a whole series down on one market holiday, and a `realtime_end`
+in the future whenever the caller's clock runs ahead of FRED's. Every FRED macro feature
+had silently vanished from every panel and only a log line said so. PYQ-140 is a fourth
+shape: a vendor honouring a request *nominally* — accepting the `from` parameter, returning
+200 — while serving ~6 days of the ~365 requested.
 
-Build: for each vendor module, at least one test that patches at the **HTTP/library
-boundary** — feeding the recorded payload in the vendor's own shape — rather than patching
-our `_fetch_*` function and handing it a tidy frame. The three PYQ-139 failure modes are
-the acceptance bar and should each become a named regression case: an unbounded realtime
-window, a `NaT` in the value column on a market holiday, and a `realtime_end` ahead of the
-vendor's clock. PYQ-140's shape (a vendor honouring a request nominally while returning a
-fraction of the requested range) is the fourth.
+Those four are what a replay harness is *for*, and none of them is in it. Recording a
+successful call captures the shape the vendor produces when everything works; the failures
+that have actually cost this project are the shapes it produces when something does not.
 
-The nightly live-vendor smoke job (PYQ-244) is the complement, not a substitute: it catches
-drift but only against today's live API, only nightly, and it cannot run in a PR. Replay
-tests catch the same class deterministically and offline, which is what the network-free
-testing convention requires.
+Build: hand-construct (do not attempt to record) one fixture per failure mode and add a
+named regression test per shape, on the harness PYQ-243 already provides. Each must fail
+against the pre-fix code — the project's test-first convention exists precisely so a
+regression test that cannot fail is caught before it is trusted (PYQ-120's lesson).
 
-Two fixtures currently produce no extractable content (`fred_dff.json`,
-`finnhub_news_aapl.json` were both flagged empty by an external tooling pass); confirm
-whether they are genuinely populated before building on them.
+Also verify the two fixtures an external tooling pass flagged as producing no extractable
+content (`fred_dff.json`, `finnhub_news_aapl.json`); if they are empty or malformed, the
+tests reading them are asserting against nothing.
 
-Acceptance criteria: At least one boundary-level replay test per vendor module, running offline against
-`tests/fixtures/`; PYQ-139's three failure modes and PYQ-140's truncation shape each have a
-named regression test that fails against the pre-fix code; `record_fixtures.py` documents
-how to refresh a payload and what to check when a vendor's shape changes; the two suspect
-fixtures are verified or re-recorded.
+Acceptance criteria: four named regression tests — the three PYQ-139 FRED shapes and
+PYQ-140's silent truncation — each demonstrated to fail against the pre-fix code and pass
+after; the two suspect fixtures verified or re-recorded; `scripts/record_fixtures.py`
+documents that failure-mode fixtures are hand-built by design and why.
 
 ---
 
@@ -3634,3 +3636,98 @@ Acceptance criteria: `CHANGELOG.md` exists and covers the passes recorded in `ba
 `pyproject.toml` disagree; `docs/development.md` documents the release step.
 
 ---
+
+## [PYQ-275]
+Baselines beyond persistence: a negative result is only as strong as what it failed against
+Status: Open
+Priority: High
+Files: `pyquant/analysis/baselines.py` (new), `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `docs/methodology.md`
+
+Problem/Ask: `analysis/` has no `baselines.py`. The only comparator in the codebase is
+`persistence_baseline_mae()` — last observed value carried forward, or zero in log-return
+space. Every skill number this project has ever reported is relative to that one baseline.
+
+investigations.md#pyq-312 recorded the project's conclusion: the deliverable should be
+reframed around the measurement apparatus and an honestly-reported "no detectable edge",
+which it argues is "a more credible and much rarer artifact than another repo claiming
+edge." That is the right call. But it raises the bar on exactly this: **a negative result
+is a claim about the baselines it was measured against, and one baseline is a weak claim.**
+"Does not beat persistence" and "does not beat anything a competent practitioner would try"
+are very different statements, and only the second is worth publishing.
+
+Persistence is also uniquely favourable to the null. On a near-random-walk level series it
+is close to optimal by construction — which is the whole of PYQ-247's finding. Beating it
+is hard for reasons that have nothing to do with whether the TFT learned anything, so
+failing to beat it is correspondingly weak evidence. A drift baseline, a seasonal-naive
+baseline and a simple statistical model would each fail differently, and the *pattern* of
+which baselines the TFT beats and which it does not is far more diagnostic than a single
+signed number.
+
+Build: `analysis/baselines.py` with a small protocol and several implementations — random
+walk with drift, seasonal naive, an ARIMA or ETS fit per window, and a "climatological"
+constant-mean-return baseline. Library-agnostic, no Lightning, per the architecture rule;
+`statsmodels` is the obvious dependency and needs justifying against doing nothing per
+non-negotiable #5 (a hand-rolled AR(1) may well be enough and adds nothing).
+
+Report skill against *each* baseline rather than collapsing to one, and make the strongest
+baseline the headline — reporting skill against the weakest comparator available is the
+failure mode this ticket exists to prevent. features.md#pyq-249's foundation-model arm is
+the same idea one level up and should share this interface rather than growing its own.
+
+This is the groundwork the reframed deliverable needs, and it is worth more than any new
+data source: it strengthens the claim the project has decided to make, where a fifth vendor
+would only add an input nobody can currently evaluate.
+
+Acceptance criteria: `baselines.py` exposes at least three baselines behind one protocol;
+`EvaluationMetrics` carries skill against each; `backtest` reports the full row and names
+which baseline the headline skill is against; any new dependency is justified in the
+resolution note or declined; `docs/methodology.md`'s three configurations are re-stated
+against the full baseline set.
+
+---
+
+## [PYQ-276]
+Execute PYQ-312's reframing: the README still sells a forecaster
+Status: Open
+Priority: Medium
+Files: `README.md`, `docs/index.md`, `docs/methodology.md`, `CLAUDE.md`
+
+Problem/Ask: investigations.md#pyq-312 is marked Answered and its recorded conclusion is
+explicit: *"the deliverable should be reframed around the measurement apparatus, as this
+ticket anticipated — but the honest headline is now 'no detectable edge after fixing the
+formulation', not 'negative skill'."* It then names the one thing standing in the way:
+*"Updating the README to say so requires the multi-symbol repeat first; that is the
+concrete next step."*
+
+That reframing has not happened, and it is not tracked anywhere as work. PYQ-312 cannot
+track it — it is Answered, and per this backlog's rules an Answered investigation records a
+conclusion rather than carrying an open action. So the project's own decision about what it
+*is* currently lives only as a paragraph inside a closed ticket.
+
+Meanwhile `README.md` still opens with "Probabilistic equity forecasting with a Temporal
+Fusion Transformer" and answers "Does it beat a benchmark?" with a two-sentence note that
+the baseline is hard to beat. `docs/index.md`'s lede is a forecasting harness. Both are
+accurate about the machinery and both lead with the capability rather than the finding —
+which is the framing PYQ-312 concluded was the wrong one.
+
+Ask: once features.md#pyq-268's sweep produces a multi-symbol result and
+investigations.md#pyq-321 establishes the seed-variance floor, rewrite the top of
+`README.md` and `docs/index.md` to lead with what was actually measured: a leak-audited
+pipeline, an evaluation apparatus most equity repos do not have, and a rigorously
+established absence of detectable edge at this horizon on public daily data. The TFT
+becomes a component of the finding rather than the headline.
+
+Two guardrails. This must not become self-deprecation — "no detectable edge, measured
+properly, on n symbols across m windows with a stated seed floor" is a stronger and rarer
+claim than an unsupported positive one, and should be written as the finding it is. And it
+is **gated**: rewriting the README on the current n≈5 evidence is the move non-negotiable
+#1 forbids, in the same way that flipping `TrainingConfig.target` would be. Do not start
+this before the sweep lands.
+
+Acceptance criteria: `README.md` and `docs/index.md` lead with the measured finding and its
+sample size; the headline number is stated against the strongest baseline available
+(features.md#pyq-275); `CLAUDE.md`'s project description matches; the resolution note
+records which sweep result licensed the rewrite.
+
+---
+
