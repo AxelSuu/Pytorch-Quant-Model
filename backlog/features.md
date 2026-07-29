@@ -79,7 +79,7 @@ Next free ID: **PYQ-281**.
 | [PYQ-272](#pyq-272) | Medium | Open | Dedicated tests for `serialize`, `doctor`, `provenance` and `charts` |
 | [PYQ-273](#pyq-273) | Medium | Open | Regression cases for PYQ-139/140 on PYQ-243's existing replay harness |
 | [PYQ-274](#pyq-274) | Low | Open | CHANGELOG and a release/tagging workflow |
-| [PYQ-275](#pyq-275) | High | Open | Baselines beyond persistence: a negative result is only as strong as what it failed against |
+| [PYQ-275](#pyq-275) | High | Resolved | Baselines beyond persistence: a negative result is only as strong as what it failed against |
 | [PYQ-276](#pyq-276) | Medium | Open | Execute PYQ-312's reframing: the README still sells a forecaster |
 | [PYQ-277](#pyq-277) | Medium | Open | Tiingo isn't actually selectable anywhere; PYQ-258's own acceptance criterion is unmet |
 | [PYQ-278](#pyq-278) | Low | Open | Ruff format drift has grown to 33 files vs. the CI comment's 20-22 baseline |
@@ -3756,7 +3756,7 @@ Acceptance criteria: `CHANGELOG.md` exists and covers the passes recorded in `ba
 
 ## [PYQ-275]
 Baselines beyond persistence: a negative result is only as strong as what it failed against
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/baselines.py` (new), `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `docs/methodology.md`
 
@@ -3800,6 +3800,73 @@ Acceptance criteria: `baselines.py` exposes at least three baselines behind one 
 which baseline the headline skill is against; any new dependency is justified in the
 resolution note or declined; `docs/methodology.md`'s three configurations are re-stated
 against the full baseline set.
+
+Resolution: `analysis/baselines.py` defines a `Baseline` protocol (`name`, `predict(history,
+horizon) -> forecast`, both plain-array, library-agnostic per the layering rule) and five
+implementations -- `PersistenceBaseline` (the existing comparator, now behind the same
+protocol so it participates uniformly), `RandomWalkWithDriftBaseline`, `SeasonalNaiveBaseline`
+(default 5-day/weekly season, degrades to using the whole history as one season when there
+isn't enough of it), `ClimatologicalBaseline` (flat historical mean), and `AR1Baseline`. All
+are *point* forecasters -- the same shape the existing MAE-based skill number already
+compares against, not a second quantile-band model.
+
+**Declined `statsmodels`' ARIMA/ETS, the ticket's suggested alternative, per non-negotiable
+#5.** `statsmodels` is already an optional dependency (the `tuning` extra), which made it
+tempting, but that extra is opt-in for `pyquant tune`; `analysis/baselines.py` sits on
+`train`/`backtest`'s *core* path, so importing it unconditionally would make a hard, always-
+installed dependency out of what is currently opt-in, and a per-window ARIMA/ETS fit is
+materially slower than a closed-form fit for a comparator whose entire point is to be a cheap,
+unglamorous floor computed once per window alongside four others. Built `AR1Baseline` instead
+-- closed-form OLS per sample (`phi`, intercept from the standard AR(1) normal equations,
+clamped to `[-0.999, 0.999]` to keep the forward iteration stable), which captures the one
+thing seasonal-naive and drift don't (mean-reverting autocorrelation) with no new dependency
+at all. Verified against a noiseless synthetic AR(1) process
+(`test_ar1_baseline_recovers_a_noiseless_ar1_process`): OLS recovers phi=0.5, intercept=3.0
+to float precision and the forecast continues the exact same recursion.
+
+Wiring required one small addition to `models/tft.py`: `_raw_validation_arrays` already
+computed `result.x["encoder_target"]` (the full encoder window) to extract its *last* column
+as `last_observed`; it now also returns the full array as `history`, free (no extra forward
+pass) since it was already computed. `_evaluate_validation` threads it into
+`evaluate_predictions(..., history=history)`, a new optional keyword that is additive by
+design: without `history`, `EvaluationMetrics.baseline_maes` still carries exactly one entry,
+`"persistence"`, always equal to the existing `baseline_mae` field (verified by a dedicated
+test) -- no existing caller of `evaluate_predictions` breaks. `EvaluationMetrics.strongest_baseline`
+picks the lowest-MAE entry (hardest for the model to beat) and `skill_vs_strongest_baseline`
+reports skill against it, the ticket's "make the strongest baseline the headline" ask.
+`aggregate_metrics` pools `baseline_maes` across windows via the existing `pooled_dict` helper
+(already used for `quantile_exceedance`/`pinball_losses`, unchanged, just reused).
+
+`serialize.evaluation_to_dict` carries `baseline_maes`/`strongest_baseline`/
+`skill_vs_strongest_baseline` into `--format json`. `_add_metric_rows` (the CLI's shared table
+builder, used by both `train` and `backtest`) adds one row per non-persistence baseline plus
+a "Skill vs. strongest baseline (NAME)" row naming which one, and omits that row entirely
+when only persistence was recorded (no `history` available) rather than showing a
+degenerate/misleading comparison.
+
+Not shared with features.md#pyq-249's planned foundation-model arm yet -- PYQ-249 is not
+attempted this pass (Phase 3 per backlog/README.md's `## Now`, gated on Phase 2's multi-symbol
+sweep); the `Baseline` protocol is deliberately general enough (`predict(history, horizon) ->
+forecast`) that a foundation-model wrapper can implement it directly when that ticket is
+picked up, without changing this module.
+
+Verified: 11 new tests in `tests/test_baselines.py` cover every baseline's core behavior
+(exact linear-drift recovery, seasonal wrap-around and short-history degradation, AR(1)
+recovery, degenerate/constant/single-point history) plus `baseline_maes()`'s default and
+filtered baseline sets. 7 new tests in `tests/test_metrics.py` cover the `EvaluationMetrics`
+integration (`strongest_baseline`, `skill_vs_strongest_baseline`, aggregation, the
+with/without-`history` split). `test_train_evaluation_scores_every_default_baseline_beyond_persistence`
+in `tests/test_tft.py` verifies the full wiring end to end against a real (tiny) trained
+bundle, not a mock. 5 new CLI tests cover the table rows, the omitted-row case, and JSON
+output. All pass; ruff clean; `scripts/backlog.py check` clean.
+
+**`docs/methodology.md`'s three configurations are not re-stated against the full baseline
+set.** The acceptance criterion needs a live re-run of `pyquant backtest` against real vendor
+data to produce actual numbers, which this pass did not have access to (same limitation
+recorded on PYQ-142/143/144/266/267, all landed in the same pass). Added a `## Baselines
+beyond persistence` section documenting the new capability and stating this gap explicitly,
+consistent with how the rest of this pass has handled the same limitation, rather than
+inventing numbers or leaving the gap unmentioned.
 
 ---
 

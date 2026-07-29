@@ -202,6 +202,37 @@ and capture it. Filling in the real profile for both configurations (ideally aft
 geometry fix has also been re-measured, since both landed in the same pass) is the natural
 next step, not a placeholder to leave standing.
 
+(baselines-beyond-persistence)=
+## Baselines beyond persistence
+
+Every skill number on this page, including the headline −23.5%, is relative to a single
+comparator: persistence ("predict no change"). Persistence is uniquely favourable to the
+null on a near-random-walk level series — it is close to optimal by construction, which is
+the whole of {ref}`the negative-result reading <negative-result>` above. Failing to beat it
+is therefore weak evidence that the model learned nothing; a drift baseline, a seasonal-naive
+baseline and a simple autoregressive model would each fail differently, and the *pattern* of
+which baselines a model beats is far more diagnostic than one signed number (PYQ-275).
+
+`analysis/baselines.py` now provides four more point-forecast comparators alongside
+persistence — random-walk-with-drift, seasonal-naive (default 5-day/weekly season),
+climatological (the historical mean, flat across the horizon), and a hand-rolled AR(1) fit
+per sample by closed-form OLS. The AR(1) baseline is deliberately not `statsmodels`'
+ARIMA/ETS: `statsmodels` is already an optional dependency (the `tuning` extra), but this
+module sits on `train`/`backtest`'s core path rather than only `tune`'s, and a per-window
+ARIMA fit is materially slower than a closed-form AR(1) for a comparator whose entire point
+is to be a cheap floor — declined per non-negotiable #5, not overlooked.
+
+`EvaluationMetrics.baseline_maes` now carries MAE against every one of the five,
+`strongest_baseline` names whichever has the lowest MAE (the hardest for the model to beat,
+and the honest one to headline skill against rather than the weakest available comparator),
+and `train`/`backtest`'s Rich tables and `--format json` output both surface the full row.
+
+**None of this page's headline numbers are re-stated against the fuller baseline set yet.**
+The −23.5%/+2.4% figures above were measured before this module existed, and there was no
+live vendor-data access available in the pass that added it to re-run either configuration.
+Re-running both under `pyquant backtest` and reporting skill against each baseline — and
+specifically against whichever is strongest for that symbol — is the natural next step.
+
 (sample-size)=
 ## Sample size
 

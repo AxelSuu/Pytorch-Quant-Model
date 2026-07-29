@@ -541,6 +541,58 @@ def test_train_table_shows_a_per_horizon_breakdown_when_horizon_exceeds_one(monk
     assert "+50.0%" in result.stdout  # step 1's skill
 
 
+# --- PYQ-275: baselines beyond persistence -------------------------------------
+
+
+def test_train_table_names_the_strongest_baseline_and_its_skill(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            model_mae=5.0,
+            baseline_mae=10.0,  # persistence
+            baseline_maes={"persistence": 10.0, "seasonal_naive": 4.0, "ar1": 8.0},
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "seasonal_naive" in result.stdout
+    assert "ar1" in result.stdout
+    # skill vs. the strongest (seasonal_naive, mae 4.0): (4-5)/4 = -25.0%
+    assert "-25.0%" in result.stdout
+
+
+def test_train_table_omits_the_strongest_baseline_row_without_extra_baselines(monkeypatch):
+    """A bundle scored without `history` (PYQ-275 is additive) only ever has the
+    "persistence" entry -- no strongest-baseline row to show."""
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(baseline_maes={"persistence": 2.0}),
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "Skill vs. strongest baseline" not in result.stdout
+
+
+def test_train_json_output_includes_baseline_maes_and_strongest_baseline(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            model_mae=5.0,
+            baseline_mae=10.0,
+            baseline_maes={"persistence": 10.0, "seasonal_naive": 4.0},
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["--format", "json", "train", "AAPL"])
+    assert result.exit_code == 0
+    ev = json.loads(result.stdout)["evaluation"]
+    assert ev["baseline_maes"] == {"persistence": 10.0, "seasonal_naive": 4.0}
+    assert ev["strongest_baseline"] == {"name": "seasonal_naive", "mae": 4.0}
+    assert ev["skill_vs_strongest_baseline"] == pytest.approx((4.0 - 5.0) / 4.0)
+
+
 def test_train_table_still_shows_crps_and_winkler_rows_at_exactly_zero(monkeypatch):
     """PYQ-156: `if ev.crps:`/`if ev.winkler_score:` were bare truthy checks, so a
     legitimate 0.0 (e.g. a degenerate/perfect band) silently dropped the row."""

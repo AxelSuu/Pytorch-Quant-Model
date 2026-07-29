@@ -473,7 +473,7 @@ def train(
         cal_loader = calibration.to_dataloader(
             train=False, batch_size=batch_size, num_workers=num_workers
         )
-        cal_pred, cal_actual, _ = _raw_validation_arrays(best_model, cal_loader)
+        cal_pred, cal_actual, _, _ = _raw_validation_arrays(best_model, cal_loader)
         conformal = fit_conformal_offset(cal_actual, cal_pred, settings.tft.quantiles)
         logger.info(
             "Conformal offset %s fitted on %d calibration window(s) (%d effective)",
@@ -709,7 +709,7 @@ def walk_forward_backtest(
                 # arrays a signal needs, and this stays opt-in specifically to keep the
                 # default backtest path (no signals) at its current one-pass cost.
                 best_model = _load_best_checkpoint(ckpt_cb.best_model_path, model)
-                predictions, actuals, last_observed = _raw_validation_arrays(best_model, val_loader)
+                predictions, actuals, last_observed, _ = _raw_validation_arrays(best_model, val_loader)
                 signal, realized_pct = _window_signal(
                     predictions, actuals, last_observed, settings.tft.quantiles, target_column(settings)
                 )
@@ -947,6 +947,10 @@ def _raw_validation_arrays(model: TemporalFusionTransformer, loader):
         result.output.cpu().numpy(),
         result.y[0].cpu().numpy(),
         result.x["encoder_target"][:, -1].cpu().numpy(),
+        # The full encoder window, not just its last value -- what
+        # analysis.baselines' comparators beyond persistence need (PYQ-275).
+        # Already computed as part of the same forward pass, so this is free.
+        result.x["encoder_target"].cpu().numpy(),
     )
 
 
@@ -957,8 +961,8 @@ def _evaluate_validation(
     target: str = "Close",
     conformal: ConformalOffset | None = None,
 ) -> EvaluationMetrics:
-    """Score the held-out validation window vs. a persistence baseline."""
-    predictions, actuals, last_observed = _raw_validation_arrays(model, val_loader)
+    """Score the held-out validation window vs. baselines beyond persistence (PYQ-275)."""
+    predictions, actuals, last_observed, history = _raw_validation_arrays(model, val_loader)
     # Score the band the user will actually be shown. Reporting coverage for an
     # uncalibrated band while `forecast` prints a calibrated one would make the
     # published number describe something nobody sees (PYQ-248).
@@ -969,6 +973,7 @@ def _evaluate_validation(
         last_observed,
         quantiles,
         target="log_return" if target == "LogReturn" else "close",
+        history=history,
     )
 
 

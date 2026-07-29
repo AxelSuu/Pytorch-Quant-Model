@@ -427,6 +427,27 @@ def test_train_evaluates_many_validation_windows_not_a_single_one(
     assert result.evaluation.n_points == result.evaluation.n_samples * horizon
 
 
+def test_train_evaluation_scores_every_default_baseline_beyond_persistence(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-275: `_evaluate_validation` now threads the encoder history it
+    already has through to `evaluate_predictions`, so a real bundle's
+    reported metrics carry more than the single persistence comparator."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    from pyquant.analysis.baselines import DEFAULT_BASELINES
+
+    expected_names = {b.name for b in DEFAULT_BASELINES}
+    assert set(result.evaluation.baseline_maes) == expected_names
+    assert result.evaluation.baseline_maes["persistence"] == pytest.approx(
+        result.evaluation.baseline_mae
+    )
+    assert result.evaluation.strongest_baseline is not None
+
+
 def test_validation_predictions_actuals_and_persistence_baseline_share_price_units(
     monkeypatch, sample_ohlcv_df, fast_settings
 ):

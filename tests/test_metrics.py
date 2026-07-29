@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from pyquant.analysis import baselines as default_baselines
 from pyquant.analysis import metrics
 
 
@@ -85,6 +86,89 @@ def test_moving_block_bootstrap_interval_uses_contiguous_blocks_deterministicall
     assert 0.0 <= interval[0] <= interval[1] <= 1.0
     with pytest.raises(ValueError, match="positive"):
         metrics.moving_block_bootstrap_interval(values, block_size=0)
+
+
+# --- PYQ-275: baselines beyond persistence ------------------------------------
+
+
+def _quantile_band(median: np.ndarray) -> np.ndarray:
+    """(n_samples, horizon, 3) predictions with an arbitrary p10/p90 around median."""
+    return np.stack([median - 5.0, median, median + 5.0], axis=-1)
+
+
+def test_evaluate_predictions_without_history_only_records_persistence():
+    median = np.array([[101.0, 103.0], [98.0, 96.0]])
+    predictions = _quantile_band(median)
+    actuals = np.array([[102.0, 104.0], [97.0, 95.0]])
+    last_observed = np.array([100.0, 100.0])
+
+    result = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+
+    assert set(result.baseline_maes) == {"persistence"}
+    assert result.baseline_maes["persistence"] == pytest.approx(result.baseline_mae)
+
+
+def test_evaluate_predictions_with_history_records_every_default_baseline():
+    median = np.array([[101.0, 103.0], [98.0, 96.0]])
+    predictions = _quantile_band(median)
+    actuals = np.array([[102.0, 104.0], [97.0, 95.0]])
+    last_observed = np.array([100.0, 100.0])
+    rng = np.random.default_rng(3)
+    history = rng.normal(100, 2, size=(2, 15))
+
+    result = metrics.evaluate_predictions(
+        predictions, actuals, last_observed, [0.1, 0.5, 0.9], history=history
+    )
+
+    expected_names = {b.name for b in default_baselines.DEFAULT_BASELINES}
+    assert set(result.baseline_maes) == expected_names
+    # The target-aware persistence entry must still match `baseline_mae`
+    # exactly, not the generic history[:, -1] carried-forward baseline.
+    assert result.baseline_maes["persistence"] == pytest.approx(result.baseline_mae)
+
+
+def test_evaluation_metrics_strongest_baseline_picks_the_lowest_mae():
+    ev = metrics.EvaluationMetrics(
+        model_mae=5.0,
+        baseline_mae=10.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        baseline_maes={"persistence": 10.0, "seasonal_naive": 3.0, "ar1": 7.0},
+    )
+    assert ev.strongest_baseline == ("seasonal_naive", 3.0)
+    # skill vs. the strongest (3.0) is much worse than skill vs. persistence (10.0).
+    assert ev.skill_vs_strongest_baseline == pytest.approx((3.0 - 5.0) / 3.0)
+    assert ev.skill_vs_strongest_baseline < ev.skill_vs_baseline
+
+
+def test_evaluation_metrics_strongest_baseline_is_none_without_any_recorded():
+    ev = metrics.EvaluationMetrics(
+        model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+    )
+    assert ev.strongest_baseline is None
+    assert ev.skill_vs_strongest_baseline is None
+
+
+def test_aggregate_metrics_pools_baseline_maes_across_windows():
+    a = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=2.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        n_points=4,
+        baseline_maes={"persistence": 2.0, "ar1": 4.0},
+    )
+    b = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=6.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        n_points=4,
+        baseline_maes={"persistence": 6.0, "ar1": 8.0},
+    )
+    agg = metrics.aggregate_metrics([a, b])
+    assert agg.baseline_maes["persistence"] == pytest.approx(4.0)  # equal weight -> midpoint
+    assert agg.baseline_maes["ar1"] == pytest.approx(6.0)
 
 
 def test_evaluate_predictions_combines_all_metrics():

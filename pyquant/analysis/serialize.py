@@ -55,6 +55,15 @@ def evaluation_to_dict(ev: EvaluationMetrics) -> dict[str, Any]:
             }
             for step in ev.per_horizon
         ],
+        # MAE against every comparator beyond persistence (PYQ-275), plus which
+        # one is hardest for the model to beat and skill against it.
+        "baseline_maes": dict(ev.baseline_maes),
+        "strongest_baseline": (
+            {"name": ev.strongest_baseline[0], "mae": ev.strongest_baseline[1]}
+            if ev.strongest_baseline is not None
+            else None
+        ),
+        "skill_vs_strongest_baseline": ev.skill_vs_strongest_baseline,
     }
 
 

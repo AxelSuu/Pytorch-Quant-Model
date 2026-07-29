@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from pyquant.analysis import baselines
+
 logger = logging.getLogger(__name__)
 
 
@@ -357,6 +359,13 @@ class EvaluationMetrics:
     # older tests/scripts) rather than raising -- this is additive detail, not
     # a required input.
     per_horizon: list[PerHorizonMetrics] = field(default_factory=list)
+    # MAE against every comparator in analysis/baselines.py, not only persistence
+    # (PYQ-275) -- persistence is uniquely favourable to the null on a
+    # near-random-walk level series, so failing to beat it alone is weak
+    # evidence. Always has a "persistence" key equal to `baseline_mae` above;
+    # populated with the rest only when `evaluate_predictions` is given
+    # encoder history to compute them from.
+    baseline_maes: dict[str, float] = field(default_factory=dict)
 
     @property
     def skill_vs_baseline(self) -> float:
@@ -364,6 +373,30 @@ class EvaluationMetrics:
         if self.baseline_mae == 0:
             return 0.0
         return (self.baseline_mae - self.model_mae) / self.baseline_mae
+
+    @property
+    def strongest_baseline(self) -> tuple[str, float] | None:
+        """The (name, mae) of whichever baseline has the *lowest* MAE (PYQ-275).
+
+        The lowest-MAE baseline is the hardest one for the model to beat, and
+        therefore the honest one to headline skill against -- reporting skill
+        against the weakest available comparator is the failure mode this
+        exists to prevent. None if no baselines were recorded.
+        """
+        if not self.baseline_maes:
+            return None
+        return min(self.baseline_maes.items(), key=lambda kv: kv[1])
+
+    @property
+    def skill_vs_strongest_baseline(self) -> float | None:
+        """`skill_vs_baseline`, but against `strongest_baseline` instead of persistence alone."""
+        strongest = self.strongest_baseline
+        if strongest is None:
+            return None
+        _, mae = strongest
+        if mae == 0:
+            return 0.0
+        return (mae - self.model_mae) / mae
 
     @property
     def effective_n_samples(self) -> int:
@@ -381,11 +414,19 @@ def evaluate_predictions(
     quantiles: list[float],
     *,
     target: str = "close",
+    history: np.ndarray | None = None,
 ) -> EvaluationMetrics:
     """Compute all evaluation metrics for one batch of quantile forecasts.
 
     ``predictions`` is (n_samples, horizon, n_quantiles), ordered to match
     ``quantiles``; the first/last columns are treated as the calibration band.
+
+    ``history`` is each sample's full encoder window, ``(n_samples,
+    encoder_length)``, in the same units as ``actuals`` -- pass it to also
+    score against analysis/baselines.py's comparators beyond persistence
+    (PYQ-275). Optional and additive: without it, ``EvaluationMetrics.
+    baseline_maes`` still carries a "persistence" entry (the same value as
+    ``baseline_mae``), just none of the others.
     """
     if 0.5 not in quantiles:
         raise ValueError(
@@ -421,6 +462,17 @@ def evaluate_predictions(
         )
         for h in range(horizon)
     ]
+    # "persistence" always matches `baseline_mae` below -- same target-aware
+    # computation (zero return for log_return, last close otherwise) -- so the
+    # two never silently disagree. The other comparators don't have that
+    # target-specific convention; they read `history` directly (PYQ-275).
+    baseline_mae_by_name = {"persistence": persistence_baseline_mae(actuals, baseline)}
+    if history is not None:
+        baseline_mae_by_name.update(
+            baselines.baseline_maes(
+                actuals, history, [b for b in baselines.DEFAULT_BASELINES if b.name != "persistence"]
+            )
+        )
     return EvaluationMetrics(
         model_mae=model_mae(actuals, median),
         baseline_mae=persistence_baseline_mae(actuals, baseline),
@@ -438,6 +490,7 @@ def evaluate_predictions(
         ),
         pit=pit_values(actuals, predictions, quantiles).tolist(),
         per_horizon=per_horizon,
+        baseline_maes=baseline_mae_by_name,
     )
 
 
@@ -493,6 +546,7 @@ def aggregate_metrics(results: list[EvaluationMetrics]) -> EvaluationMetrics:
         # the pooled histogram is the whole point of collecting them.
         pit=[value for r in results for value in r.pit],
         per_horizon=_pool_per_horizon(results),
+        baseline_maes=pooled_dict([r.baseline_maes for r in results]),
     )
 
 

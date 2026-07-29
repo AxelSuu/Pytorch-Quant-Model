@@ -152,6 +152,20 @@ def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "")
     table.add_row(f"Model MAE{suffix}", f"{ev.model_mae:.4f}")
     table.add_row(f"Baseline MAE{suffix} (persistence)", f"{ev.baseline_mae:.4f}")
     table.add_row("Skill vs. baseline", f"{ev.skill_vs_baseline:+.1%}")
+    # Baselines beyond persistence (PYQ-275): persistence is uniquely
+    # favourable to the null on a near-random-walk level series, so headline
+    # skill against it alone is weak evidence. Name the *strongest* one
+    # (lowest MAE, hardest to beat) explicitly, rather than only ever
+    # reporting skill against the weakest comparator available.
+    other_baselines = {k: v for k, v in ev.baseline_maes.items() if k != "persistence"}
+    if other_baselines:
+        for name, mae in sorted(other_baselines.items()):
+            table.add_row(f"Baseline MAE{suffix} ({name})", f"{mae:.4f}")
+        strongest_name, strongest_mae = ev.strongest_baseline
+        table.add_row(
+            f"Skill vs. strongest baseline ({strongest_name})",
+            f"{ev.skill_vs_strongest_baseline:+.1%}",
+        )
     table.add_row(f"Directional accuracy{suffix}", f"{ev.directional_accuracy:.1%}")
     table.add_row(
         f"Calibration coverage{suffix} ({_band_label(quantiles)})",
