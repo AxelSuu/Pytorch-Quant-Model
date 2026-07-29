@@ -56,14 +56,19 @@ PYQUANT_API_ALLOW_UNAUTHENTICATED=1 uv run uvicorn pyquant.api.app:app
 Symbols are upper-cased on the way in, so `/forecast/aapl` and `/forecast/AAPL` are the
 same bundle.
 
+Note: `/docs`, `/redoc` and `/openapi.json` are FastAPI's own built-in routes and are
+**not** covered by `require_api_key` — they are reachable with no key regardless of how
+`PYQUANT_API_KEYS` is configured (bugs.md#pyq-160 tracks deciding this deliberately, one
+way or the other).
+
 ### Status codes
 
 | Code | When |
 |---|---|
-| `401` | Missing or invalid `X-API-Key`. |
-| `404` | No trained bundle for that symbol, or no job with that id. |
+| `401` | Missing or invalid `X-API-Key`. Body: `{"detail": "Missing or invalid API key"}`. |
+| `404` | No trained bundle for that symbol, or no job with that id. Body: `{"detail": "No trained model for ... Run \`pyquant train\` first."}` or `{"detail": "No job '<id>'"}`. |
 | `409` | {py:class}`~pyquant.models.tft.FeatureSchemaMismatch` — the bundle was trained on features that can no longer be assembled. A conflict, not a server error: the model is fine, the world moved. |
-| `422` | An empty `symbols` list on `POST /train`, or a body that fails validation. |
+| `422` | An empty `symbols` list on `POST /train` (`{"detail": "symbols must not be empty"}`), or a body that fails pydantic validation — e.g. an invalid symbol shape returns FastAPI's structured form: `{"detail": [{"type": "value_error", "loc": ["body", "symbols"], "msg": "Value error, Invalid symbol/bundle name '../x': must match ...", ...}]}`. Note the two `422` shapes differ (plain string vs. a list of error objects) depending on which check rejected the request. |
 | `500` | `PYQUANT_API_KEYS` is unset and unauthenticated access was not explicitly enabled. |
 
 ### Forecasting
@@ -86,7 +91,39 @@ curl -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
 `POST /scan` returns `200` even when individual symbols fail. Each row carries a `status`
 of `ok`, `not_trained` or `error`, so one flaky symbol does not sink the comparison — the
 same discipline as the CLI's `scan`, and the same `scan_row_to_dict` implementation, so the
-`signal` and `band_width_pct` a caller sees cannot drift between the two front-ends.
+`signal` and `band_width_pct` a caller sees cannot drift between the two front-ends. An
+empty `symbols` list is accepted and returns `[]` (unlike `POST /train`, which rejects an
+empty list with `422` — `/scan` treats "compare nothing" as a valid no-op).
+
+A real two-symbol response, one trained and one not, looks like this:
+
+```json
+[
+  {
+    "symbol": "AAPL", "status": "ok", "error": null,
+    "current_price": 336.91, "median_target": 267.31,
+    "expected_return_pct": -20.66, "band_width_pct": 7.97, "signal": "SELL"
+  },
+  {
+    "symbol": "ZZZZNOPE", "status": "not_trained",
+    "error": "No trained model for ZZZZNOPE at /.../checkpoints/ZZZZNOPE/model.ckpt. Run `pyquant train` first.",
+    "current_price": null, "median_target": null,
+    "expected_return_pct": null, "band_width_pct": null, "signal": null
+  }
+]
+```
+
+### Explaining a forecast
+
+```bash
+curl -H "X-API-Key: $KEY" http://localhost:8000/explain/AAPL
+```
+
+The response is {py:class}`~pyquant.api.schemas.InterpretationResponse` — the same
+`feature_importance`/`attention`/`bundle_skill` fields as `pyquant explain --format json`.
+`bundle_skill` is the bundle's own recorded skill from training (can be negative — the
+project does not dress up a bad number); use it as a "should I trust this explanation"
+signal without re-deriving it.
 
 ### Training
 
@@ -108,6 +145,41 @@ Body fields: `symbols` (required, non-empty; more than one pools them), `bundle_
 When a job succeeds, the bundle it retrained is **evicted from the bundle cache**, so the
 next `/forecast` or `/explain` reloads it from disk. Without that step a cached copy from
 before the run would keep serving the old weights.
+
+A shell polling loop:
+
+```bash
+job_id=$(curl -s -X POST -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
+     -d '{"symbols": ["AAPL"], "epochs": 5}' \
+     http://localhost:8000/train | python3 -c 'import json,sys; print(json.load(sys.stdin)["job_id"])')
+
+until [ "$(curl -s -H "X-API-Key: $KEY" http://localhost:8000/train/$job_id \
+     | python3 -c 'import json,sys; print(json.load(sys.stdin)["status"])')" != "running" ]; do
+  sleep 5
+done
+curl -s -H "X-API-Key: $KEY" http://localhost:8000/train/$job_id
+```
+
+Two concurrent `POST /train` calls for the *same* symbol are not currently guarded against
+each other (bugs.md#pyq-161) — don't retry a slow-looking train job by firing a second one
+for the same symbol; poll the existing `job_id` instead.
+
+### Minimal Python client
+
+```python
+import requests
+
+BASE, KEY = "http://localhost:8000", "..."
+headers = {"X-API-Key": KEY}
+
+fc = requests.get(f"{BASE}/forecast/AAPL", headers=headers).json()
+print(fc["median"], fc["expected_return_pct"])
+
+job = requests.post(
+    f"{BASE}/train", headers=headers, json={"symbols": ["AAPL"], "epochs": 5}
+).json()
+status = requests.get(f"{BASE}/train/{job['job_id']}", headers=headers).json()
+```
 
 ## Concurrency model
 
@@ -146,3 +218,17 @@ to graduate rather than defects to file:
 
 Each of these is cheap to live with for a single instance and wrong to pretend away for
 more than one.
+
+## Known gaps (tracked, not fixed here)
+
+- **`/docs`/`/redoc`/`/openapi.json` bypass `X-API-Key`** (bugs.md#pyq-160) — structural,
+  not a bug in `require_api_key` itself; see the note under Authentication above.
+- **No lock serializes concurrent `POST /train` calls for the same bundle** (bugs.md#pyq-161)
+  — unlike `/forecast`/`/explain`'s per-bundle prediction lock. Don't fire a second
+  `POST /train` for a symbol that already has a job in flight.
+- **`POST /train`'s `failed` status path has no test coverage** (bugs.md#pyq-162) — the
+  behaviour is implemented and documented above, just not yet verified by a test.
+- **`TrainRequest.period` is accepted but never used**, and `JobRegistry` never evicts
+  completed jobs (bugs.md#pyq-159).
+- **No `/backtest` endpoint yet** (features.md#pyq-271) — the CLI's `backtest` command,
+  which produces every quality number this project reports, has no API equivalent.
