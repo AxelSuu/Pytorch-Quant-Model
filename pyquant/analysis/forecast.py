@@ -14,8 +14,69 @@ from pyquant.models import tft
 
 
 def log_returns_to_prices(log_returns: np.ndarray, last_close: float) -> np.ndarray:
-    """Reconstruct a price path from per-step log-return quantiles."""
+    """Reconstruct a price path from a *single* sequence of per-step log-returns.
+
+    Exact for one deterministic path (e.g. the realized actual): cumsum-then-exp
+    is just the definition of compounding a return sequence. Do not call this on
+    a `(horizon, n_quantiles)` array of quantile columns -- that treats each
+    quantile as if it were its own path realizing that same marginal quantile at
+    every step, which is a different (and wrong) object; see
+    `log_return_quantiles_to_price_band` and PYQ-142.
+    """
     return float(last_close) * np.exp(np.cumsum(np.asarray(log_returns, dtype=float), axis=0))
+
+
+def log_return_quantiles_to_price_band(
+    log_return_quantiles: np.ndarray, last_close: float, quantiles: list[float]
+) -> np.ndarray:
+    """Reconstruct an h-step price *quantile band* from per-step log-return quantiles.
+
+    `log_return_quantiles` is `(horizon, n_quantiles)`: one quantile forecast per
+    decoder step, e.g. from `predict_quantiles`. Naively cumsum-ing each quantile
+    column independently (what this project did before PYQ-142) computes the path
+    where every step *simultaneously* realizes its own marginal quantile -- an
+    event that requires increasingly strong correlation across steps to occur at
+    all, and overstates the true h-step quantile's width by ~sqrt(h) under an iid
+    assumption (PYQ-142's 400k-path simulation).
+
+    This instead: compounds the median path via cumsum (exact for a
+    deterministic center under the market-standard assumption that log-returns
+    are approximately mean/median-symmetric), and treats each quantile's
+    per-step deviation from the median as an independent-across-steps dispersion
+    contribution, so its cumulative effect scales as
+    `sqrt(sum of squared per-step deviations)` -- the textbook identity for the
+    standard deviation of a sum of independent variables -- rather than their
+    linear sum. Under iid steps with constant per-step dispersion this reduces
+    exactly to the analytic `sqrt(h)` scaling of a sum of iid variables.
+
+    This is an explicit, documented distributional assumption (independence
+    across horizon steps), not a property the model asserts -- see PYQ-142's
+    "(a) retrain on cumulative targets vs (b) an explicit assumption" framing,
+    which chose (b) as the non-invalidating fix. If a conformal offset
+    (PYQ-248) has already been applied to `log_return_quantiles`, its effect on
+    each step's deviation from the median flows through this formula like any
+    other per-step correction, so the two compose without special-casing.
+    """
+    log_return_quantiles = np.asarray(log_return_quantiles, dtype=float)
+    if log_return_quantiles.ndim != 2:
+        raise ValueError(
+            "log_return_quantiles must be (horizon, n_quantiles), got shape "
+            f"{log_return_quantiles.shape}"
+        )
+    quantiles = list(quantiles)
+    if 0.5 not in quantiles:
+        raise ValueError(f"0.5 must be among quantiles to anchor the band, got {quantiles}")
+    median_idx = quantiles.index(0.5)
+
+    median_step = log_return_quantiles[:, median_idx]
+    cum_median = np.cumsum(median_step)
+
+    deviations = log_return_quantiles - median_step[:, None]
+    cum_dispersion = np.sqrt(np.cumsum(deviations**2, axis=0))
+    sign = np.array([1.0 if q > 0.5 else (-1.0 if q < 0.5 else 0.0) for q in quantiles])
+    cum_log_return_quantiles = cum_median[:, None] + sign[None, :] * cum_dispersion
+
+    return float(last_close) * np.exp(cum_log_return_quantiles)
 
 
 @dataclass
@@ -106,7 +167,9 @@ def generate_forecast(
     raw_predictions = tft.predict_quantiles(bundle, df)
     target = (bundle.meta.get("config") or {}).get("training", {}).get("target", "close")
     predictions = (
-        log_returns_to_prices(raw_predictions, float(panel["Close"].iloc[-1]))
+        log_return_quantiles_to_price_band(
+            raw_predictions, float(panel["Close"].iloc[-1]), list(bundle.meta["quantiles"])
+        )
         if target == "log_return"
         else raw_predictions
     )

@@ -5,6 +5,15 @@ one pooled model over the same symbols, then scores the pooled model on *each* s
 own validation slice separately (train()'s own reported metric for a pooled bundle is
 aggregated across every symbol, which cannot answer "did pooling help THIS symbol").
 
+Not rewritten over pyquant/experiments/sweep.py (PYQ-268), by deliberate choice: the
+harness's "arms" are each independent `walk_forward_backtest` calls, but "pooled" here is
+not a `walk_forward_backtest` config override at all -- it is one bundle, trained once
+across every symbol via `train()`, then sliced per symbol at evaluation time. Forcing that
+shape into a symbol x arm cell (each cell an independent walk-forward run) would silently
+answer a different question: N separate pooled-over-only-that-symbol models, not the one
+model actually intended to be deployed pooled. This script's own bespoke pooled-then-slice
+logic is the correct tool for that question and the harness is not a superset of it.
+
 Usage:
     uv run python scripts/compare_pooling.py SYMBOL1 SYMBOL2 [SYMBOL3 ...]
 """
@@ -66,7 +75,7 @@ def pooled_skill_per_symbol(symbols: list[str], settings) -> dict[str, float]:
             min_prediction_idx=validation_start,
         )
         dl = ds.to_dataloader(train=False, batch_size=64, num_workers=0)
-        predictions, actuals, last_observed = tft._raw_validation_arrays(bundle.model, dl)
+        predictions, actuals, last_observed, _ = tft._raw_validation_arrays(bundle.model, dl)
         ev = evaluate_predictions(
             predictions,
             actuals,

@@ -15,7 +15,8 @@ from pyquant.analysis.forecast import Forecast
 from pyquant.analysis.interpret import Interpretation
 from pyquant.analysis.metrics import EvaluationMetrics
 from pyquant.analysis.signals import SignalEvaluation, classify_signal
-from pyquant.models.tft import BacktestResult, TrainResult
+from pyquant.experiments.sweep import SweepResult
+from pyquant.models.tft import BacktestResult, SeedSweepResult, TrainResult
 
 
 def evaluation_to_dict(ev: EvaluationMetrics) -> dict[str, Any]:
@@ -43,6 +44,27 @@ def evaluation_to_dict(ev: EvaluationMetrics) -> dict[str, Any]:
         "n_samples": ev.n_samples,
         "n_points": ev.n_points,
         "effective_n_samples": ev.effective_n_samples,
+        # The profile every field above is a mean over h=1..horizon of (PYQ-267).
+        "per_horizon": [
+            {
+                "step": step.step,
+                "model_mae": step.model_mae,
+                "baseline_mae": step.baseline_mae,
+                "skill_vs_baseline": step.skill_vs_baseline,
+                "directional_accuracy": step.directional_accuracy,
+                "calibration_coverage": step.calibration_coverage,
+            }
+            for step in ev.per_horizon
+        ],
+        # MAE against every comparator beyond persistence (PYQ-275), plus which
+        # one is hardest for the model to beat and skill against it.
+        "baseline_maes": dict(ev.baseline_maes),
+        "strongest_baseline": (
+            {"name": ev.strongest_baseline[0], "mae": ev.strongest_baseline[1]}
+            if ev.strongest_baseline is not None
+            else None
+        ),
+        "skill_vs_strongest_baseline": ev.skill_vs_strongest_baseline,
     }
 
 
@@ -121,6 +143,52 @@ def backtest_to_dict(br: BacktestResult) -> dict[str, Any]:
         "n_windows": br.n_windows,
         "aggregated": evaluation_to_dict(br.aggregated),
         "per_window": [evaluation_to_dict(w) for w in br.per_window],
+        # Window identity, in `per_window` order -- what lets `compare_backtests`
+        # (PYQ-266) verify two backtests were scored on the same windows.
+        "origins": list(br.origins),
+    }
+
+
+def seed_sweep_to_dict(sweep: SeedSweepResult) -> dict[str, Any]:
+    """Serialize a multi-seed backtest sweep (PYQ-265), per-seed results included.
+
+    The per-seed list is retained, not just the summary: it is what lets a
+    consumer re-derive anything the summary stats don't capture, or feed a
+    pair of seeds into ``compare_backtests``.
+    """
+    return {
+        "symbol": sweep.symbol,
+        "seeds": list(sweep.seeds),
+        "per_seed": [backtest_to_dict(r) for r in sweep.per_seed],
+        "skill_mean": sweep.skill_mean,
+        "skill_sd": sweep.skill_sd,
+        "skill_min": sweep.skill_min,
+        "skill_max": sweep.skill_max,
+    }
+
+
+def sweep_result_to_dict(result: SweepResult) -> dict[str, Any]:
+    """Serialize a multi-symbol, multi-arm sweep (PYQ-268), full cell matrix included.
+
+    A failing cell serializes as ``{"error": "..."}`` rather than a null or a
+    zeroed-out result, so a consumer can tell "the model scored zero skill"
+    apart from "this cell never produced a score" -- the same distinction
+    ``SweepResult``'s own aggregates (``pooled_skill``, ``helped_summary``)
+    make by excluding failed cells rather than treating them as zero.
+    """
+    return {
+        "symbols": list(result.symbols),
+        "arms": list(result.arm_names),
+        "cells": [
+            {
+                "symbol": c.symbol,
+                "arm": c.arm,
+                "result": backtest_to_dict(c.result) if c.ok else None,
+                "error": c.error,
+            }
+            for c in result.cells
+        ],
+        "pooled_skill": {arm: result.pooled_skill(arm) for arm in result.arm_names},
     }
 
 

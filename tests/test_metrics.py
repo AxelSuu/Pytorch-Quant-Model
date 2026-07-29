@@ -3,6 +3,7 @@
 import numpy as np
 import pytest
 
+from pyquant.analysis import baselines as default_baselines
 from pyquant.analysis import metrics
 
 
@@ -87,6 +88,89 @@ def test_moving_block_bootstrap_interval_uses_contiguous_blocks_deterministicall
         metrics.moving_block_bootstrap_interval(values, block_size=0)
 
 
+# --- PYQ-275: baselines beyond persistence ------------------------------------
+
+
+def _quantile_band(median: np.ndarray) -> np.ndarray:
+    """(n_samples, horizon, 3) predictions with an arbitrary p10/p90 around median."""
+    return np.stack([median - 5.0, median, median + 5.0], axis=-1)
+
+
+def test_evaluate_predictions_without_history_only_records_persistence():
+    median = np.array([[101.0, 103.0], [98.0, 96.0]])
+    predictions = _quantile_band(median)
+    actuals = np.array([[102.0, 104.0], [97.0, 95.0]])
+    last_observed = np.array([100.0, 100.0])
+
+    result = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+
+    assert set(result.baseline_maes) == {"persistence"}
+    assert result.baseline_maes["persistence"] == pytest.approx(result.baseline_mae)
+
+
+def test_evaluate_predictions_with_history_records_every_default_baseline():
+    median = np.array([[101.0, 103.0], [98.0, 96.0]])
+    predictions = _quantile_band(median)
+    actuals = np.array([[102.0, 104.0], [97.0, 95.0]])
+    last_observed = np.array([100.0, 100.0])
+    rng = np.random.default_rng(3)
+    history = rng.normal(100, 2, size=(2, 15))
+
+    result = metrics.evaluate_predictions(
+        predictions, actuals, last_observed, [0.1, 0.5, 0.9], history=history
+    )
+
+    expected_names = {b.name for b in default_baselines.DEFAULT_BASELINES}
+    assert set(result.baseline_maes) == expected_names
+    # The target-aware persistence entry must still match `baseline_mae`
+    # exactly, not the generic history[:, -1] carried-forward baseline.
+    assert result.baseline_maes["persistence"] == pytest.approx(result.baseline_mae)
+
+
+def test_evaluation_metrics_strongest_baseline_picks_the_lowest_mae():
+    ev = metrics.EvaluationMetrics(
+        model_mae=5.0,
+        baseline_mae=10.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        baseline_maes={"persistence": 10.0, "seasonal_naive": 3.0, "ar1": 7.0},
+    )
+    assert ev.strongest_baseline == ("seasonal_naive", 3.0)
+    # skill vs. the strongest (3.0) is much worse than skill vs. persistence (10.0).
+    assert ev.skill_vs_strongest_baseline == pytest.approx((3.0 - 5.0) / 3.0)
+    assert ev.skill_vs_strongest_baseline < ev.skill_vs_baseline
+
+
+def test_evaluation_metrics_strongest_baseline_is_none_without_any_recorded():
+    ev = metrics.EvaluationMetrics(
+        model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+    )
+    assert ev.strongest_baseline is None
+    assert ev.skill_vs_strongest_baseline is None
+
+
+def test_aggregate_metrics_pools_baseline_maes_across_windows():
+    a = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=2.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        n_points=4,
+        baseline_maes={"persistence": 2.0, "ar1": 4.0},
+    )
+    b = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=6.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        n_points=4,
+        baseline_maes={"persistence": 6.0, "ar1": 8.0},
+    )
+    agg = metrics.aggregate_metrics([a, b])
+    assert agg.baseline_maes["persistence"] == pytest.approx(4.0)  # equal weight -> midpoint
+    assert agg.baseline_maes["ar1"] == pytest.approx(6.0)
+
+
 def test_evaluate_predictions_combines_all_metrics():
     # 2 samples, horizon 2, quantiles [0.1, 0.5, 0.9]
     predictions = np.array(
@@ -118,6 +202,185 @@ def test_aggregate_metrics_averages_across_windows():
     assert agg.baseline_mae == 3.0
     assert agg.directional_accuracy == 0.7
     assert abs(agg.calibration_coverage - 0.8) < 1e-9
+
+
+# --- PYQ-266: paired comparison of two backtests -----------------------------
+
+
+def _windows(model_maes, baseline_maes, origins):
+    per_window = [
+        metrics.EvaluationMetrics(
+            model_mae=m,
+            baseline_mae=b,
+            directional_accuracy=0.5,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=5,
+        )
+        for m, b in zip(model_maes, baseline_maes, strict=True)
+    ]
+    return metrics.ScoredWindows(per_window=per_window, origins=list(origins))
+
+
+def test_compare_backtests_identical_inputs_give_zero_difference():
+    a = _windows([1.0, 2.0, 3.0], [2.0, 2.0, 2.0], origins=[100, 105, 110])
+    result = metrics.compare_backtests(a, a)
+    assert result.mean_diff == pytest.approx(0.0)
+    assert result.ci_low <= 0.0 <= result.ci_high
+    assert result.n_windows == 3
+    assert result.excludes_zero is False
+
+
+def test_compare_backtests_recovers_a_constant_offset():
+    # a's skill is exactly 1.0 at every window; b's is exactly 0.2 -- a noiseless
+    # +0.8 difference, so the bootstrap interval should collapse to a point.
+    a = _windows([0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0], origins=[1, 2, 3, 4])
+    b = _windows([0.8, 0.8, 0.8, 0.8], [1.0, 1.0, 1.0, 1.0], origins=[1, 2, 3, 4])
+
+    result = metrics.compare_backtests(a, b)
+
+    assert result.mean_diff == pytest.approx(0.8)
+    assert result.ci_low == pytest.approx(0.8)
+    assert result.ci_high == pytest.approx(0.8)
+    assert result.excludes_zero is True
+
+
+def test_compare_backtests_defaults_block_size_from_recorded_horizon():
+    """The block length is keyed to the horizon (n_points / n_samples) recorded
+    on each window, so overlapping windows don't inflate significance."""
+    a = _windows([1.0, 1.0], [2.0, 2.0], origins=[1, 2])  # n_points=5, n_samples=1
+    result = metrics.compare_backtests(a, a)
+    assert result.block_size == 5
+
+
+def test_compare_backtests_raises_on_misaligned_origins():
+    a = _windows([1.0], [2.0], origins=[100])
+    b = _windows([1.0], [2.0], origins=[105])
+    with pytest.raises(ValueError, match="origins"):
+        metrics.compare_backtests(a, b)
+
+
+def test_compare_backtests_raises_without_recorded_origins():
+    """A `BacktestResult` built before PYQ-266 (or by hand) has no `origins` --
+    refuse to treat the comparison as paired when alignment can't be verified,
+    rather than silently trusting the caller."""
+    a = _windows([1.0], [2.0], origins=[])
+    b = _windows([1.0], [2.0], origins=[])
+    with pytest.raises(ValueError, match="origins"):
+        metrics.compare_backtests(a, b)
+
+
+def test_compare_backtests_excludes_zero_is_false_when_the_interval_straddles_it():
+    rng = np.random.default_rng(0)
+    n = 50
+    origins = list(range(n))
+    noise_a = rng.normal(0, 0.5, n)
+    noise_b = rng.normal(0, 0.5, n)
+    a = _windows((1.0 - noise_a).tolist(), [1.0] * n, origins=origins)
+    b = _windows((1.0 - noise_b).tolist(), [1.0] * n, origins=origins)
+
+    result = metrics.compare_backtests(a, b, block_size=1)
+
+    assert result.excludes_zero is False
+
+
+# --- PYQ-267: per-horizon-step breakdown --------------------------------------
+
+
+def test_evaluate_predictions_recovers_a_skill_profile_that_varies_by_horizon_step():
+    """Every top-level metric averages over h=1..horizon, discarding a profile
+    like 'skill improves with horizon' entirely. A synthetic case with skill
+    deliberately +1.0/0.0/-1.0 across three steps must not collapse to a mean
+    -- the per-step values must be individually recoverable."""
+    # step 1: model predicts perfectly (mae 0) while baseline mae is 1 -> skill +1.0.
+    # step 2: model predicts "no change", identical to baseline -> skill 0.0.
+    # step 3: model overshoots the move baseline (naively) gets half right -> skill -1.0.
+    median = np.array([[101.0, 100.0, 130.0], [99.0, 100.0, 70.0]])
+    lower, upper = median - 5.0, median + 5.0
+    predictions = np.stack([lower, median, upper], axis=-1)
+    actuals = np.array([[101.0, 105.0, 110.0], [99.0, 95.0, 90.0]])
+    last_observed = np.array([100.0, 100.0])
+
+    result = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+
+    assert [p.step for p in result.per_horizon] == [1, 2, 3]
+    skills = [p.skill_vs_baseline for p in result.per_horizon]
+    assert skills[0] == pytest.approx(1.0)
+    assert skills[1] == pytest.approx(0.0)
+    assert skills[2] == pytest.approx(-1.0)
+    # The mean-over-horizon headline number hides the profile: it is neither
+    # the best nor the worst step, and not obviously any of the three.
+    assert result.skill_vs_baseline == pytest.approx(-0.5625)
+
+
+def test_evaluate_predictions_per_horizon_mae_and_coverage_match_manual_per_step_calculation():
+    predictions = np.array(
+        [
+            [[95.0, 101.0, 106.0], [96.0, 103.0, 109.0]],
+            [[90.0, 98.0, 104.0], [88.0, 96.0, 102.0]],
+        ]
+    )
+    actuals = np.array([[102.0, 104.0], [97.0, 95.0]])
+    last_observed = np.array([100.0, 100.0])
+
+    result = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+
+    assert len(result.per_horizon) == 2
+    for h, step in enumerate(result.per_horizon):
+        assert step.model_mae == pytest.approx(
+            np.mean(np.abs(actuals[:, h] - predictions[:, h, 1]))
+        )
+        assert step.baseline_mae == pytest.approx(
+            metrics.persistence_baseline_mae(actuals[:, h : h + 1], last_observed)
+        )
+        assert 0.0 <= step.calibration_coverage <= 1.0
+
+
+def test_aggregate_metrics_pools_per_horizon_position_wise_weighted_by_n_samples():
+    a = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=2.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.7,
+        n_samples=4,
+        n_points=8,
+        per_horizon=[
+            metrics.PerHorizonMetrics(1, model_mae=0.0, baseline_mae=1.0, directional_accuracy=1.0, calibration_coverage=1.0),
+            metrics.PerHorizonMetrics(2, model_mae=10.0, baseline_mae=10.0, directional_accuracy=0.0, calibration_coverage=0.0),
+        ],
+    )
+    b = metrics.EvaluationMetrics(
+        model_mae=3.0,
+        baseline_mae=4.0,
+        directional_accuracy=0.9,
+        calibration_coverage=0.9,
+        n_samples=1,
+        n_points=2,
+        per_horizon=[
+            metrics.PerHorizonMetrics(1, model_mae=4.0, baseline_mae=1.0, directional_accuracy=0.0, calibration_coverage=0.0),
+            metrics.PerHorizonMetrics(2, model_mae=20.0, baseline_mae=10.0, directional_accuracy=1.0, calibration_coverage=1.0),
+        ],
+    )
+
+    agg = metrics.aggregate_metrics([a, b])
+
+    assert [p.step for p in agg.per_horizon] == [1, 2]
+    # step 1, weighted by n_samples (4 vs 1): (4*0.0 + 1*4.0) / 5 = 0.8
+    assert agg.per_horizon[0].model_mae == pytest.approx(0.8)
+    assert agg.per_horizon[0].directional_accuracy == pytest.approx((4 * 1.0 + 1 * 0.0) / 5)
+    # step 2: (4*10.0 + 1*20.0) / 5 = 12.0
+    assert agg.per_horizon[1].model_mae == pytest.approx(12.0)
+    assert agg.per_horizon[1].calibration_coverage == pytest.approx((4 * 0.0 + 1 * 1.0) / 5)
+
+
+def test_aggregate_metrics_per_horizon_is_empty_when_no_window_has_it():
+    """Windows built without PYQ-267's breakdown (e.g. hand-constructed
+    EvaluationMetrics in older tests/scripts) must not crash aggregation."""
+    a = metrics.EvaluationMetrics(
+        model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.7
+    )
+    agg = metrics.aggregate_metrics([a])
+    assert agg.per_horizon == []
 
 
 def test_evaluate_predictions_requires_0_5_quantile():

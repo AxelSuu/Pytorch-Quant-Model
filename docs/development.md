@@ -61,6 +61,24 @@ instead of taking on `mlflow` as a dependency. New dependencies need a recorded 
 mypy in CI and a real-FinBERT CI job were both declined on measured evidence, and that
 disposition is a feature.
 
+### `pyquant sweep`: the multi-symbol repeat these scripts couldn't do (PYQ-268)
+
+`compare_pooling.py` and `ablate_features.py` are each hard-wired to one symbol (or two);
+repeating either across fifteen symbols meant editing the script and reconciling the output
+by hand — which is why the multi-symbol repeat both investigations name as their own
+prerequisite sat un-run across two backlog review passes. `pyquant sweep --symbols
+A,B,C --arm target=close --arm target=log_return --windows 5` (`pyquant/experiments/sweep.py`)
+is the reusable instrument: it walk-forward backtests every symbol against every named
+config-override "arm", reports per-symbol and pooled skill, a "helped N of M symbols"
+summary, and a paired significance comparison (`compare_backtests`) between the first two
+arms per symbol — and a symbol that fails for one arm degrades to a recorded gap rather than
+taking the sweep down. Neither existing script was rewritten over it: `ablate_features.py`'s
+correlation-matrix analysis has no sweep-harness equivalent, and `compare_pooling.py`'s
+pooled model is one bundle trained once and sliced per symbol, not `N` independent
+per-symbol walk-forward runs — a different measurement shape the harness does not produce.
+Running the harness against the three pending repeats is separate, later work; this landed
+the tool, not a result (see `features.md#pyq-268`'s resolution note).
+
 ## The backlog
 
 `backlog/` is the source of truth for work: `bugs.md` (`PYQ-1xx`), `features.md`

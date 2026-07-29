@@ -5,7 +5,11 @@ import pandas as pd
 import pytest
 
 from pyquant.analysis import forecast as fc_mod
-from pyquant.analysis.forecast import Forecast, log_returns_to_prices
+from pyquant.analysis.forecast import (
+    Forecast,
+    log_return_quantiles_to_price_band,
+    log_returns_to_prices,
+)
 
 
 def _make_forecast():
@@ -45,11 +49,75 @@ def test_expected_return_pct():
     assert abs(fc.expected_return_pct() - (-2.7272)) < 1e-3
 
 
-def test_log_return_price_round_trip():
-    returns = np.log(np.array([[101.0, 102.0, 103.0], [104.0, 105.0, 106.0]]) / 100.0)
+def test_log_returns_to_prices_compounds_a_single_path_exactly():
+    """log_returns_to_prices is for one deterministic path (e.g. the realized
+    actual), where cumsum is exactly correct -- no quantile/dispersion question
+    applies to a single path."""
+    returns = np.log(np.array([101.0, 104.0]) / np.array([100.0, 101.0]))
     prices = log_returns_to_prices(returns, 100.0)
-    np.testing.assert_allclose(prices[0], [101.0, 102.0, 103.0])
-    np.testing.assert_allclose(prices[1], [104.0 * 101.0 / 100.0, 105.0 * 102.0 / 100.0, 106.0 * 103.0 / 100.0])
+    np.testing.assert_allclose(prices, [101.0, 104.0])
+
+
+def test_log_return_quantile_band_does_not_reproduce_old_naive_cumsum_band():
+    """PYQ-142: naively cumsum-ing each quantile column independently (the old
+    behavior) overstates the h-step band width by ~sqrt(h). The fixed
+    reconstruction must not reproduce that band."""
+    quantiles = [0.1, 0.5, 0.9]
+    horizon, sigma = 5, 0.02
+    # Same per-step quantiles at every step (iid steps).
+    per_step = np.array([-1.2816 * sigma, 0.0, 1.2816 * sigma])
+    log_return_quantiles = np.tile(per_step, (horizon, 1))
+
+    band = log_return_quantiles_to_price_band(log_return_quantiles, 100.0, quantiles)
+    naive = log_returns_to_prices(log_return_quantiles, 100.0)  # old buggy call shape
+
+    fixed_p90_pct = (band[-1, -1] - 100.0) / 100.0
+    naive_p90_pct = (naive[-1, -1] - 100.0) / 100.0
+    # The naive band is the ~sqrt(h) too-wide one the ticket measured.
+    assert naive_p90_pct > fixed_p90_pct * 1.5
+
+
+def test_log_return_quantile_band_matches_analytic_iid_normal_quantiles():
+    """Under an iid-per-step-normal assumption, the true h-step p90 edge is
+    z_0.9 * sigma * sqrt(h). If the model's own per-step quantiles are exactly
+    the true per-step normal quantiles, the fixed reconstruction should recover
+    that analytic h-step edge (this is the sqrt(sum of squared per-step
+    deviations) identity, not a Monte Carlo approximation)."""
+    quantiles = [0.1, 0.5, 0.9]
+    horizon, sigma = 5, 0.02
+    z = np.array([-1.2815515655446004, 0.0, 1.2815515655446004])  # norm.ppf([0.1, 0.5, 0.9])
+    per_step = z * sigma
+    log_return_quantiles = np.tile(per_step, (horizon, 1))
+
+    band = log_return_quantiles_to_price_band(log_return_quantiles, 100.0, quantiles)
+
+    for h in range(1, horizon + 1):
+        expected_log_return = z[-1] * sigma * np.sqrt(h)
+        actual_log_return = np.log(band[h - 1, -1] / 100.0)
+        assert abs(actual_log_return - expected_log_return) < 1e-9
+
+
+def test_log_return_quantile_band_achieves_close_to_nominal_coverage():
+    """Monte Carlo coverage check (PYQ-142 acceptance criterion): simulate iid
+    per-step normal log-returns, build the p10-p90 band from the true per-step
+    quantiles, and confirm empirical h-step coverage is close to the nominal
+    80%, unlike the naive cumsum band (which the ticket measured at up to
+    ~2.2x too wide, i.e. badly over-covering)."""
+    rng = np.random.default_rng(0)
+    quantiles = [0.1, 0.5, 0.9]
+    horizon, sigma, n_sims = 5, 0.02, 20000
+    z = np.array([-1.2815515655446004, 0.0, 1.2815515655446004])  # norm.ppf([0.1, 0.5, 0.9])
+    per_step = z * sigma
+    log_return_quantiles = np.tile(per_step, (horizon, 1))
+    band = log_return_quantiles_to_price_band(log_return_quantiles, 100.0, quantiles)
+
+    steps = rng.normal(0.0, sigma, size=(n_sims, horizon))
+    cum_actual_log_return = np.cumsum(steps, axis=1)
+    final_actual = 100.0 * np.exp(cum_actual_log_return[:, -1])
+
+    covered = (final_actual >= band[-1, 0]) & (final_actual <= band[-1, -1])
+    empirical_coverage = covered.mean()
+    assert abs(empirical_coverage - 0.8) < 0.03
 
 
 def test_median_raises_clear_error_when_0_5_not_configured():

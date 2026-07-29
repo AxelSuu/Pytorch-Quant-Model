@@ -69,17 +69,17 @@ Next free ID: **PYQ-281**.
 | [PYQ-262](#pyq-262) | Low | Resolved | Pre-commit configuration |
 | [PYQ-263](#pyq-263) | Low | Resolved | `pyquant doctor` — environment and bundle health check |
 | [PYQ-264](#pyq-264) | Medium | Resolved | Fold PYQ-247/248/250 into the docs; deploy to GitHub Pages; nightly docs-drift check |
-| [PYQ-265](#pyq-265) | High | Open | Report skill across seeds, not from a single seed |
-| [PYQ-266](#pyq-266) | High | Open | Paired significance test for comparing two configurations |
-| [PYQ-267](#pyq-267) | High | Open | Break every metric down by horizon step |
-| [PYQ-268](#pyq-268) | High | Open | A reusable multi-symbol sweep harness, replacing the one-off scripts |
+| [PYQ-265](#pyq-265) | High | Resolved | Report skill across seeds, not from a single seed |
+| [PYQ-266](#pyq-266) | High | Resolved | Paired significance test for comparing two configurations |
+| [PYQ-267](#pyq-267) | High | Resolved | Break every metric down by horizon step |
+| [PYQ-268](#pyq-268) | High | Resolved | A reusable multi-symbol sweep harness, replacing the one-off scripts |
 | [PYQ-269](#pyq-269) | Medium | Open | Split `models/tft.py` (1075 lines) without breaking Lightning containment |
 | [PYQ-270](#pyq-270) | Medium | Open | Put a confidence interval on the headline skill number |
 | [PYQ-271](#pyq-271) | Medium | Open | `/backtest` endpoint: close the CLI/API front-end gap |
 | [PYQ-272](#pyq-272) | Medium | Open | Dedicated tests for `serialize`, `doctor`, `provenance` and `charts` |
 | [PYQ-273](#pyq-273) | Medium | Open | Regression cases for PYQ-139/140 on PYQ-243's existing replay harness |
 | [PYQ-274](#pyq-274) | Low | Open | CHANGELOG and a release/tagging workflow |
-| [PYQ-275](#pyq-275) | High | Open | Baselines beyond persistence: a negative result is only as strong as what it failed against |
+| [PYQ-275](#pyq-275) | High | Resolved | Baselines beyond persistence: a negative result is only as strong as what it failed against |
 | [PYQ-276](#pyq-276) | Medium | Open | Execute PYQ-312's reframing: the README still sells a forecaster |
 | [PYQ-277](#pyq-277) | Medium | Open | Tiingo isn't actually selectable anywhere; PYQ-258's own acceptance criterion is unmet |
 | [PYQ-278](#pyq-278) | Low | Open | Ruff format drift has grown to 33 files vs. the CI comment's 20-22 baseline |
@@ -3213,7 +3213,7 @@ one clean); all three workflow YAML files parse; `scripts/backlog.py check` clea
 
 ## [PYQ-265]
 Report skill across seeds, not from a single seed
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/config.py`, `pyquant/models/tft.py`, `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`
 
@@ -3254,11 +3254,65 @@ fits; `--format json` carries the per-seed metrics; `meta.json` records the seed
 test asserts that two runs at the same seed list produce identical results and that a
 different seed list produces different ones.
 
+Resolution: `TrainingConfig.seeds: list[int]` defaults to `[42]`, matching `seed`'s own
+default so a single-element list reproduces today's behaviour exactly. New
+`walk_forward_backtest_multi_seed(symbol, settings, *, seeds=None, ...)` in `models/tft.py`
+loops `walk_forward_backtest` once per seed, each iteration on its own `settings.model_copy(deep=True)`
+with only `training.seed` overridden -- the caller's own `Settings` object is never mutated.
+New `SeedSweepResult(symbol, seeds, per_seed: list[BacktestResult])` retains every individual
+result (per the ticket's own ask, so `compare_backtests` can consume them pairwise) plus
+`skill_mean`/`skill_sd`/`skill_min`/`skill_max` properties over `aggregated.skill_vs_baseline`
+across seeds (`skill_sd` uses `ddof=1`, reporting `0.0` for a single seed rather than `nan`).
+
+`pyquant backtest SYMBOL --seeds N` is the CLI surface: `N` expands to the deterministic
+sequence `range(N)` (seeds `0..N-1`), matching the ticket's "sugar for the first N of a
+deterministic sequence" ask. `--seeds` defaults to `1`, and the existing single-run code path
+is reached completely unchanged when it is omitted or left at 1 -- the new multi-seed branch
+(`_run_seed_sweep`, a small helper factored out to keep the `backtest` command readable) is
+structurally a separate `if seeds > 1: ...; return` at the top of the command, not a
+conditional woven through the existing path, specifically so "unchanged when not opted in"
+is visibly true from the diff rather than something to trust by inspection.
+`serialize.seed_sweep_to_dict` carries the full per-seed breakdown plus the summary stats into
+`--format json`; the Rich table names each seed's own skill/directional accuracy/coverage
+alongside the mean ± sd (min, max) headline.
+
+**Deliberately scoped to `backtest`, not `train`.** A multi-seed *backtest* needs nothing
+extra to make sense: each seed's walk-forward run is independent and none of them are
+persisted. A multi-seed *train* is a different problem -- it would fit N models and has to
+decide which seed's weights actually get deployed in the bundle, the exact question the
+ticket's own "reproducibility's three legs" paragraph raises and does not resolve. Making that
+product decision under this pass's time budget, alongside the four other tickets landing in
+it, risked a rushed answer to a question worth getting right; deferred rather than guessed.
+Consequently: `meta.json` records `TrainingConfig.seeds` (automatically, via the existing
+whole-config recording -- no new code needed for that half), but `train()` does not loop
+across it, and there is no "which seed's weights it kept" answer because `train()` still fits
+exactly one model, at `training.seed`, exactly as before. This does not block
+investigations.md#pyq-321: that investigation's own method section names a *backtest* sweep,
+not a trained-bundle sweep, as what it needs.
+
+One further, minor tradeoff recorded rather than fixed: each seed re-calls `build_panel`
+inside its own `walk_forward_backtest`, re-fetching/re-building an identical panel `len(seeds)`
+times. Real waste, but a caching problem (`DataConfig.cache_enabled`, PYQ-205) rather than a
+correctness one, and fixing it means threading a pre-built panel through
+`walk_forward_backtest`'s signature -- a function three other callers already share -- which
+is a larger change than this ticket's own scope.
+
+Verified against the acceptance criterion's own test: `test_walk_forward_backtest_multi_seed_same_seeds_reproduce_identical_results`
+and `test_walk_forward_backtest_multi_seed_different_seeds_give_different_results` cover
+exactly the "same seed list -> identical, different seed list -> different" pair asked for,
+built on the same seed-determinism property `test_two_identically_seeded_runs_produce_identical_metrics`
+already established for `train()`. 6 new tests in `tests/test_tft.py`
+(`walk_forward_backtest_multi_seed`/`SeedSweepResult`) plus 3 new CLI tests (the unchanged-
+single-run path, the deterministic seed expansion, and JSON output) all pass; ruff clean;
+`scripts/backlog.py check` clean. `docs/methodology.md` gained a `## Seed variance` section
+describing the tool and stating plainly that no sweep has been run against live data yet --
+investigations.md#pyq-321 is where that measurement, once made, belongs.
+
 ---
 
 ## [PYQ-266]
 Paired significance test for comparing two configurations
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `docs/methodology.md`
 
@@ -3295,11 +3349,69 @@ inputs give a difference of zero, a constant offset is recovered, and misaligned
 raise. `docs/methodology.md` re-states PYQ-247's +2.4% and #pyq-316's sentiment delta with
 an interval attached, or says plainly that the sample is too small to place one.
 
+Resolution: took the moving-block bootstrap over Diebold-Mariano, per the ticket's own
+suggestion -- it reuses `moving_block_bootstrap_interval` (PYQ-251) unchanged rather than
+adding a new statistical procedure and its own assumptions (asymptotic normality of the loss
+differential) on top of what the codebase already has and has already tested. `compare_backtests(a,
+b)` takes two new `ScoredWindows(per_window, origins)` values rather than
+`models.tft.BacktestResult` directly -- `BacktestResult` lives in `models/tft.py`, which
+imports Lightning/pytorch-forecasting, and `analysis/` must stay free of both per CLAUDE.md's
+layering rule (the reverse direction bit PYQ-267's own resolution note, where
+`serialize.py` already imports `TrainResult`/`BacktestResult` *from* `tft.py`, making the
+opposite import circular). A caller holding a real `BacktestResult` builds one with
+`ScoredWindows(result.per_window, result.origins)`.
+
+The alignment guard needed a new field: `BacktestResult` had no recorded window identity at
+all before this, so "refuse to compare misaligned windows" had nothing to check against.
+Added `BacktestResult.origins: list[int]` (each window's `cutoff`, in `per_window` order),
+populated from `walk_forward_backtest`'s own `cutoffs` list (already computed, previously
+discarded after driving the loop) and threaded through `serialize.backtest_to_dict`.
+`compare_backtests` raises if either side has an empty `origins` (a `BacktestResult` from
+before this fix, or hand-built) or if the two lists differ elementwise -- refusing to *guess*
+alignment from `n_windows` or `per_window` length alone, since two backtests can share a
+window count while scoring completely different dates.
+
+`block_size` defaults to the horizon recorded on the comparison's own first window
+(`n_points / n_samples`, the same derivation `EvaluationMetrics.effective_n_samples` already
+uses for the identical overlapping-windows reason), so a caller gets the "keyed to the
+horizon" behavior the ticket asks for without having to plumb settings.training.
+max_prediction_length through by hand; it can still be overridden.
+
+`PairedComparison.excludes_zero` is the pre-registrable primitive
+investigations.md#pyq-322's decision rule is written to consume directly.
+
+Verified against the acceptance criterion's own list:
+`test_compare_backtests_identical_inputs_give_zero_difference`,
+`test_compare_backtests_recovers_a_constant_offset` (a noiseless +0.8 difference collapses
+the bootstrap interval to a point, `[0.8, 0.8]`), and
+`test_compare_backtests_raises_on_misaligned_origins` (plus a second raise case,
+`test_compare_backtests_raises_without_recorded_origins`, for the "no recorded origins at
+all" branch the ticket's guard also has to cover). `test_compare_backtests_defaults_block_size_from_recorded_horizon`
+and `test_compare_backtests_excludes_zero_is_false_when_the_interval_straddles_it` round out
+the six new tests (36 total in `tests/test_metrics.py`, up from 30, all passing).
+`test_walk_forward_backtest_aggregates_across_windows` gained an assertion that `origins` is
+populated, distinct, and sorted, confirming the plumbing end to end rather than only at the
+unit level.
+
+Not built: a `pyquant compare`-shaped CLI command. The ticket's `Files:` list names
+`pyquant/cli/app.py`, but its own body says the function is "consumed by PYQ-268's sweep
+harness" for the arm-vs-arm comparison -- that is where a CLI surface for this belongs (`pyquant
+sweep`), and building a second, redundant one here before PYQ-268 exists would be scope
+without a caller. Recorded as a decision, not an oversight.
+
+`docs/methodology.md` does not attach an interval to PYQ-247's +2.4% or
+investigations.md#pyq-316's sentiment delta -- both were measured before `BacktestResult`
+recorded `origins`, so their raw per-window arrays cannot be verified to align with a
+re-run's, and no live vendor-data access was available this pass to produce a fresh paired
+comparison from scratch. Added a caveat stating this plainly (the acceptance criterion's own
+fallback option) rather than fabricating or retrofitting an interval onto data that can't
+support one.
+
 ---
 
 ## [PYQ-267]
 Break every metric down by horizon step
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/metrics.py`, `pyquant/analysis/serialize.py`, `pyquant/cli/app.py`
 
@@ -3336,11 +3448,66 @@ a test asserts that a synthetic case with skill deliberately varying by step rec
 profile rather than its mean. `docs/methodology.md` shows the per-horizon profile for at
 least the default and log-return configurations.
 
+Resolution: added `PerHorizonMetrics` (step, model_mae, baseline_mae, directional_accuracy,
+calibration_coverage, plus a `skill_vs_baseline` property using the same formula as
+`EvaluationMetrics`'s) -- the "compact per-step record" option the ticket offered, over a
+full `list[EvaluationMetrics]`, since quantile_exceedance/pinball_losses/CRPS/Winkler/PIT
+are already per-quantile or per-point aggregates that don't obviously have a single
+per-horizon-step reading, and the four fields that clearly do (MAE, baseline MAE, direction,
+coverage) are exactly what the ticket's own examples (skill profile, coverage fanning) need.
+`evaluate_predictions` now isolates each decoder step with `[:, h:h+1]` slices (preserving
+the 2D shape `persistence_baseline_mae`/`directional_hit_rate` broadcast `last_observed`
+against) before computing the top-level, still-averaged metrics -- the same underlying
+per-point arrays, sliced differently, not a second computation. `aggregate_metrics` gained
+`_pool_per_horizon()`, position-wise-averaging step `h` across every window that has one,
+weighted by each window's `n_samples` at that step (not `n_points`, since a `PerHorizonMetrics`
+entry already isolates one step and weighting by `n_points` would double-count the horizon
+factor already removed by isolating it). Windows without a `per_horizon` (hand-built
+`EvaluationMetrics`, e.g. in older tests) degrade to an empty list rather than raising.
+
+`serialize.evaluation_to_dict` adds a `per_horizon` list (step, the four raw fields, and the
+derived `skill_vs_baseline`) so `--format json` carries it end to end. `meta.json`'s own
+"evaluation" dict (built via `vars(evaluation)` in `tft.py`, not through `serialize.py` --
+`serialize.py` imports `TrainResult`/`BacktestResult` *from* `tft.py`, so the reverse import
+would be circular) needed one line fixed: `vars()` doesn't recurse into the nested
+`PerHorizonMetrics` dataclasses, so `json.dumps(meta, ...)` raised
+`TypeError: Object of type PerHorizonMetrics is not JSON serializable` until each step was
+flattened to a plain dict the same way the top level already drops computed properties like
+`skill_vs_baseline` (caught by the pre-existing end-to-end CLI test
+`test_full_cli_journey_across_every_command_and_both_output_formats`, which trains a real
+tiny bundle rather than mocking `TrainResult` -- exactly the class of write/read contract
+break PYQ-241 built it to catch, and it did).
+
+The CLI gained `_per_horizon_table()` (mirrors the existing `_per_window_table` styling),
+printed by both `train` and `backtest` whenever `len(evaluation.per_horizon) > 1` -- no new
+flag, matching how `_per_window_table` is already unconditional-but-guarded rather than
+opt-in.
+
+Verified with the acceptance criterion's own scenario:
+`test_evaluate_predictions_recovers_a_skill_profile_that_varies_by_horizon_step` builds a
+3-step synthetic case with per-step skill exactly +1.0/0.0/-1.0 and confirms all three are
+recovered while the mean-over-horizon headline (`-0.5625`) is none of them.
+`test_evaluate_predictions_per_horizon_mae_and_coverage_match_manual_per_step_calculation`,
+`test_aggregate_metrics_pools_per_horizon_position_wise_weighted_by_n_samples`, and
+`test_aggregate_metrics_per_horizon_is_empty_when_no_window_has_it` cover the pooling and
+degrade-gracefully paths. `test_train_json_output_includes_per_horizon_breakdown` and
+`test_train_table_shows_a_per_horizon_breakdown_when_horizon_exceeds_one` cover the CLI
+surface. 30 tests in `tests/test_metrics.py` (up from 26) and 81 across
+`tests/test_metrics.py`+`tests/test_cli.py` combined, all passing; full suite green
+afterward including the real-bundle end-to-end test that caught the `vars()` bug.
+
+**`docs/methodology.md`'s per-horizon profile for the default/log-return configurations is
+not filled in** -- the acceptance criterion asks for measured numbers and this pass had no
+live vendor-data access to produce them (same limitation recorded on PYQ-143, which landed in
+the same pass and changes what those numbers would be anyway). Added a `## Per-horizon
+breakdown` section explaining the feature and stating this explicitly, rather than leaving
+the gap silent or inventing numbers.
+
 ---
 
 ## [PYQ-268]
 A reusable multi-symbol sweep harness, replacing the one-off scripts
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/experiments/` (new), `pyquant/cli/app.py`, `scripts/ablate_features.py`, `scripts/compare_pooling.py`
 
@@ -3382,6 +3549,65 @@ and writes a machine-readable result set. Tests cover the cell matrix (arms x sy
 the "helped N of M" summary, and that a failing symbol degrades to a recorded gap rather
 than taking the sweep down. `scripts/ablate_features.py` and `scripts/compare_pooling.py`
 are either rewritten over the harness or removed with their reasoning preserved.
+
+Resolution: `pyquant/experiments/sweep.py` -- `Arm(name, overrides)`, `apply_overrides()`
+(dotted-or-bare-key resolution across `training`/`data`/`tft`, raising on an unknown or
+ambiguous key rather than guessing; CLI string values coerced against the current field's
+type), `SweepCell` (a result or a recorded `error`, never both), `SweepResult` (the full
+matrix plus `skill_by_symbol`/`pooled_skill`/`helped_summary`/`paired_comparison`), and
+`run_sweep()` itself. None of it imports torch/Lightning/pytorch-forecasting directly --
+only `models.tft.walk_forward_backtest`, the same shape `cli/app.py` already calls into.
+
+Reuses PYQ-266 exactly as asked: `SweepResult.paired_comparison(symbol, arm_a, arm_b)`
+builds two `ScoredWindows` from the two cells' `per_window`/`origins` and calls
+`compare_backtests`, returning `None` (rather than raising) when a cell failed or when the
+two arms' windows don't verifiably align -- e.g. an override that changes `n_windows`/`step`
+between arms -- the same degrade-gracefully shape `SweepCell.error` already applies to a
+failing cell, extended to a failing *comparison*.
+
+**PYQ-265's seed handling (the within-cell repeat) is not wired in.** Each cell runs
+`walk_forward_backtest` once, at `settings.training.seed`, not
+`walk_forward_backtest_multi_seed`. Recorded as a deliberate scope cut rather than an
+oversight: combining two multiplicative axes (arms x symbols x seeds) correctly -- deciding
+what a "cell" even means when it is itself a seed-distribution rather than a point, and what
+`paired_comparison` would compare in that case -- is a real design question, and answering it
+under this pass's time budget alongside four other tickets risked a rushed answer. The
+`SweepCell`/`SweepResult` shapes do not preclude adding it later (a `seeds` parameter on
+`run_sweep` that swaps which `tft` function each cell calls is a contained follow-up), but it
+is not attempted here.
+
+**Neither existing script was rewritten over the harness or removed** -- the third option the
+acceptance criteria didn't explicitly list, but the one the ticket's own "whichever way that
+goes should be recorded" line invites when the other two are each a worse fit than they look.
+`ablate_features.py`'s correlation-matrix analysis has no sweep-harness equivalent (it isn't
+a backtest). `compare_pooling.py`'s "pooled" is one bundle trained once across every symbol
+and sliced per symbol at evaluation time -- not `N` independent per-symbol
+`walk_forward_backtest` calls, which is what a `pooled` arm in the harness would actually
+run and would silently answer a different question (does training a separate pooled-in-name-
+only model per symbol subset help that symbol, not does the one deployed pooled model help
+it). Forcing either script's shape into the harness would have cost correctness for the sake
+of satisfying the letter of the acceptance criteria; instead both scripts gained a short note
+pointing future multi-symbol repeats at `pyquant sweep` where it genuinely applies (which is
+most of `ablate_features.py`'s feature-toggle half), and `docs/development.md` gained a
+`### pyquant sweep` section making the same case in one place. This is the "recorded" the
+ticket asked for, applied to a "neither" the acceptance criteria's two options didn't quite
+name.
+
+Verified: 14 tests in `tests/test_sweep.py` cover `apply_overrides` (dotted paths, type
+coercion, unknown-key and ambiguous-key errors -- the latter constructed against a synthetic
+`SimpleNamespace` since no real config field collides today, verified by inspection), the
+full symbol x arm cell matrix (`test_run_sweep_covers_the_full_symbol_by_arm_cell_matrix`),
+a failing cell degrading to a recorded gap without stopping the sweep
+(`test_run_sweep_degrades_a_failing_cell_to_a_recorded_gap`), `pooled_skill`/
+`helped_summary` excluding failed cells, and `paired_comparison`'s three cases (aligned,
+one side failed, windows misaligned). 3 new CLI tests cover the Rich table output, `--format
+json`'s full cell matrix (a failed cell serializes as `{"result": null, "error": "..."}`,
+distinguishable from a real zero-skill result), and a malformed `--arm` spec's error message.
+All pass; ruff clean; `scripts/backlog.py check` clean.
+
+Per the ticket's own explicit scope: **no sweep was run.** This delivers the instrument the
+three pending repeats need; running them against live data is separate, later work, gated on
+the same vendor-data access every other ticket in this pass noted as unavailable.
 
 ---
 
@@ -3643,7 +3869,7 @@ Acceptance criteria: `CHANGELOG.md` exists and covers the passes recorded in `ba
 
 ## [PYQ-275]
 Baselines beyond persistence: a negative result is only as strong as what it failed against
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/baselines.py` (new), `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `docs/methodology.md`
 
@@ -3687,6 +3913,73 @@ Acceptance criteria: `baselines.py` exposes at least three baselines behind one 
 which baseline the headline skill is against; any new dependency is justified in the
 resolution note or declined; `docs/methodology.md`'s three configurations are re-stated
 against the full baseline set.
+
+Resolution: `analysis/baselines.py` defines a `Baseline` protocol (`name`, `predict(history,
+horizon) -> forecast`, both plain-array, library-agnostic per the layering rule) and five
+implementations -- `PersistenceBaseline` (the existing comparator, now behind the same
+protocol so it participates uniformly), `RandomWalkWithDriftBaseline`, `SeasonalNaiveBaseline`
+(default 5-day/weekly season, degrades to using the whole history as one season when there
+isn't enough of it), `ClimatologicalBaseline` (flat historical mean), and `AR1Baseline`. All
+are *point* forecasters -- the same shape the existing MAE-based skill number already
+compares against, not a second quantile-band model.
+
+**Declined `statsmodels`' ARIMA/ETS, the ticket's suggested alternative, per non-negotiable
+#5.** `statsmodels` is already an optional dependency (the `tuning` extra), which made it
+tempting, but that extra is opt-in for `pyquant tune`; `analysis/baselines.py` sits on
+`train`/`backtest`'s *core* path, so importing it unconditionally would make a hard, always-
+installed dependency out of what is currently opt-in, and a per-window ARIMA/ETS fit is
+materially slower than a closed-form fit for a comparator whose entire point is to be a cheap,
+unglamorous floor computed once per window alongside four others. Built `AR1Baseline` instead
+-- closed-form OLS per sample (`phi`, intercept from the standard AR(1) normal equations,
+clamped to `[-0.999, 0.999]` to keep the forward iteration stable), which captures the one
+thing seasonal-naive and drift don't (mean-reverting autocorrelation) with no new dependency
+at all. Verified against a noiseless synthetic AR(1) process
+(`test_ar1_baseline_recovers_a_noiseless_ar1_process`): OLS recovers phi=0.5, intercept=3.0
+to float precision and the forecast continues the exact same recursion.
+
+Wiring required one small addition to `models/tft.py`: `_raw_validation_arrays` already
+computed `result.x["encoder_target"]` (the full encoder window) to extract its *last* column
+as `last_observed`; it now also returns the full array as `history`, free (no extra forward
+pass) since it was already computed. `_evaluate_validation` threads it into
+`evaluate_predictions(..., history=history)`, a new optional keyword that is additive by
+design: without `history`, `EvaluationMetrics.baseline_maes` still carries exactly one entry,
+`"persistence"`, always equal to the existing `baseline_mae` field (verified by a dedicated
+test) -- no existing caller of `evaluate_predictions` breaks. `EvaluationMetrics.strongest_baseline`
+picks the lowest-MAE entry (hardest for the model to beat) and `skill_vs_strongest_baseline`
+reports skill against it, the ticket's "make the strongest baseline the headline" ask.
+`aggregate_metrics` pools `baseline_maes` across windows via the existing `pooled_dict` helper
+(already used for `quantile_exceedance`/`pinball_losses`, unchanged, just reused).
+
+`serialize.evaluation_to_dict` carries `baseline_maes`/`strongest_baseline`/
+`skill_vs_strongest_baseline` into `--format json`. `_add_metric_rows` (the CLI's shared table
+builder, used by both `train` and `backtest`) adds one row per non-persistence baseline plus
+a "Skill vs. strongest baseline (NAME)" row naming which one, and omits that row entirely
+when only persistence was recorded (no `history` available) rather than showing a
+degenerate/misleading comparison.
+
+Not shared with features.md#pyq-249's planned foundation-model arm yet -- PYQ-249 is not
+attempted this pass (Phase 3 per backlog/README.md's `## Now`, gated on Phase 2's multi-symbol
+sweep); the `Baseline` protocol is deliberately general enough (`predict(history, horizon) ->
+forecast`) that a foundation-model wrapper can implement it directly when that ticket is
+picked up, without changing this module.
+
+Verified: 11 new tests in `tests/test_baselines.py` cover every baseline's core behavior
+(exact linear-drift recovery, seasonal wrap-around and short-history degradation, AR(1)
+recovery, degenerate/constant/single-point history) plus `baseline_maes()`'s default and
+filtered baseline sets. 7 new tests in `tests/test_metrics.py` cover the `EvaluationMetrics`
+integration (`strongest_baseline`, `skill_vs_strongest_baseline`, aggregation, the
+with/without-`history` split). `test_train_evaluation_scores_every_default_baseline_beyond_persistence`
+in `tests/test_tft.py` verifies the full wiring end to end against a real (tiny) trained
+bundle, not a mock. 5 new CLI tests cover the table rows, the omitted-row case, and JSON
+output. All pass; ruff clean; `scripts/backlog.py check` clean.
+
+**`docs/methodology.md`'s three configurations are not re-stated against the full baseline
+set.** The acceptance criterion needs a live re-run of `pyquant backtest` against real vendor
+data to produce actual numbers, which this pass did not have access to (same limitation
+recorded on PYQ-142/143/144/266/267, all landed in the same pass). Added a `## Baselines
+beyond persistence` section documenting the new capability and stating this gap explicitly,
+consistent with how the rest of this pass has handled the same limitation, rather than
+inventing numbers or leaving the gap unmentioned.
 
 ---
 

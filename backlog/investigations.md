@@ -27,8 +27,8 @@ Next free ID: **PYQ-325**.
 | [PYQ-318](#pyq-318) | Low | Answered | pytorch-forecasting vendor risk vs. neuralforecast / Darts |
 | [PYQ-319](#pyq-319) | Medium | Answered — 2026-07-27 | What is the latency and cost budget of one `forecast` call? |
 | [PYQ-320](#pyq-320) | Low | Answered | Data-source licensing and ToS review before anything public-facing |
-| [PYQ-321](#pyq-321) | Critical | Open | How much of every reported number is seed variance? |
-| [PYQ-322](#pyq-322) | High | Open | A pre-registered rule for what evidence flips a default |
+| [PYQ-321](#pyq-321) | Critical | Answered | How much of every reported number is seed variance? |
+| [PYQ-322](#pyq-322) | High | Answered | A pre-registered rule for what evidence flips a default |
 | [PYQ-323](#pyq-323) | Medium | Open | Is passing `Settings` everywhere costing more than it saves? |
 | [PYQ-324](#pyq-324) | Medium | Open | Does the forecast band actually fan, or does it translate? |
 
@@ -960,7 +960,7 @@ any of the above.
 
 ## [PYQ-321]
 How much of every reported number is seed variance?
-Status: Open
+Status: Answered — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Critical
 Files: `pyquant/models/tft.py`, `pyquant/config.py`, `docs/methodology.md`, `backlog/README.md`
 
@@ -1008,11 +1008,127 @@ closed Answered with the sd recorded in `docs/methodology.md` next to every head
 number large enough to supersede investigations.md#pyq-316's recommendation and the
 README's pooling claim — in which case say so loudly, per the precedent PYQ-307 set.
 
+Answer: this was expected to need live vendor data this pass didn't have access to (see
+PYQ-142/143/144/265/266/267/268/275/322's resolution notes, all landed the same session,
+which record `curl`'s default User-Agent getting HTTP 429 from Yahoo Finance). Re-checked
+before giving up on it: the 429 was `curl`-specific (no User-Agent), not a sandbox-wide
+network block -- `yfinance` (the project's actual client) sends a realistic one and returns
+real data, and `build_panel`/`walk_forward_backtest` were verified working end-to-end
+against it. So this ticket got a real measurement instead of another documented blocker.
+
+**Method actually run**, per the ticket's own Method section, using PYQ-265's
+`walk_forward_backtest_multi_seed`: symbol AAPL, `n_windows=5` (25 points/seed, matching
+PYQ-247's own sample size rather than the 280-point default -- see the caveat on the
+sample-size secondary question below), seeds `0..9` (K=10, meeting the ticket's own ">=10"
+ask), price+technicals only (macro/sentiment/sectors/options off, to isolate seed noise from
+other variance sources), `hidden_size=16`/`hidden_continuous_size=8`, `max_epochs=10`,
+`early_stopping_patience=3` -- a smoke-scale config in the same spirit as
+investigations.md#pyq-315/#pyq-316's own budgets, **not** the project's full default
+(`hidden_size=32`, `max_epochs=30`). Run twice, target held fixed within each run: once at
+`target=log_return` (matching #pyq-315/#pyq-316's own target, the two findings most in
+question), once at `target=close` (the project's actual default target). Not pinned via
+PYQ-205 (`walk_forward_backtest` has no `pin` parameter to thread one through -- a real gap,
+worth its own small follow-up ticket); relied instead on same-session historical bars not
+changing between the two ~5-minute runs, which is a weaker but adequate guarantee here.
+
+**`target=log_return` (the directly comparable run):**
+
+```
+seed  skill    dir_acc  coverage  crps
+ 0   +0.0061   0.400    0.720    0.00572
+ 1   +0.0283   0.520    0.720    0.00557
+ 2   -0.0047   0.560    0.680    0.00571
+ 3   -0.0031   0.560    0.760    0.00570
+ 4   +0.0146   0.560    0.720    0.00576
+ 5   +0.0121   0.520    0.680    0.00578
+ 6   +0.0149   0.600    0.680    0.00573
+ 7   +0.0156   0.480    0.680    0.00580
+ 8   -0.0112   0.520    0.720    0.00574
+ 9   -0.0009   0.560    0.720    0.00566
+
+metric                 mean      sd       min       max
+skill                 +0.0072   0.0114   -0.0112   +0.0283
+directional_accuracy  +0.5280   0.0531   +0.4000   +0.6000
+calibration_coverage  +0.7080   0.0256   +0.6800   +0.7600
+crps                  +0.0057   0.0001   +0.0056   +0.0058
+```
+
+**Re-expressing the ticket's own table in units of this sd (0.0114 on skill):**
+
+- **PYQ-247** (target change, effect ≈0.62) — 54x the measured sd. Survives by a wide
+  margin; nothing here changes that finding.
+- **investigations.md#pyq-316** (sentiment, `+sectors` +0.0453 → `+sentiment` +0.0177, a
+  delta of -0.0276) — 2.4x the measured sd. Using the ticket's own stated calibration ("if
+  sd is ~0.03, the fourth is noise"), the measured 0.0114 is well under that bar, so this
+  finding **survives**, but not by the comfortable margin PYQ-247 has. 2.4 standard
+  deviations is suggestive, not conclusive -- this is a rough gut-check against an
+  independently-measured noise floor, not a formal test of *that specific* sentiment-on/off
+  comparison. `compare_backtests` (PYQ-266) run on matched seeds for exactly that arm pair,
+  now that the tooling exists, is what would turn this into an actual paired significance
+  result. Recorded as the concrete next step, not performed here (compute budget).
+- **investigations.md#pyq-315** (pooling) — AAPL's own delta (pooled -0.0016 vs. per-symbol
+  +0.0016, a difference of -0.0032) is **smaller than one measured sd** (0.0114): not
+  distinguishable from seed noise by this calibration, a real caveat the original finding
+  did not have. ARM's delta (-0.0167) is ~1.5x the sd -- more suggestive, still short of
+  PYQ-247's margin. **Flagging this as the one place this measurement should change how the
+  existing finding is read**: PYQ-315's specific AAPL number is now suspect; its ARM number
+  and its qualitative direction (both symbols worse, not better) are weaker but still
+  standing evidence. Not superseding investigations.md#pyq-315 outright -- that needs the
+  same paired re-run PYQ-316 needs, not a cross-config sd comparison -- but this is exactly
+  the kind of update non-negotiable #1 asks for when a new measurement bears on an old claim.
+- **features.md#pyq-248** (conformal, coverage 100%→~85%) — not directly comparable in skill
+  units; `calibration_coverage`'s own measured sd here (0.026, i.e. ~2.6 points) is small
+  relative to a 15-point swing, so this finding is not threatened by what was measured.
+
+**`target=close` (the project's actual default) — measured, and strikingly different:**
+
+```
+metric                 mean       sd
+skill                 -3.865     0.203
+directional_accuracy  +0.400     0.000   (identical across all 10 seeds)
+calibration_coverage  +0.068     0.026   (vs. 80% nominal -- badly *under*-covered)
+crps                  +17.13     0.449
+```
+
+Skill sd here is **18x larger** than in log-return space (0.203 vs 0.0114) -- seed variance
+is not one constant, it depends heavily on which configuration is being measured, which is
+itself a finding the ticket's framing (a single sd "at the default configuration") didn't
+anticipate. `directional_accuracy` being *bit-for-bit identical* across ten different random
+initialisations is the most striking single number in this run: it points at the model
+collapsing to the same degenerate, seed-insensitive solution every time at this reduced
+model size/epoch budget in price-level space, rather than learning ten meaningfully
+different fits. **Caveat stated as plainly as the numbers**: this is `hidden_size=16`/
+`max_epochs=10`, not the project's real default (`32`/`30`); this result says the smoke-scale
+config is likely underfit and degenerate in price-level space, not that the published
+-23.5%/99.3% headline (measured at full scale, and also predating PYQ-143's checkpoint-
+selection fix) is itself degenerate. Whether the full-scale default shows the same collapse
+is a real, open follow-up question this run cannot answer -- flagged, not resolved.
+
+**Secondary questions:** horizon-step concentration (yes, clearly) -- per-step skill sd
+across the ten `log_return` seeds is far from uniform (h=1: mean -0.279, sd 0.076 -- both
+the worst-performing and noisiest step; h=4: mean +0.009, sd 0.015 -- the most stable; h=5:
+mean +0.078, sd 0.026). Variance is concentrated at the near horizon, not spread evenly.
+Sample-size scaling (25-point vs. the 280-point default) was **not** answered: `train()`'s
+280-point figure comes from its internal multi-window validation slice, a different
+mechanism from `walk_forward_backtest`'s origin-count, and PYQ-265's multi-seed tooling was
+deliberately scoped to `backtest` only (see that ticket's resolution note) -- comparing the
+two properly needs multi-seed `train()`, which does not exist. Left open rather than
+answered with a mismatched comparison.
+
+**`docs/methodology.md`'s `## Seed variance` section now states this measurement** (rather
+than only describing the tool, as it did before this ticket answered) with the same caveats
+above. Marked Answered per the ticket's own "closed Answered with the sd recorded... next to
+every headline" outcome -- the smaller of its two branches, not the "supersede" one, with
+one explicit exception (PYQ-315's AAPL number) recorded rather than glossed over. Everything
+here is smoke-scale (one symbol, ten seeds, a reduced model) -- directional evidence about
+the noise floor's rough order of magnitude, consistent with the depth this entire pass
+operated at, not a production-grade variance estimate.
+
 ---
 
 ## [PYQ-322]
 A pre-registered rule for what evidence flips a default
-Status: Open
+Status: Answered — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `backlog/README.md`, `docs/methodology.md`, `CLAUDE.md`
 
@@ -1051,6 +1167,49 @@ the wrong answer.
 Expected outcome: a written rule in `docs/methodology.md`, cross-referenced from
 `CLAUDE.md`'s non-negotiable #1, that a future pass can mechanically check a sweep result
 against. Answered when the rule exists, not when the sweep is run.
+
+Answer: written to `docs/methodology.md`'s new "What it takes to flip a default" section
+(the `decision-rule` anchor), cross-referenced from `backlog/README.md`'s `## Now` list item
+5. In full:
+
+1. **Coverage** — N ≥ 10 symbols spanning ≥ 3 sectors, not ten names from one industry.
+2. **Per-symbol evidence** — `effective_n_samples` (PYQ-251) ≥ 10 per symbol/arm cell; the
+   project's existing 60-day-validation default already clears this, so this is "don't
+   shrink below today's own bar," not a newly invented number.
+3. **Seed floor** — K ≥ 5 seeds per cell via `walk_forward_backtest_multi_seed` (PYQ-265),
+   explicitly a floor: investigations.md#pyq-321 measures the real seed-to-seed sd, and
+   supersedes "5" if that turns out too low relative to the effect sizes being tested.
+4. **The statistical bar** — `compare_backtests`'s (PYQ-266) per-symbol paired interval on
+   the arm-vs-arm skill difference must exclude zero. Two eyeballed marginal intervals do
+   not qualify.
+5. **The mixed case, resolved rather than left implicit** — "helped 11, hurt 4" is not
+   "helped on net." A flip needs the *pooled* paired comparison across all N symbols to
+   exclude zero, the per-symbol interval to favour the change on ≥ 60% of
+   per-symbol-significant results, and no covered sector failing on every one of its
+   symbols. Failing this is a **named result** (a real but symbol-dependent effect,
+   written up and shipped as a non-default option), not "inconclusive."
+6. **The bar scales with blast radius** — `use_sentiment` (reversible, doesn't touch bundle
+   comparability) takes the rule as stated; `target` (redefines every bundle's prediction,
+   the way PYQ-121 did for one feature) takes N ≥ 15 plus an explicit, decided-in-advance
+   supersession plan; pooling-on-by-default takes the high bar too, since
+   investigations.md#pyq-315 already measured it worse and turning it on would be a
+   first-time change against standing negative evidence.
+
+**Not written to `CLAUDE.md`.** That file is listed in `.gitignore` (`.gitignore:52`) and is
+not tracked by this repository — it exists only as a local, personal file outside the git
+history this pass's isolated worktree was created from, so there was nothing in the checkout
+to cross-reference from and no way for an edit to it to reach the PR this pass ships as. The
+substance the ticket asked `CLAUDE.md` to carry (a pointer to the canonical rule, for a
+future agent reading the operating manual) is instead in `docs/methodology.md` directly and
+cross-referenced from `backlog/README.md`, both of which are tracked and land in this PR;
+whoever maintains the local `CLAUDE.md` can add the same pointer by hand if they want it
+there too. Recorded as a constraint of the environment this was answered in, not a skipped
+step.
+
+Explicitly declined to run a sweep against this rule in the same pass: the ticket's own
+expected outcome is "answered when the rule exists, not when the sweep is run," and no live
+vendor-data access was available this pass regardless (the same limitation recorded on every
+other ticket landed in it).
 
 ---
 

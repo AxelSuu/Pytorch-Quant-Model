@@ -7,10 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from typer.testing import CliRunner
 
 from pyquant.analysis.forecast import Forecast
-from pyquant.analysis.metrics import EvaluationMetrics
+from pyquant.analysis.metrics import EvaluationMetrics, PerHorizonMetrics
 from pyquant.cli import app as app_mod
 from pyquant.data import dataset as ds_mod
 from pyquant.data import options as options_mod
@@ -193,6 +194,79 @@ def test_backtest_without_signals_flag_skips_the_extra_pass(monkeypatch):
     assert "Signal evaluation" not in result.stdout
 
 
+# --- PYQ-265: repeat a backtest across seeds ------------------------------------
+
+
+def _seed_sweep_fixture():
+    from pyquant.models.tft import BacktestResult, SeedSweepResult
+
+    def _ev(mae):
+        return EvaluationMetrics(
+            model_mae=mae, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+        )
+
+    per_seed = [
+        BacktestResult(symbol="AAPL", n_windows=2, per_window=[_ev(1.0)], aggregated=_ev(1.0)),  # skill 0.5
+        BacktestResult(symbol="AAPL", n_windows=2, per_window=[_ev(1.5)], aggregated=_ev(1.5)),  # skill 0.25
+    ]
+    return SeedSweepResult(symbol="AAPL", seeds=[0, 1], per_seed=per_seed)
+
+
+def test_backtest_without_seeds_flag_uses_the_single_run_path_unchanged(monkeypatch):
+    """`--seeds` defaults to 1, which must reach `walk_forward_backtest`, not
+    the multi-seed path -- existing behaviour is unchanged (PYQ-265)."""
+    from pyquant.models.tft import BacktestResult
+
+    ev = EvaluationMetrics(
+        model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+    )
+    fake_result = BacktestResult(symbol="AAPL", n_windows=1, per_window=[ev], aggregated=ev)
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", lambda *a, **k: fake_result)
+
+    def fail_if_called(*a, **k):
+        raise AssertionError("multi-seed path must not run when --seeds is not passed")
+
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest_multi_seed", fail_if_called)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL"])
+    assert result.exit_code == 0
+
+
+def test_backtest_seeds_flag_expands_to_a_deterministic_sequence_and_reports_summary_stats(
+    monkeypatch,
+):
+    fake_sweep = _seed_sweep_fixture()
+    captured = {}
+
+    def fake_multi_seed(symbol, settings, **kwargs):
+        captured["seeds"] = kwargs.get("seeds")
+        return fake_sweep
+
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest_multi_seed", fake_multi_seed)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL", "--seeds", "2"])
+
+    assert result.exit_code == 0
+    assert captured["seeds"] == [0, 1]  # "the first N of a deterministic sequence"
+    assert "Per-seed results" in result.stdout
+    assert "+37.5%" in result.stdout  # mean of skills 0.5 and 0.25
+
+
+def test_backtest_seeds_flag_json_output_includes_summary_and_per_seed(monkeypatch):
+    fake_sweep = _seed_sweep_fixture()
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest_multi_seed", lambda *a, **k: fake_sweep)
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "backtest", "AAPL", "--seeds", "2"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["seeds"] == [0, 1]
+    assert len(data["per_seed"]) == 2
+    assert data["skill_mean"] == pytest.approx(0.375)
+    assert data["skill_min"] == pytest.approx(0.25)
+    assert data["skill_max"] == pytest.approx(0.5)
+
+
 def test_tune_command_reports_the_held_out_score_not_the_in_search_value(monkeypatch, tmp_path):
     """PYQ-253: the in-search value and the held-out evaluation are different numbers
     for a reason -- both must reach the user, clearly distinguished."""
@@ -256,6 +330,85 @@ def test_tune_command_reports_a_missing_extra_clearly(monkeypatch):
     result = runner.invoke(app_mod.app, ["tune", "AAPL"])
     assert result.exit_code == 1
     assert "tuning" in result.output
+
+
+# --- PYQ-268: multi-symbol sweep harness ---------------------------------------
+
+
+def _fake_sweep_result():
+    from pyquant.experiments.sweep import SweepCell, SweepResult
+    from pyquant.models.tft import BacktestResult
+
+    def _ev(mae):
+        return EvaluationMetrics(
+            model_mae=mae, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+        )
+
+    def _result(symbol, mae):
+        ev = _ev(mae)
+        return BacktestResult(symbol=symbol, n_windows=1, per_window=[ev], aggregated=ev, origins=[100])
+
+    cells = [
+        SweepCell("AAA", "close", result=_result("AAA", 1.0)),  # skill 0.5
+        SweepCell("AAA", "log_return", result=_result("AAA", 0.0)),  # skill 1.0
+        SweepCell("BBB", "close", result=_result("BBB", 1.5)),  # skill 0.25
+        SweepCell("BBB", "log_return", error="not enough history"),
+    ]
+    return SweepResult(symbols=["AAA", "BBB"], arm_names=["close", "log_return"], cells=cells)
+
+
+def test_sweep_command_reports_the_cell_matrix_and_pooled_skill(monkeypatch):
+    captured = {}
+
+    def fake_run_sweep(symbols, arms, settings, **kwargs):
+        captured["symbols"] = symbols
+        captured["arm_specs"] = [(a.name, a.overrides) for a in arms]
+        return _fake_sweep_result()
+
+    monkeypatch.setattr(app_mod, "run_sweep", fake_run_sweep)
+
+    result = runner.invoke(
+        app_mod.app,
+        ["sweep", "--symbols", "aaa,bbb", "--arm", "target=close", "--arm", "target=log_return"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["symbols"] == ["AAA", "BBB"]
+    assert captured["arm_specs"] == [
+        ("target=close", {"target": "close"}),
+        ("target=log_return", {"target": "log_return"}),
+    ]
+    assert "failed" in result.stdout  # BBB/log_return's recorded gap
+    assert "scored higher" in result.stdout  # helped-summary line
+
+
+def test_sweep_command_json_output_includes_the_full_cell_matrix(monkeypatch):
+    monkeypatch.setattr(app_mod, "run_sweep", lambda *a, **k: _fake_sweep_result())
+
+    result = runner.invoke(
+        app_mod.app,
+        ["--format", "json", "sweep", "--symbols", "AAA,BBB", "--arm", "target=close", "--arm", "target=log_return"],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["symbols"] == ["AAA", "BBB"]
+    assert data["arms"] == ["close", "log_return"]
+    assert len(data["cells"]) == 4
+    failed_cell = next(c for c in data["cells"] if c["symbol"] == "BBB" and c["arm"] == "log_return")
+    assert failed_cell["result"] is None
+    assert failed_cell["error"] == "not enough history"
+    assert data["pooled_skill"]["close"] == pytest.approx((0.5 + 0.25) / 2)
+    assert data["pooled_skill"]["log_return"] == pytest.approx(1.0)  # BBB failed, only AAA counts
+
+
+def test_sweep_command_rejects_a_malformed_arm_spec(monkeypatch):
+    monkeypatch.setattr(app_mod, "run_sweep", lambda *a, **k: _fake_sweep_result())
+
+    result = runner.invoke(app_mod.app, ["sweep", "--symbols", "AAA", "--arm", "not-key-equals-value"])
+
+    assert result.exit_code == 1
+    assert "key=value" in result.output
 
 
 def test_default_logging_level_is_warning(monkeypatch):
@@ -491,6 +644,105 @@ def test_train_json_output_includes_the_metric_sample_size(monkeypatch):
     ev = json.loads(result.stdout)["evaluation"]
     assert ev["n_samples"] == 56
     assert ev["n_points"] == 280
+
+
+# --- PYQ-267: per-horizon-step breakdown --------------------------------------
+
+
+def test_train_json_output_includes_per_horizon_breakdown(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            per_horizon=[
+                PerHorizonMetrics(
+                    1, model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+                ),
+                PerHorizonMetrics(
+                    2, model_mae=1.5, baseline_mae=1.5, directional_accuracy=0.5, calibration_coverage=0.7
+                ),
+            ]
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["--format", "json", "train", "AAPL"])
+    assert result.exit_code == 0
+    per_horizon = json.loads(result.stdout)["evaluation"]["per_horizon"]
+    assert [step["step"] for step in per_horizon] == [1, 2]
+    assert per_horizon[0]["skill_vs_baseline"] == pytest.approx(0.5)
+    assert per_horizon[1]["skill_vs_baseline"] == pytest.approx(0.0)
+
+
+def test_train_table_shows_a_per_horizon_breakdown_when_horizon_exceeds_one(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            per_horizon=[
+                PerHorizonMetrics(
+                    1, model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+                ),
+                PerHorizonMetrics(
+                    2, model_mae=1.5, baseline_mae=1.5, directional_accuracy=0.5, calibration_coverage=0.7
+                ),
+            ]
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "Per-horizon" in result.stdout
+    assert "+50.0%" in result.stdout  # step 1's skill
+
+
+# --- PYQ-275: baselines beyond persistence -------------------------------------
+
+
+def test_train_table_names_the_strongest_baseline_and_its_skill(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            model_mae=5.0,
+            baseline_mae=10.0,  # persistence
+            baseline_maes={"persistence": 10.0, "seasonal_naive": 4.0, "ar1": 8.0},
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "seasonal_naive" in result.stdout
+    assert "ar1" in result.stdout
+    # skill vs. the strongest (seasonal_naive, mae 4.0): (4-5)/4 = -25.0%
+    assert "-25.0%" in result.stdout
+
+
+def test_train_table_omits_the_strongest_baseline_row_without_extra_baselines(monkeypatch):
+    """A bundle scored without `history` (PYQ-275 is additive) only ever has the
+    "persistence" entry -- no strongest-baseline row to show."""
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(baseline_maes={"persistence": 2.0}),
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "Skill vs. strongest baseline" not in result.stdout
+
+
+def test_train_json_output_includes_baseline_maes_and_strongest_baseline(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            model_mae=5.0,
+            baseline_mae=10.0,
+            baseline_maes={"persistence": 10.0, "seasonal_naive": 4.0},
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["--format", "json", "train", "AAPL"])
+    assert result.exit_code == 0
+    ev = json.loads(result.stdout)["evaluation"]
+    assert ev["baseline_maes"] == {"persistence": 10.0, "seasonal_naive": 4.0}
+    assert ev["strongest_baseline"] == {"name": "seasonal_naive", "mae": 4.0}
+    assert ev["skill_vs_strongest_baseline"] == pytest.approx((4.0 - 5.0) / 4.0)
 
 
 def test_train_table_still_shows_crps_and_winkler_rows_at_exactly_zero(monkeypatch):

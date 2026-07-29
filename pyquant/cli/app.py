@@ -22,6 +22,7 @@ from pyquant.cli import charts
 from pyquant.config import Settings, load_settings
 from pyquant.data import cache as data_cache
 from pyquant.data.options import OptionsSnapshot, append_snapshot, fetch_options_snapshot
+from pyquant.experiments.sweep import Arm, run_sweep
 from pyquant.models import tft
 
 app = typer.Typer(
@@ -152,6 +153,20 @@ def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "")
     table.add_row(f"Model MAE{suffix}", f"{ev.model_mae:.4f}")
     table.add_row(f"Baseline MAE{suffix} (persistence)", f"{ev.baseline_mae:.4f}")
     table.add_row("Skill vs. baseline", f"{ev.skill_vs_baseline:+.1%}")
+    # Baselines beyond persistence (PYQ-275): persistence is uniquely
+    # favourable to the null on a near-random-walk level series, so headline
+    # skill against it alone is weak evidence. Name the *strongest* one
+    # (lowest MAE, hardest to beat) explicitly, rather than only ever
+    # reporting skill against the weakest comparator available.
+    other_baselines = {k: v for k, v in ev.baseline_maes.items() if k != "persistence"}
+    if other_baselines:
+        for name, mae in sorted(other_baselines.items()):
+            table.add_row(f"Baseline MAE{suffix} ({name})", f"{mae:.4f}")
+        strongest_name, strongest_mae = ev.strongest_baseline
+        table.add_row(
+            f"Skill vs. strongest baseline ({strongest_name})",
+            f"{ev.skill_vs_strongest_baseline:+.1%}",
+        )
     table.add_row(f"Directional accuracy{suffix}", f"{ev.directional_accuracy:.1%}")
     table.add_row(
         f"Calibration coverage{suffix} ({_band_label(quantiles)})",
@@ -203,6 +218,33 @@ def _per_window_table(result, quantiles: list[float]) -> Table:
             f"{ev.skill_vs_baseline:+.1%}",
             f"{ev.directional_accuracy:.1%}",
             f"{ev.calibration_coverage:.1%}",
+        )
+    return table
+
+
+def _per_horizon_table(evaluation, quantiles: list[float], title: str = "Per-horizon breakdown") -> Table:
+    """The per-decoder-step profile every other metric averages away (PYQ-267).
+
+    Persistence is hardest to beat at h=1 and progressively less so as h grows,
+    so a model that is genuinely learning something should show skill
+    *increasing* with horizon while one that only tracks the last close shows
+    the opposite -- indistinguishable in a single mean-over-horizon number.
+    """
+    table = Table(title=title, title_style="dim")
+    table.add_column("Step", justify="right")
+    table.add_column("Model MAE", justify="right")
+    table.add_column("Baseline MAE", justify="right")
+    table.add_column("Skill", justify="right")
+    table.add_column("Directional", justify="right")
+    table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
+    for step in evaluation.per_horizon:
+        table.add_row(
+            f"h={step.step}",
+            f"{step.model_mae:.4f}",
+            f"{step.baseline_mae:.4f}",
+            f"{step.skill_vs_baseline:+.1%}",
+            f"{step.directional_accuracy:.1%}",
+            f"{step.calibration_coverage:.1%}",
         )
     return table
 
@@ -268,11 +310,81 @@ def train(
     table.add_row("Symbols", ", ".join(result.symbols))
     table.add_row("Features used", str(result.n_features))
     table.add_row("Epochs run", str(result.epochs_run))
-    table.add_row("Validation loss", f"{result.val_loss:.5f}")
+    # The best checkpoint's loss on the *selection* window EarlyStopping/
+    # ModelCheckpoint monitored, not the test window the metrics below are
+    # computed from -- a selection-event statistic, not a quality number
+    # (PYQ-143; see TrainResult.val_loss's docstring).
+    table.add_row("Selection loss", f"{result.val_loss:.5f}")
     _add_metric_rows(table, result.evaluation, settings.tft.quantiles)
     console.print(table)
+    if len(result.evaluation.per_horizon) > 1:
+        console.print(_per_horizon_table(result.evaluation, settings.tft.quantiles))
     if not _output.quiet:
         console.print("[dim]Next: pyquant forecast " + result.symbols[0] + "[/dim]")
+
+
+def _run_seed_sweep(symbol: str, settings, windows: int, epochs: int | None, signals: bool, seeds: int) -> None:
+    """The `backtest --seeds N` path (PYQ-265).
+
+    Reports mean +/- sd (min, max) skill across N independent walk-forward
+    backtests, rather than the single-seed point estimate every number this
+    project has otherwise ever reported.
+    """
+
+    def _run_sweep():
+        """Run the seed sweep; a closure so it can be called with or without the spinner."""
+        return tft.walk_forward_backtest_multi_seed(
+            symbol,
+            settings,
+            seeds=list(range(seeds)),
+            n_windows=windows,
+            max_epochs=epochs,
+            progress=False,
+            compute_signals=signals,
+        )
+
+    try:
+        if _output.quiet:
+            sweep = _run_sweep()
+        else:
+            console.print(
+                f"[bold cyan]Walk-forward backtesting {symbol.upper()} across {seeds} seeds[/bold cyan]"
+            )
+            with console.status(f"Training and evaluating {windows} rolling window(s) x {seeds} seed(s)..."):
+                sweep = _run_sweep()
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
+
+    if _output.json:
+        _emit_json(serialize.seed_sweep_to_dict(sweep))
+        return
+
+    table = Table(
+        title=f"Walk-forward backtest — {sweep.symbol} ({seeds} seeds x {windows} windows)",
+        show_header=False,
+    )
+    table.add_row("Seeds", ", ".join(str(s) for s in sweep.seeds))
+    table.add_row(
+        "Skill vs. baseline (mean ± sd)",
+        f"{sweep.skill_mean:+.1%} ± {sweep.skill_sd:.1%} "
+        f"(min {sweep.skill_min:+.1%}, max {sweep.skill_max:+.1%})",
+    )
+    console.print(table)
+
+    quantiles = settings.tft.quantiles
+    seed_table = Table(title="Per-seed results", title_style="dim")
+    seed_table.add_column("Seed", justify="right")
+    seed_table.add_column("Skill", justify="right")
+    seed_table.add_column("Directional", justify="right")
+    seed_table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
+    for seed, result in zip(sweep.seeds, sweep.per_seed, strict=True):
+        seed_table.add_row(
+            str(seed),
+            f"{result.aggregated.skill_vs_baseline:+.1%}",
+            f"{result.aggregated.directional_accuracy:.1%}",
+            f"{result.aggregated.calibration_coverage:.1%}",
+        )
+    console.print(seed_table)
 
 
 @app.command()
@@ -293,12 +405,22 @@ def backtest(
         help="Also score scan()'s BUY/SELL/HOLD signal: hit rate, turnover, P&L vs. buy-and-hold",
     ),
     cost_bps: float = typer.Option(5.0, help="Per-trade round-trip cost in basis points, with --signals"),
+    seeds: int = typer.Option(
+        1,
+        "--seeds",
+        help="Repeat the backtest across this many seeds (0..N-1, PYQ-265) and report mean "
+        "+/- sd (min, max) skill instead of a single point. Multiplies runtime by this count.",
+    ),
 ):
     """Walk-forward backtest SYMBOL across multiple rolling origins."""
     try:
         settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
     except EXPECTED_FAILURES as exc:
         _fail(exc)
+
+    if seeds > 1:
+        _run_seed_sweep(symbol, settings, windows, epochs, signals, seeds)
+        return
 
     def _run():
         """Run the backtest; a closure so it can be called with or without the spinner."""
@@ -349,6 +471,10 @@ def backtest(
     console.print(table)
     if len(result.per_window) > 1:
         console.print(_per_window_table(result, settings.tft.quantiles))
+    if len(result.aggregated.per_horizon) > 1:
+        console.print(
+            _per_horizon_table(result.aggregated, settings.tft.quantiles, title="Per-horizon breakdown (pooled)")
+        )
 
     if signal_eval is not None:
         sig_table = Table(title="Signal evaluation (scan's BUY/SELL/HOLD)", show_header=False)
@@ -446,6 +572,102 @@ def tune(
         "[dim]Note: the in-search value above is a selection-event score, not this "
         "model's real performance -- the held-out numbers are the ones to trust.[/dim]"
     )
+
+
+@app.command()
+def sweep(
+    symbols: str = typer.Option(..., "--symbols", help="Comma-separated symbols, e.g. AAPL,MSFT,NVDA"),
+    arm: list[str] = typer.Option(
+        ...,
+        "--arm",
+        help="key=value config override defining one arm, e.g. 'target=log_return'; repeat for more arms",
+    ),
+    windows: int = typer.Option(5, help="Number of rolling walk-forward windows per cell"),
+    config: Path = typer.Option(
+        None, "--config", help="YAML experiment config (see configs/); CLI flags still win"
+    ),
+    epochs: int = typer.Option(None, help="Override max training epochs per window"),
+    period: str = typer.Option(None, help="History to pull, e.g. 5y, 10y"),
+    no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
+    no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
+    no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+):
+    """Walk-forward backtest every symbol against every arm (PYQ-268).
+
+    A multi-symbol repeat of a configuration comparison -- e.g. `--arm
+    target=close --arm target=log_return` -- that used to mean editing
+    scripts/ablate_features.py or scripts/compare_pooling.py by hand and
+    reconciling the output yourself. Reports per-symbol and pooled skill for
+    every arm, plus a paired comparison (PYQ-266) between the first two arms
+    on every symbol where both succeeded; a symbol that fails for one arm is
+    recorded as a gap rather than taking the whole sweep down.
+    """
+    try:
+        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    arms = []
+    for spec in arm:
+        if "=" not in spec:
+            _fail(ValueError(f"--arm must be key=value, got {spec!r}"))
+        key, value = spec.split("=", 1)
+        arms.append(Arm(name=spec, overrides={key: value}))
+
+    def _run():
+        try:
+            return run_sweep(
+                symbol_list, arms, settings, n_windows=windows, max_epochs=epochs, progress=False
+            )
+        except ValueError as exc:  # an --arm override that doesn't resolve to a real field
+            _fail(exc)
+
+    if _output.quiet:
+        result = _run()
+    else:
+        console.print(f"[bold cyan]Sweeping {len(symbol_list)} symbol(s) x {len(arms)} arm(s)[/bold cyan]")
+        with console.status(f"Running {len(symbol_list) * len(arms)} cell(s)..."):
+            result = _run()
+
+    if _output.json:
+        _emit_json(serialize.sweep_result_to_dict(result))
+        return
+
+    table = Table(title="Sweep — skill vs. baseline")
+    table.add_column("Symbol")
+    for name in result.arm_names:
+        table.add_column(name, justify="right")
+    for symbol in result.symbols:
+        row = [symbol]
+        for name in result.arm_names:
+            cell = result.cell(symbol, name)
+            row.append(f"{cell.result.aggregated.skill_vs_baseline:+.1%}" if cell.ok else "[red]failed[/red]")
+        table.add_row(*row)
+    console.print(table)
+
+    pooled_table = Table(title="Pooled (unweighted mean across symbols)", show_header=False)
+    for name in result.arm_names:
+        pooled = result.pooled_skill(name)
+        pooled_table.add_row(name, f"{pooled:+.1%}" if pooled is not None else "n/a (every symbol failed)")
+    console.print(pooled_table)
+
+    # "Helped 11 of 15 symbols" and "mean skill +0.3%" answer different
+    # questions; the pooled table above is the second, this is the first.
+    if len(result.arm_names) >= 2:
+        base, other = result.arm_names[0], result.arm_names[1]
+        helped, total = result.helped_summary(base, other)
+        console.print(f"[dim]{other!r} scored higher than {base!r} on {helped} of {total} symbol(s)[/dim]")
+        for symbol in result.symbols:
+            comparison = result.paired_comparison(symbol, base, other)
+            if comparison is None:
+                continue
+            verdict = "excludes zero" if comparison.excludes_zero else "does not exclude zero"
+            console.print(
+                f"[dim]  {symbol}: {base!r} - {other!r} mean diff "
+                f"{comparison.mean_diff:+.1%} [{comparison.ci_low:+.1%}, {comparison.ci_high:+.1%}] "
+                f"({verdict})[/dim]"
+            )
 
 
 def _forecast_table(fc: Forecast) -> Table:

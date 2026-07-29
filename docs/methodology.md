@@ -36,6 +36,16 @@ still defaults to `"close"` pending a multi-symbol repeat. See {ref}`negative-re
 why the first number is close to what the *formulation* predicts regardless of tuning, and
 {ref}`related-open-questions` for what happened when the same discipline was applied to
 pooling and to the feature set.
+
+**Both headline measurements above predate PYQ-143** (checkpoint selection was fixed to use
+a window disjoint from the one these metrics are reported on; see {ref}`split-geometry`).
+They were measured with `EarlyStopping`/`ModelCheckpoint` selecting the best of many epochs
+against the *same* window scored above — a selection-event bias, so the true numbers are
+expected to be somewhat worse than shown, per the resolution note on PYQ-143. Neither figure
+has been re-measured under the corrected geometry as of this pass; this codebase had no live
+vendor-data access available to re-run `pyquant train`/`pyquant backtest` for real. Re-running
+both configurations under the fixed geometry is the natural next step and should replace this
+table when done, rather than being read as still current.
 :::
 
 ## A third number, from a third protocol — and why it is not in the table above
@@ -131,22 +141,30 @@ This is where most of the historical defects lived, so it is worth stating preci
 single `train` run lays the timeline out left to right:
 
 ```
-[ training ................ train_cutoff ][ purge + embargo ][ calibration ][ validation ]
-                                                                             ^ scored here
+[ training .. train_cutoff ][ purge+embargo ][ selection ][ purge+embargo ][ calibration ][ validation ]
+                                                                                           ^ scored here
 ```
 
-- **`validation_days`** (default 60 trading days) sets the scored holdout. It is *not* one
-  horizon. A holdout of exactly one horizon admits exactly one window, and that is where
-  "directional accuracy 100.0%" came from — it was 5/5. At the default 5-day horizon a
-  60-day holdout yields `60 − 5 + 1 = 56` windows, or 280 individual predictions.
-- The validation set is built with `min_prediction_idx = cutoff + 1` rather than
-  `predict=True`, so *every* window after the cutoff is scored, and that same loader drives
-  `EarlyStopping` and `ModelCheckpoint`.
-- **`purge_horizon` / `embargo_days`** shrink the *training* slice only, never the scored
-  window. See {ref}`invariant 10 <invariant-purge-embargo>`.
-- **`calibration_days`** carves out a slice between the two, used solely to fit the
-  conformal offset — out-of-sample for training and disjoint from what the model is later
-  judged on.
+- **`validation_days`** (default 60 trading days) sets the scored holdout — what every
+  reported `EvaluationMetrics` comes from. It is *not* one horizon. A holdout of exactly one
+  horizon admits exactly one window, and that is where "directional accuracy 100.0%" came
+  from — it was 5/5. At the default 5-day horizon a 60-day holdout yields `60 − 5 + 1 = 56`
+  windows, or 280 individual predictions. The validation set is built with
+  `min_prediction_idx = cutoff + 1` rather than `predict=True`, so *every* window after the
+  cutoff is scored.
+- **`selection_days`** (default 30 trading days, PYQ-143) sets a *second*, earlier holdout
+  that `EarlyStopping` and `ModelCheckpoint` monitor instead. Before this existed, the
+  scored window above was the same window checkpoint selection watched — the best of up to
+  `max_epochs` epochs chosen against the exact data later reported as "the" metrics, a
+  selection-event bias identical in kind to the one `tune()`'s own held-out split exists to
+  avoid for Optuna trials. Every reported metric got worse when this landed (see the
+  resolution note on PYQ-143); that was expected, not a regression.
+- **`purge_horizon` / `embargo_days`** shrink the *training* slice, and now also the gap
+  either side of `selection`, never the scored window itself. See
+  {ref}`invariant 10 <invariant-purge-embargo>`.
+- **`calibration_days`** carves out a slice between `selection` and the scored window, used
+  solely to fit the conformal offset — out-of-sample for training and selection, and
+  disjoint from what the model is later judged on.
 
 `walk_forward_backtest()` repeats the whole thing at rolling origins, training a fresh
 model per origin and discarding it. Each origin is scored on *its own* out-of-sample window
@@ -157,6 +175,125 @@ obvious and was wrong for a long time — see
 A backtest reports **per-window** metrics as well as the aggregate, because the spread
 across time is the reason to run more than one window. A single mean over five origins
 hides whether the model is consistently mediocre or wildly unstable.
+
+(per-horizon)=
+## Per-horizon breakdown
+
+Every metric above is also a mean over decoder steps h=1..horizon, which hides a second kind
+of structure (PYQ-267): persistence is hardest to beat at h=1 and progressively less so as h
+grows, so a model that has learned something should show skill *increasing* with horizon,
+while one that is only tracking the last close should show the opposite. A flat headline
+number and a profile like `[-60%, -35%, -10%, +5%, +15%]` are the same mean and very
+different findings. `EvaluationMetrics.per_horizon` (one `PerHorizonMetrics` per decoder
+step, pooled position-wise across windows the same weighted way the aggregate is) now carries
+this; `--format json` includes it, and `train`/`backtest` print it as a "Per-horizon
+breakdown" table whenever the horizon exceeds one step.
+
+The same applies to calibration: a 99.3% coverage on a nominal 80% band could be ~100% at
+h=1 (the band is far too wide where uncertainty is smallest) decaying toward nominal at h=5,
+or flat across every step — two different pathologies with the same headline number, and
+`investigations.md#pyq-324` (see {ref}`related-open-questions`) is the open question of which
+one this project's own band shows.
+
+**This section does not yet show the actual profile** for the default or `log_return`
+configurations, unlike the rest of this document's measured numbers — no live vendor-data
+access was available in the pass that added `per_horizon` to re-run `pyquant train`/`backtest`
+and capture it. Filling in the real profile for both configurations (ideally after PYQ-143's
+geometry fix has also been re-measured, since both landed in the same pass) is the natural
+next step, not a placeholder to leave standing.
+
+(baselines-beyond-persistence)=
+## Baselines beyond persistence
+
+Every skill number on this page, including the headline −23.5%, is relative to a single
+comparator: persistence ("predict no change"). Persistence is uniquely favourable to the
+null on a near-random-walk level series — it is close to optimal by construction, which is
+the whole of {ref}`the negative-result reading <negative-result>` above. Failing to beat it
+is therefore weak evidence that the model learned nothing; a drift baseline, a seasonal-naive
+baseline and a simple autoregressive model would each fail differently, and the *pattern* of
+which baselines a model beats is far more diagnostic than one signed number (PYQ-275).
+
+`analysis/baselines.py` now provides four more point-forecast comparators alongside
+persistence — random-walk-with-drift, seasonal-naive (default 5-day/weekly season),
+climatological (the historical mean, flat across the horizon), and a hand-rolled AR(1) fit
+per sample by closed-form OLS. The AR(1) baseline is deliberately not `statsmodels`'
+ARIMA/ETS: `statsmodels` is already an optional dependency (the `tuning` extra), but this
+module sits on `train`/`backtest`'s core path rather than only `tune`'s, and a per-window
+ARIMA fit is materially slower than a closed-form AR(1) for a comparator whose entire point
+is to be a cheap floor — declined per non-negotiable #5, not overlooked.
+
+`EvaluationMetrics.baseline_maes` now carries MAE against every one of the five,
+`strongest_baseline` names whichever has the lowest MAE (the hardest for the model to beat,
+and the honest one to headline skill against rather than the weakest available comparator),
+and `train`/`backtest`'s Rich tables and `--format json` output both surface the full row.
+
+**None of this page's headline numbers are re-stated against the fuller baseline set yet.**
+The −23.5%/+2.4% figures above were measured before this module existed, and there was no
+live vendor-data access available in the pass that added it to re-run either configuration.
+Re-running both under `pyquant backtest` and reporting skill against each baseline — and
+specifically against whichever is strongest for that symbol — is the natural next step.
+
+(seed-variance)=
+## Seed variance
+
+Every number on this page is one draw from one seed: `TrainingConfig.seed` is fixed at 42,
+and until now nothing measured how much of any reported delta is run-to-run initialisation
+noise rather than signal. `TrainingConfig.seeds: list[int]` (default `[42]`, so nothing
+changes unless a caller opts in) and `models.tft.walk_forward_backtest_multi_seed()` now
+repeat a walk-forward backtest once per seed and report skill as mean ± sd (min, max) across
+them; `pyquant backtest SYMBOL --seeds N` is the CLI surface, expanding to seeds `0..N-1`
+(`--format json` carries every individual seed's result, not only the summary, so a pair of
+seeds can be fed into `compare_backtests`).
+
+Deliberately scoped to `backtest` only, not `train`: a multi-seed **backtest** needs nothing
+extra to make sense (each seed is an independent, disposable fit, the existing
+`walk_forward_backtest` semantics). A multi-seed **train**, by contrast, would fit N models
+and has to decide which one's weights actually get deployed in the persisted bundle — a real
+product decision this pass did not make. `TrainingConfig.seeds` is still recorded in every
+bundle's `meta.json` (generic whole-config recording already does this), but `train()` itself
+does not loop across it.
+
+**A seed sweep has now been run** (investigations.md#pyq-321, 2026-07-29): AAPL, 10 seeds
+(`0..9`), 5 walk-forward windows (25 points/seed), price+technicals only, a smoke-scale model
+(`hidden_size=16`, `max_epochs=10`) — not the project's full default (`32`/`30`). At
+`target=log_return` (the format investigations.md#pyq-315/#pyq-316 were themselves measured
+in):
+
+| Metric | Mean | SD | Min | Max |
+|---|---|---|---|---|
+| Skill vs. baseline | +0.0072 | 0.0114 | −0.0112 | +0.0283 |
+| Directional accuracy | 0.528 | 0.053 | 0.400 | 0.600 |
+| Calibration coverage | 0.708 | 0.026 | 0.680 | 0.760 |
+| CRPS | 0.0057 | 0.0001 | 0.0056 | 0.0058 |
+
+Re-expressed against this sd: PYQ-247's target-change effect (≈0.62) is 54x it and clearly
+survives. investigations.md#pyq-316's sentiment delta (−0.0276) is 2.4x it — under the
+ticket's own "~0.03 means noise" bar, so it survives, but with less margin than PYQ-247.
+investigations.md#pyq-315's pooling delta is **smaller than one sd for AAPL** (−0.0032 vs.
+0.0114) — not distinguishable from seed noise by this calibration, a genuine caveat on that
+specific number (ARM's own delta, −0.0167, is more suggestive at ~1.5x). None of this is a
+formal paired significance test of those specific comparisons — `compare_backtests` (PYQ-266)
+run on matched seeds for each arm pair is the natural next step and was not done here.
+
+At `target=close` (the project's actual default), the same smoke-scale config measured
+something qualitatively different: skill sd was **18x larger** (0.203 vs. 0.0114), and
+directional accuracy was bit-for-bit identical (0.400) across all ten seeds — suggestive of
+the small/short-trained model collapsing to the same degenerate solution regardless of
+initialisation, in price-level space specifically. This does not show the *published*
+−23.5%/99.3% headline (measured at full model scale, and predating PYQ-143's checkpoint-
+selection fix) is degenerate — only that this smaller config is, in this space. Whether the
+full-scale default shows the same pattern is an open follow-up, not answered here.
+
+Per-horizon-step variance is concentrated at the near horizon: h=1 was both the
+worst-performing (mean skill −0.279) and noisiest (sd 0.076) step; h=4 was the most stable
+(sd 0.015). The sample-size-scaling secondary question (does a 25-point result scale to the
+280-point default the way you'd expect) was **not** answered — `train()`'s 280-point figure
+comes from a different mechanism (internal multi-window validation) than
+`walk_forward_backtest`'s origin count, and multi-seed support was deliberately scoped to
+`backtest` only (see PYQ-265's resolution note), so there is no multi-seed `train()` result
+to compare against yet.
+
+Full numbers, config, and reasoning: investigations.md#pyq-321's resolution note.
 
 (sample-size)=
 ## Sample size
@@ -245,6 +382,17 @@ cannot see. Do not assume bit-identical reproducibility across GPU-trained bundl
 - MAE in price space is denominated in dollars, so it is not comparable across symbols;
   the log-return target fixes that as a side effect, which is one more argument for it
   beyond the skill number itself.
+- **Neither PYQ-247's +2.4% nor `investigations.md#pyq-316`'s sentiment delta has a
+  confidence interval attached here.** `analysis.metrics.compare_backtests` (PYQ-266) now
+  exists to do this properly -- a paired moving-block bootstrap over the per-window skill
+  *difference* between two configurations scored on the same walk-forward windows, which is
+  strictly more powerful than eyeballing two marginal point estimates. It was not run against
+  either finding in this pass: both were originally measured before `BacktestResult` recorded
+  window origins, so their raw per-window arrays cannot be verified to align, and there was no
+  live vendor-data access available to re-run either comparison from scratch. Re-running both
+  under `compare_backtests` is the natural next step, and is what
+  `investigations.md#pyq-322`'s pre-registered decision rule should require before either
+  finding is allowed to flip a default.
 
 ## Landed since this page was first written
 
@@ -294,3 +442,67 @@ All three share the same caveat as the headline log-return result: one run, smal
 directional rather than definitive. The pattern across all four is itself worth noting —
 every one of them moved in the direction of "the rationale was optimistic," which is why
 this project's non-negotiable #1 exists.
+
+(decision-rule)=
+## What it takes to flip a default
+
+Three findings above each recommend a default change and each declines to make it, for the
+same stated reason: one symbol, tens of points, one run. Each names "a multi-symbol repeat"
+as the prerequisite and none says how many symbols, how many windows, or how large a
+difference (investigations.md#pyq-322). `backlog/README.md`'s `## Now` list carried the
+resulting item at #1 across two review passes without it being started — an unspecified
+threshold is not a conservative decision rule, it is a deferred one: it can never be met, so
+the finding sits forever, or it gets met retrospectively by whichever run happens to look
+convincing, which is the exact move non-negotiable #1 exists to prevent. This section settles
+it once, using the instruments PYQ-265/266/268 built in the same pass that asked the
+question.
+
+**To flip any of `TrainingConfig.target`, `DataConfig.use_sentiment`, or whether pooling
+defaults on:**
+
+1. **Coverage.** N ≥ 10 symbols, spanning at least 3 distinct sectors — not ten names from
+   one industry, which would be one bet dressed as ten.
+2. **Per-symbol evidence.** Enough walk-forward windows that
+   `EvaluationMetrics.effective_n_samples` (PYQ-251) is ≥ 10 for *each* symbol/arm cell — the
+   project's existing 60-day-validation default already clears this (~12 effective windows),
+   so this is "don't shrink below today's own bar," not a new number invented for this rule.
+3. **Seed floor.** K ≥ 5 seeds per (symbol, arm) cell, run via
+   `models.tft.walk_forward_backtest_multi_seed` (PYQ-265). This is a floor, not necessarily
+   sufficient — investigations.md#pyq-321 measures the actual seed-to-seed standard
+   deviation, and if that turns out to be large relative to the effect sizes below, K must
+   rise until it isn't; that finding supersedes the "5" here when it lands, per the
+   supersession discipline this backlog already uses for corrected numbers.
+4. **The statistical bar.** `analysis.metrics.compare_backtests`'s paired interval (PYQ-266)
+   on the arm-vs-arm skill difference, computed *per symbol* on that symbol's own walk-forward
+   windows, must exclude zero. Two overlapping marginal intervals do not qualify — that is
+   exactly the weaker, wrong instrument PYQ-266 replaced.
+5. **The mixed case — the one most likely to actually happen.** An arm that helps 11 symbols
+   and hurts 4 is not "helped, on net." A default flips only if **both** (a) the pooled paired
+   comparison across all N symbols excludes zero, **and** (b) the arm's per-symbol paired
+   interval excludes zero in the favourable direction for at least 60% of symbols with a
+   per-symbol-significant result, **and** (c) no covered sector hurts on every one of its
+   symbols (a clean per-sector failure is evidence of a real interaction a pooled number
+   would hide, and blocks the flip even if (a) and (b) clear). Failing this test is not
+   "inconclusive, gather more data" — it is a **named result**: the effect is real but
+   symbol-dependent, gets written up as such, and the config becomes a documented **non-default
+   option**, not a new default.
+6. **The bar scales with blast radius, not just the arm.** Equal evidence bars for unequal
+   consequences is the wrong answer:
+   - **Low blast radius** (`use_sentiment` off — removes a feature, changes nothing about
+     what an existing bundle means, fully reversible): the rule above applies as stated.
+   - **High blast radius** (`target` → `log_return` — redefines what every bundle predicts,
+     making older ones non-comparable the way PYQ-121 did for a single feature): the same
+     statistical bar, **plus** N ≥ 15 rather than 10, **plus** an explicit supersession plan
+     naming which existing tickets and docs get marked `Superseded by PYQ-XXX` before the
+     flip lands — decided in advance, not improvised after.
+   - **Pooling on by default:** investigations.md#pyq-315 already measured pooling *worse*.
+     Turning it on by default would be a first-time change against standing negative
+     evidence, so it takes the high-blast-radius bar; leaving it off takes nothing further,
+     since the status quo already matches the evidence.
+
+This is deliberately conservative in the "no free upgrades" direction: it is written to be
+hard to satisfy by accident, and easy to point to when a run *does* satisfy it. If it turns
+out to be miscalibrated once real multi-symbol data exists — too strict to ever pass, or
+loose enough that a marginal result clears it — say so and revise the rule explicitly, the
+same way a wrong headline number gets corrected loudly rather than quietly (non-negotiable
+#1), rather than working around it informally.

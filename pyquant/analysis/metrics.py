@@ -17,6 +17,8 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from pyquant.analysis import baselines
+
 logger = logging.getLogger(__name__)
 
 
@@ -194,6 +196,138 @@ def moving_block_bootstrap_interval(
 
 
 @dataclass
+class ScoredWindows:
+    """The per-window results + window identity `compare_backtests` needs (PYQ-266).
+
+    Deliberately not `models.tft.BacktestResult` itself: that module imports
+    Lightning/pytorch-forecasting, and `analysis/` must stay free of both (the
+    layering rule CLAUDE.md states and PYQ-267's own resolution ran into when
+    `serialize.py` tried the reverse import). Any caller holding a
+    `BacktestResult` builds one with
+    ``ScoredWindows(result.per_window, result.origins)``.
+    """
+
+    per_window: list[EvaluationMetrics]
+    origins: list[int]
+
+
+@dataclass
+class PairedComparison:
+    """A moving-block-bootstrapped, window-paired comparison of two backtests' skill (PYQ-266).
+
+    The two configurations are scored on the *same* walk-forward windows, so
+    their difference is paired, not two independent marginal intervals --
+    overlapping marginal intervals do not imply no difference, which is
+    precisely the error this shape of reporting exists to avoid.
+    """
+
+    mean_diff: float  # mean(skill_a - skill_b) across paired windows
+    ci_low: float
+    ci_high: float
+    n_windows: int
+    block_size: int
+
+    @property
+    def excludes_zero(self) -> bool:
+        """True when the interval does not straddle zero.
+
+        The pre-registrable form of "is this difference real" that
+        investigations.md#pyq-322 asks for: "flip the default when the paired
+        interval excludes zero" can be written down before the run, unlike
+        "when the number looks better."
+        """
+        return self.ci_low > 0.0 or self.ci_high < 0.0
+
+
+def compare_backtests(
+    a: ScoredWindows,
+    b: ScoredWindows,
+    *,
+    block_size: int | None = None,
+    n_resamples: int = 1_000,
+    seed: int = 42,
+    confidence: float = 0.95,
+) -> PairedComparison:
+    """Paired moving-block-bootstrap comparison of two backtests' per-window skill.
+
+    Refuses to compare results whose windows do not verifiably align -- that
+    guard is the whole value of the paired framing over two eyeballed marginal
+    intervals. Both sides need a non-empty, equal, elementwise-identical
+    ``origins`` list (``models.tft.walk_forward_backtest`` populates it); a
+    `BacktestResult` built before PYQ-266, or from a different symbol/window
+    count/step, fails this and raises rather than being silently compared.
+
+    ``block_size`` defaults to the horizon recorded on ``a``'s first window
+    (``n_points / n_samples``, the same derivation `EvaluationMetrics.
+    effective_n_samples` uses) so overlapping windows don't inflate
+    significance, per PYQ-251's own reasoning; pass it explicitly to override.
+    """
+    if not a.origins or not b.origins:
+        raise ValueError(
+            "compare_backtests() requires both sides to carry recorded window origins "
+            "(walk_forward_backtest() populates BacktestResult.origins) -- refusing to "
+            "treat an unverifiable comparison as paired."
+        )
+    if len(a.per_window) != len(a.origins) or len(b.per_window) != len(b.origins):
+        raise ValueError("per_window and origins must be the same length on each side")
+    if a.origins != b.origins:
+        raise ValueError(
+            f"window origins do not align: a has {a.origins}, b has {b.origins}. "
+            "compare_backtests() only compares two configurations scored on identical "
+            "walk-forward windows -- rerun both with the same symbol, n_windows, step "
+            "and start/end."
+        )
+
+    skill_a = np.array([w.skill_vs_baseline for w in a.per_window])
+    skill_b = np.array([w.skill_vs_baseline for w in b.per_window])
+    diffs = skill_a - skill_b
+
+    if block_size is None:
+        first = a.per_window[0]
+        block_size = max(1, round(first.n_points / first.n_samples)) if first.n_samples else 1
+
+    ci_low, ci_high = moving_block_bootstrap_interval(
+        diffs, block_size, n_resamples=n_resamples, seed=seed, confidence=confidence
+    )
+    return PairedComparison(
+        mean_diff=float(np.mean(diffs)),
+        ci_low=ci_low,
+        ci_high=ci_high,
+        n_windows=len(diffs),
+        block_size=block_size,
+    )
+
+
+@dataclass
+class PerHorizonMetrics:
+    """One decoder step's metrics, isolated from the horizon-wide mean (PYQ-267).
+
+    Every field on `EvaluationMetrics` above averages over h=1..horizon, which
+    discards exactly the structure most likely to distinguish a model that is
+    genuinely learning something (skill rising with horizon, since persistence
+    is hardest to beat at h=1) from one that is only tracking the last close
+    (skill falling). `model_mae`/`baseline_mae` are kept rather than a bare
+    `skill` float so a caller can derive it (`skill_vs_baseline` below, same
+    formula as `EvaluationMetrics`) without hand-copying the formula, and so
+    position-wise pooling in `aggregate_metrics` can weight-average the same
+    way the top-level metrics do.
+    """
+
+    step: int  # 1-indexed decoder position
+    model_mae: float
+    baseline_mae: float
+    directional_accuracy: float
+    calibration_coverage: float
+
+    @property
+    def skill_vs_baseline(self) -> float:
+        """Relative MAE improvement over the persistence baseline, at this step."""
+        if self.baseline_mae == 0:
+            return 0.0
+        return (self.baseline_mae - self.model_mae) / self.baseline_mae
+
+
+@dataclass
 class EvaluationMetrics:
     """Model quality vs. a naive baseline, direction, and quantile calibration.
 
@@ -220,6 +354,18 @@ class EvaluationMetrics:
     # the Rich tables (it is a distribution, not a number) but carried here so
     # `pyquant calibration` and --format json can both reach it.
     pit: list[float] = field(default_factory=list)
+    # The per-horizon-step profile the fields above collapse into a mean over
+    # (PYQ-267). Empty for metrics built without it (e.g. hand-constructed in
+    # older tests/scripts) rather than raising -- this is additive detail, not
+    # a required input.
+    per_horizon: list[PerHorizonMetrics] = field(default_factory=list)
+    # MAE against every comparator in analysis/baselines.py, not only persistence
+    # (PYQ-275) -- persistence is uniquely favourable to the null on a
+    # near-random-walk level series, so failing to beat it alone is weak
+    # evidence. Always has a "persistence" key equal to `baseline_mae` above;
+    # populated with the rest only when `evaluate_predictions` is given
+    # encoder history to compute them from.
+    baseline_maes: dict[str, float] = field(default_factory=dict)
 
     @property
     def skill_vs_baseline(self) -> float:
@@ -227,6 +373,30 @@ class EvaluationMetrics:
         if self.baseline_mae == 0:
             return 0.0
         return (self.baseline_mae - self.model_mae) / self.baseline_mae
+
+    @property
+    def strongest_baseline(self) -> tuple[str, float] | None:
+        """The (name, mae) of whichever baseline has the *lowest* MAE (PYQ-275).
+
+        The lowest-MAE baseline is the hardest one for the model to beat, and
+        therefore the honest one to headline skill against -- reporting skill
+        against the weakest available comparator is the failure mode this
+        exists to prevent. None if no baselines were recorded.
+        """
+        if not self.baseline_maes:
+            return None
+        return min(self.baseline_maes.items(), key=lambda kv: kv[1])
+
+    @property
+    def skill_vs_strongest_baseline(self) -> float | None:
+        """`skill_vs_baseline`, but against `strongest_baseline` instead of persistence alone."""
+        strongest = self.strongest_baseline
+        if strongest is None:
+            return None
+        _, mae = strongest
+        if mae == 0:
+            return 0.0
+        return (mae - self.model_mae) / mae
 
     @property
     def effective_n_samples(self) -> int:
@@ -244,11 +414,19 @@ def evaluate_predictions(
     quantiles: list[float],
     *,
     target: str = "close",
+    history: np.ndarray | None = None,
 ) -> EvaluationMetrics:
     """Compute all evaluation metrics for one batch of quantile forecasts.
 
     ``predictions`` is (n_samples, horizon, n_quantiles), ordered to match
     ``quantiles``; the first/last columns are treated as the calibration band.
+
+    ``history`` is each sample's full encoder window, ``(n_samples,
+    encoder_length)``, in the same units as ``actuals`` -- pass it to also
+    score against analysis/baselines.py's comparators beyond persistence
+    (PYQ-275). Optional and additive: without it, ``EvaluationMetrics.
+    baseline_maes`` still carries a "persistence" entry (the same value as
+    ``baseline_mae``), just none of the others.
     """
     if 0.5 not in quantiles:
         raise ValueError(
@@ -266,6 +444,35 @@ def evaluate_predictions(
     # The persistence baseline for log returns is zero return. In close space
     # it remains the final observed close, preserving legacy bundle semantics.
     baseline = np.zeros(n_samples) if target == "log_return" else last_observed
+    # Isolate each decoder step before the horizon axis gets averaged away
+    # below (PYQ-267). `[:, h : h + 1]` rather than `[:, h]` keeps the 2D shape
+    # persistence_baseline_mae/directional_hit_rate broadcast `baseline`
+    # against.
+    per_horizon = [
+        PerHorizonMetrics(
+            step=h + 1,
+            model_mae=model_mae(actuals[:, h : h + 1], median[:, h : h + 1]),
+            baseline_mae=persistence_baseline_mae(actuals[:, h : h + 1], baseline),
+            directional_accuracy=directional_hit_rate(
+                actuals[:, h : h + 1], median[:, h : h + 1], baseline
+            ),
+            calibration_coverage=calibration_coverage(
+                actuals[:, h : h + 1], lower[:, h : h + 1], upper[:, h : h + 1]
+            ),
+        )
+        for h in range(horizon)
+    ]
+    # "persistence" always matches `baseline_mae` below -- same target-aware
+    # computation (zero return for log_return, last close otherwise) -- so the
+    # two never silently disagree. The other comparators don't have that
+    # target-specific convention; they read `history` directly (PYQ-275).
+    baseline_mae_by_name = {"persistence": persistence_baseline_mae(actuals, baseline)}
+    if history is not None:
+        baseline_mae_by_name.update(
+            baselines.baseline_maes(
+                actuals, history, [b for b in baselines.DEFAULT_BASELINES if b.name != "persistence"]
+            )
+        )
     return EvaluationMetrics(
         model_mae=model_mae(actuals, median),
         baseline_mae=persistence_baseline_mae(actuals, baseline),
@@ -282,6 +489,8 @@ def evaluate_predictions(
             actuals, lower, upper, alpha=max(1e-9, quantiles[0] + (1.0 - quantiles[-1]))
         ),
         pit=pit_values(actuals, predictions, quantiles).tolist(),
+        per_horizon=per_horizon,
+        baseline_maes=baseline_mae_by_name,
     )
 
 
@@ -336,4 +545,44 @@ def aggregate_metrics(results: list[EvaluationMetrics]) -> EvaluationMetrics:
         # PIT values are per-point, so they concatenate rather than average --
         # the pooled histogram is the whole point of collecting them.
         pit=[value for r in results for value in r.pit],
+        per_horizon=_pool_per_horizon(results),
+        baseline_maes=pooled_dict([r.baseline_maes for r in results]),
     )
+
+
+def _pool_per_horizon(results: list[EvaluationMetrics]) -> list[PerHorizonMetrics]:
+    """Position-wise pool of `per_horizon` across windows (PYQ-267).
+
+    Weighted by each window's `n_samples`, not `n_points` like the top-level
+    `pooled()` above: a `PerHorizonMetrics` entry already isolates one step, so
+    the count backing it is that window's sample count at that step, not
+    samples-times-horizon. Windows missing the breakdown (or shorter than the
+    longest one) are skipped position-wise rather than raising -- additive
+    detail degrading gracefully, same as an empty `per_horizon` does above.
+    """
+    with_profile = [r for r in results if r.per_horizon]
+    if not with_profile:
+        return []
+    horizon = max(len(r.per_horizon) for r in with_profile)
+    pooled_steps = []
+    for h in range(horizon):
+        cells = [(r.per_horizon[h], r.n_samples) for r in with_profile if len(r.per_horizon) > h]
+        if not cells:
+            continue
+        weights = np.array([n for _, n in cells], dtype=float)
+        if weights.sum() == 0:
+            weights = np.ones(len(cells), dtype=float)
+
+        def pooled_attr(attr: str, cells=cells, weights=weights) -> float:
+            return float(np.average([getattr(c, attr) for c, _ in cells], weights=weights))
+
+        pooled_steps.append(
+            PerHorizonMetrics(
+                step=h + 1,
+                model_mae=pooled_attr("model_mae"),
+                baseline_mae=pooled_attr("baseline_mae"),
+                directional_accuracy=pooled_attr("directional_accuracy"),
+                calibration_coverage=pooled_attr("calibration_coverage"),
+            )
+        )
+    return pooled_steps

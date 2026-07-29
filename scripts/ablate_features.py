@@ -6,6 +6,14 @@ correlation matrix over the technical indicators to name the exactly-redundant c
 Folds in PYQ-140 (Finnhub coverage): the sentiment arm's skill delta is the evidence
 that ticket's default-config decision needs.
 
+Not rewritten over pyquant/experiments/sweep.py (PYQ-268), by deliberate choice: the
+correlation-matrix analysis below has no sweep-harness equivalent (it isn't a backtest at
+all), and single-symbol cumulative-group ablation is this script's whole design, not a
+special case of the harness's symbol x arm matrix. For a *multi-symbol* repeat of the
+group-ablation half only, `pyquant sweep --symbols A,B,C --arm use_sentiment=false --arm
+use_sentiment=true` (etc., one flag per toggle) covers it; this script stays for the
+single-symbol run plus the correlation matrix, which the harness does not produce.
+
 Usage:
     uv run python scripts/ablate_features.py [SYMBOL] [--windows N]
 """

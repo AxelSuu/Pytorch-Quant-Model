@@ -54,6 +54,12 @@ logger = logging.getLogger(__name__)
 class TrainResult:
     symbols: list[str]
     bundle_dir: Path
+    # The best checkpoint's loss on the *selection* window (PYQ-143), not on
+    # the window `evaluation` below is computed from -- it is what
+    # EarlyStopping/ModelCheckpoint monitored, so it is a selection-event
+    # statistic and optimistically biased by construction (the same reason
+    # `TuneResult.best_value` below is not `held_out_evaluation`). Useful for
+    # judging whether training converged, not as a quality number.
     val_loss: float
     n_features: int
     epochs_run: int
@@ -72,6 +78,56 @@ class BacktestResult:
     # than always computed -- it costs one extra forward pass per window.
     signals: list[str] = field(default_factory=list)
     signal_returns_pct: list[float] = field(default_factory=list)
+    # This backtest's window origins (each window's `cutoff`, i.e. its decoder
+    # starts at `cutoff + 1`), in the same order as `per_window` (PYQ-266). Lets
+    # `analysis.metrics.compare_backtests` verify two results were scored on
+    # literally the same walk-forward windows before treating their per-window
+    # differences as paired -- comparing unlike windows is the failure mode a
+    # paired test exists to rule out, not something to trust by convention.
+    origins: list[int] = field(default_factory=list)
+
+
+@dataclass
+class SeedSweepResult:
+    """Multiple independent walk-forward backtests of the same configuration, one per seed.
+
+    Every number this project has ever reported is one draw from one seed
+    (`TrainingConfig.seed`, fixed at 42); this is the tooling half of
+    investigations.md#pyq-321's question -- how much of that number is
+    initialisation noise rather than signal (PYQ-265). `per_seed` retains
+    every individual `BacktestResult`, not just the summary below, so
+    `analysis.metrics.compare_backtests` can consume them pairwise -- e.g.
+    comparing seed-by-seed across two different configurations, once such a
+    comparison is wanted.
+    """
+
+    symbol: str
+    seeds: list[int]
+    per_seed: list[BacktestResult]
+
+    @property
+    def _skills(self) -> list[float]:
+        return [result.aggregated.skill_vs_baseline for result in self.per_seed]
+
+    @property
+    def skill_mean(self) -> float:
+        """Mean skill vs. baseline across seeds."""
+        return float(np.mean(self._skills))
+
+    @property
+    def skill_sd(self) -> float:
+        """Sample standard deviation (ddof=1); 0.0 for a single seed."""
+        return float(np.std(self._skills, ddof=1)) if len(self._skills) > 1 else 0.0
+
+    @property
+    def skill_min(self) -> float:
+        """Minimum skill vs. baseline across seeds."""
+        return float(np.min(self._skills))
+
+    @property
+    def skill_max(self) -> float:
+        """Maximum skill vs. baseline across seeds."""
+        return float(np.max(self._skills))
 
 
 @dataclass
@@ -257,6 +313,36 @@ def purged_training_cutoff(cutoff: int, settings: Settings) -> int:
     return cutoff - max(0, purge) - max(0, settings.training.embargo_days)
 
 
+def _selection_split(cutoff: int, settings: Settings) -> tuple[int, int, int]:
+    """Carve a purged selection window out of the training tail (PYQ-143).
+
+    ``cutoff`` plays the same role it plays in `purged_training_cutoff`: the
+    last index before whatever comes after selection (calibration + the test
+    window in `train()`; the single test window in `walk_forward_backtest`).
+    Returns ``(train_cutoff, selection_start, selection_end)``.
+
+    Applies `purged_training_cutoff` twice -- once to leave the existing
+    purge+embargo gap between selection and what follows it, once more to
+    leave an equal gap between training and selection -- so
+    EarlyStopping/ModelCheckpoint select against a window that shares no
+    target days, even purged ones, with either the training data or the
+    window `EvaluationMetrics` is finally reported from. Before this, both
+    used the same window: a selection-event bias identical in kind to the one
+    `TuneResult`'s own docstring names for Optuna trials, just applied to
+    epochs instead of trials.
+
+    This is deliberately a small, local helper rather than PYQ-269's planned
+    fuller consolidation of the geometry arithmetic `train`,
+    `walk_forward_backtest` and `tune` each reimplement -- it only factors out
+    what this fix newly introduces, shared identically by the two callers that
+    need it.
+    """
+    selection_end = purged_training_cutoff(cutoff, settings)
+    selection_start = selection_end - settings.training.selection_days + 1
+    train_cutoff = purged_training_cutoff(selection_start - 1, settings)
+    return train_cutoff, selection_start, selection_end
+
+
 def _warn_on_stale_symbols(df: pd.DataFrame, cutoff: int) -> list[str]:
     """Warn about symbols with no data after the training cutoff.
 
@@ -319,23 +405,29 @@ def train(
     # would be no complete validation window at all.
     validation_days = max(settings.training.validation_days, horizon)
     calibration_days = max(0, settings.training.calibration_days)
+    selection_days = max(1, settings.training.selection_days)
     max_idx = int(df["time_idx"].max())
     # Geometry, left to right:
-    #   [ training .. train_cutoff ][ purge+embargo ][ calibration ][ validation ]
+    #   [ training .. train_cutoff ][ purge+embargo ][ selection ]
+    #   [ purge+embargo ][ calibration ][ validation ]
     # `cutoff` is the last index before the *held-out* region; the calibration
-    # slice (PYQ-248) sits between it and the scored validation window so the
-    # conformal offset is fitted on data that is out-of-sample for training and
-    # disjoint from what it is later judged on.
+    # slice (PYQ-248) sits between it and the scored validation ("test") window
+    # so the conformal offset is fitted on data that is out-of-sample for
+    # training and disjoint from what it is later judged on. `selection` sits
+    # earlier still, purged from both training and the calibration+validation
+    # region: EarlyStopping/ModelCheckpoint select the checkpoint against it,
+    # never against the window `EvaluationMetrics` is reported from (PYQ-143).
     validation_start = max_idx - validation_days + 1
     cutoff = validation_start - calibration_days - 1
-    train_cutoff = purged_training_cutoff(cutoff, settings)
+    train_cutoff, selection_start, selection_end = _selection_split(cutoff, settings)
     if train_cutoff <= encoder_len:
         raise ValueError(
             f"Not enough history for {bundle_name}: need more than "
-            f"{encoder_len + validation_days + calibration_days + (cutoff - train_cutoff)} rows "
-            f"(a {encoder_len}-day encoder, a {validation_days}-day validation holdout, "
-            f"{calibration_days} calibration day(s) and {cutoff - train_cutoff} purged/embargoed "
-            f"day(s)), got {len(df)}."
+            f"{encoder_len + validation_days + calibration_days + selection_days + 2 * (cutoff - selection_end)} "
+            f"rows (a {encoder_len}-day encoder, a {selection_days}-day selection window, a "
+            f"{validation_days}-day validation holdout, {calibration_days} calibration day(s) and "
+            f"two {cutoff - selection_end}-day purged/embargoed gaps -- one around selection, one "
+            f"around training), got {len(df)}."
         )
 
     # Staleness is about whether a symbol has any data left to *validate* on, so
@@ -351,11 +443,18 @@ def train(
     validation = TimeSeriesDataSet.from_dataset(
         training, df, min_prediction_idx=validation_start, stop_randomization=True
     )
+    # Bounded above at selection_end so no selection window can reach into the
+    # purge gap or the calibration/test region beyond it (PYQ-143).
+    selection_df = df[df["time_idx"] <= selection_end + horizon - 1]
+    selection = TimeSeriesDataSet.from_dataset(
+        training, selection_df, min_prediction_idx=selection_start, stop_randomization=True
+    )
 
     batch_size = settings.training.batch_size
     num_workers = settings.training.num_workers
     train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
     val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
+    selection_loader = selection.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
 
     model = build_model(training, settings)
 
@@ -380,7 +479,10 @@ def train(
         enable_progress_bar=progress,
         enable_model_summary=False,
     )
-    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+    # val_dataloaders drives EarlyStopping/ModelCheckpoint -- selection_loader,
+    # never val_loader, so checkpoint choice is not a selection event scored
+    # against the same window the reported metrics come from (PYQ-143).
+    trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=selection_loader)
 
     # ModelCheckpoint may version the filename; load the actual best path.
     best_path = ckpt_cb.best_model_path or str(bundle_dir / "model.ckpt")
@@ -414,11 +516,12 @@ def train(
         cal_loader = calibration.to_dataloader(
             train=False, batch_size=batch_size, num_workers=num_workers
         )
-        cal_pred, cal_actual, _ = _raw_validation_arrays(best_model, cal_loader)
+        cal_pred, cal_actual, _, _ = _raw_validation_arrays(best_model, cal_loader)
         conformal = fit_conformal_offset(cal_actual, cal_pred, settings.tft.quantiles)
         logger.info(
-            "Conformal offset %.6g fitted on %d calibration point(s)",
-            conformal.offset,
+            "Conformal offset %s fitted on %d calibration window(s) (%d effective)",
+            [f"{o:.6g}" for o in conformal.offset],
+            cal_actual.shape[0],
             conformal.n_calibration,
         )
 
@@ -447,7 +550,11 @@ def train(
             "tft": settings.tft.model_dump(mode="json"),
         },
         "provenance": _provenance(pin),
-        "evaluation": vars(evaluation),
+        # vars() doesn't recurse into the nested PerHorizonMetrics dataclasses
+        # (PYQ-267); flatten those to plain dicts so json.dumps below doesn't
+        # choke, consistent with vars() itself already omitting computed
+        # properties like skill_vs_baseline (derivable from model_mae/baseline_mae).
+        "evaluation": {**vars(evaluation), "per_horizon": [vars(step) for step in evaluation.per_horizon]},
         # Persisted so `forecast` applies the same band correction the metrics
         # above were computed under, without refitting it (PYQ-248).
         "conformal": conformal.to_dict() if conformal else None,
@@ -499,16 +606,20 @@ def _window_signal(
     (PYQ-255). walk_forward_backtest is single-symbol, so each window's arrays
     hold exactly one sample.
     """
-    from pyquant.analysis.forecast import log_returns_to_prices
+    from pyquant.analysis.forecast import (
+        log_return_quantiles_to_price_band,
+        log_returns_to_prices,
+    )
     from pyquant.analysis.signals import classify_signal
 
     median_idx = quantiles.index(0.5)
     pred, actual, last_obs = predictions[0], actuals[0], float(last_observed[0])
 
     if target == "LogReturn":
-        median_path = log_returns_to_prices(pred[:, median_idx], last_obs)
-        lower_path = log_returns_to_prices(pred[:, 0], last_obs)
-        upper_path = log_returns_to_prices(pred[:, -1], last_obs)
+        # actual is a single realized path -- plain compounding is exact for it.
+        # pred is a (horizon, n_quantiles) band -- needs the PYQ-142 reconstruction.
+        band = log_return_quantiles_to_price_band(pred, last_obs, quantiles)
+        median_path, lower_path, upper_path = band[:, median_idx], band[:, 0], band[:, -1]
         actual_path = log_returns_to_prices(actual, last_obs)
     else:
         median_path, lower_path, upper_path = pred[:, median_idx], pred[:, 0], pred[:, -1]
@@ -556,13 +667,18 @@ def walk_forward_backtest(
     earliest_cutoff = latest_cutoff - (n_windows - 1) * step
     # Purge + embargo eat into the *earliest* origin's training slice, so the
     # history check has to account for them or the first window fails mid-run
-    # rather than up front (PYQ-250).
-    if purged_training_cutoff(earliest_cutoff, settings) <= encoder_len:
-        gap = earliest_cutoff - purged_training_cutoff(earliest_cutoff, settings)
+    # rather than up front (PYQ-250). Each origin also carves a selection
+    # window (PYQ-143) out of its own training tail, purged on both sides --
+    # account for that too.
+    earliest_train_cutoff, _, earliest_selection_end = _selection_split(earliest_cutoff, settings)
+    if earliest_train_cutoff <= encoder_len:
+        gap = earliest_cutoff - earliest_selection_end  # width of one purge+embargo gap
+        selection_days = settings.training.selection_days
         raise ValueError(
             f"Not enough history for {n_windows} walk-forward window(s) of {symbol}: "
-            f"need more than {encoder_len + horizon + (n_windows - 1) * step + gap} rows "
-            f"({gap} of them purged/embargoed before each origin), got {len(df)}."
+            f"need more than {encoder_len + horizon + (n_windows - 1) * step + 2 * gap + selection_days} "
+            f"rows (two {gap}-day purged/embargoed gaps around a {selection_days}-day selection "
+            f"window, before each origin), got {len(df)}."
         )
 
     cutoffs = sorted(latest_cutoff - i * step for i in range(n_windows))
@@ -574,10 +690,22 @@ def walk_forward_backtest(
     signals: list[str] = []
     signal_returns_pct: list[float] = []
     for cutoff in cutoffs:
-        training = make_dataset(df, settings, training_cutoff=purged_training_cutoff(cutoff, settings))
+        # This origin's own selection window (PYQ-143): carved from its
+        # training tail, purged from both training and the single test
+        # window below, the same [train][purge][selection][purge][test]
+        # shape train() uses.
+        train_cutoff, selection_start, selection_end = _selection_split(cutoff, settings)
+        training = make_dataset(df, settings, training_cutoff=train_cutoff)
         validation = _window_validation_dataset(training, df, cutoff, horizon)
+        selection_df = df[df["time_idx"] <= selection_end + horizon - 1]
+        selection = TimeSeriesDataSet.from_dataset(
+            training, selection_df, min_prediction_idx=selection_start, stop_randomization=True
+        )
         train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
         val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
+        selection_loader = selection.to_dataloader(
+            train=False, batch_size=batch_size, num_workers=num_workers
+        )
 
         model = build_model(training, settings)
         # Checkpoint into a throwaway dir: the backtest discards each window's
@@ -604,7 +732,11 @@ def walk_forward_backtest(
                 enable_progress_bar=progress,
                 enable_model_summary=False,
             )
-            trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=val_loader)
+            # val_dataloaders drives EarlyStopping/ModelCheckpoint --
+            # selection_loader, never val_loader, so checkpoint choice is not
+            # a selection event scored against this origin's reported window
+            # (PYQ-143).
+            trainer.fit(model, train_dataloaders=train_loader, val_dataloaders=selection_loader)
             per_window.append(
                 _evaluate_best_checkpoint(
                     ckpt_cb.best_model_path,
@@ -620,7 +752,7 @@ def walk_forward_backtest(
                 # arrays a signal needs, and this stays opt-in specifically to keep the
                 # default backtest path (no signals) at its current one-pass cost.
                 best_model = _load_best_checkpoint(ckpt_cb.best_model_path, model)
-                predictions, actuals, last_observed = _raw_validation_arrays(best_model, val_loader)
+                predictions, actuals, last_observed, _ = _raw_validation_arrays(best_model, val_loader)
                 signal, realized_pct = _window_signal(
                     predictions, actuals, last_observed, settings.tft.quantiles, target_column(settings)
                 )
@@ -634,7 +766,64 @@ def walk_forward_backtest(
         aggregated=aggregate_metrics(per_window),
         signals=signals,
         signal_returns_pct=signal_returns_pct,
+        origins=list(cutoffs),
     )
+
+
+def walk_forward_backtest_multi_seed(
+    symbol: str,
+    settings: Settings,
+    *,
+    seeds: list[int] | None = None,
+    n_windows: int = 5,
+    step: int | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    max_epochs: int | None = None,
+    progress: bool = False,
+    compute_signals: bool = False,
+) -> SeedSweepResult:
+    """Repeat `walk_forward_backtest` once per seed (PYQ-265).
+
+    ``seeds`` defaults to ``settings.training.seeds`` (itself defaulting to a
+    single-element list, so nothing changes unless a caller opts in -- the
+    same shape PYQ-248 shipped conformal calibration defaulted off). Every
+    other argument means exactly what it means on `walk_forward_backtest`,
+    applied identically across seeds.
+
+    Each seed gets its own deep-copied `Settings` (only `training.seed`
+    differs) rather than mutating the caller's object, and its own call to
+    `build_panel` inside `walk_forward_backtest` -- the panel is identical
+    across seeds, so this re-fetches/re-builds it `len(seeds)` times. Left
+    as-is rather than threading a pre-built panel through
+    `walk_forward_backtest`'s signature: that is a real inefficiency, but
+    fixing it means changing a function three other callers already share,
+    for a cost that is a caching problem (`DataConfig.cache_enabled`,
+    PYQ-205) rather than a correctness one.
+
+    Cost is the obvious objection and should be stated rather than hidden:
+    this multiplies training time by ``len(seeds)``. That is the correct
+    price for the claim investigations.md#pyq-321 needs answered.
+    """
+    chosen_seeds = list(seeds) if seeds is not None else list(settings.training.seeds)
+    per_seed: list[BacktestResult] = []
+    for seed in chosen_seeds:
+        seed_settings = settings.model_copy(deep=True)
+        seed_settings.training.seed = seed
+        per_seed.append(
+            walk_forward_backtest(
+                symbol,
+                seed_settings,
+                n_windows=n_windows,
+                step=step,
+                start=start,
+                end=end,
+                max_epochs=max_epochs,
+                progress=progress,
+                compute_signals=compute_signals,
+            )
+        )
+    return SeedSweepResult(symbol=symbol.upper(), seeds=chosen_seeds, per_seed=per_seed)
 
 
 def tune(
@@ -857,6 +1046,10 @@ def _raw_validation_arrays(model: TemporalFusionTransformer, loader):
         result.output.cpu().numpy(),
         result.y[0].cpu().numpy(),
         result.x["encoder_target"][:, -1].cpu().numpy(),
+        # The full encoder window, not just its last value -- what
+        # analysis.baselines' comparators beyond persistence need (PYQ-275).
+        # Already computed as part of the same forward pass, so this is free.
+        result.x["encoder_target"].cpu().numpy(),
     )
 
 
@@ -867,8 +1060,8 @@ def _evaluate_validation(
     target: str = "Close",
     conformal: ConformalOffset | None = None,
 ) -> EvaluationMetrics:
-    """Score the held-out validation window vs. a persistence baseline."""
-    predictions, actuals, last_observed = _raw_validation_arrays(model, val_loader)
+    """Score the held-out validation window vs. baselines beyond persistence (PYQ-275)."""
+    predictions, actuals, last_observed, history = _raw_validation_arrays(model, val_loader)
     # Score the band the user will actually be shown. Reporting coverage for an
     # uncalibrated band while `forecast` prints a calibrated one would make the
     # published number describe something nobody sees (PYQ-248).
@@ -879,6 +1072,7 @@ def _evaluate_validation(
         last_observed,
         quantiles,
         target="log_return" if target == "LogReturn" else "close",
+        history=history,
     )
 
 
