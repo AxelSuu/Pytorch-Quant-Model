@@ -36,6 +36,16 @@ still defaults to `"close"` pending a multi-symbol repeat. See {ref}`negative-re
 why the first number is close to what the *formulation* predicts regardless of tuning, and
 {ref}`related-open-questions` for what happened when the same discipline was applied to
 pooling and to the feature set.
+
+**Both headline measurements above predate PYQ-143** (checkpoint selection was fixed to use
+a window disjoint from the one these metrics are reported on; see {ref}`split-geometry`).
+They were measured with `EarlyStopping`/`ModelCheckpoint` selecting the best of many epochs
+against the *same* window scored above — a selection-event bias, so the true numbers are
+expected to be somewhat worse than shown, per the resolution note on PYQ-143. Neither figure
+has been re-measured under the corrected geometry as of this pass; this codebase had no live
+vendor-data access available to re-run `pyquant train`/`pyquant backtest` for real. Re-running
+both configurations under the fixed geometry is the natural next step and should replace this
+table when done, rather than being read as still current.
 :::
 
 ## A third number, from a third protocol — and why it is not in the table above
@@ -131,22 +141,30 @@ This is where most of the historical defects lived, so it is worth stating preci
 single `train` run lays the timeline out left to right:
 
 ```
-[ training ................ train_cutoff ][ purge + embargo ][ calibration ][ validation ]
-                                                                             ^ scored here
+[ training .. train_cutoff ][ purge+embargo ][ selection ][ purge+embargo ][ calibration ][ validation ]
+                                                                                           ^ scored here
 ```
 
-- **`validation_days`** (default 60 trading days) sets the scored holdout. It is *not* one
-  horizon. A holdout of exactly one horizon admits exactly one window, and that is where
-  "directional accuracy 100.0%" came from — it was 5/5. At the default 5-day horizon a
-  60-day holdout yields `60 − 5 + 1 = 56` windows, or 280 individual predictions.
-- The validation set is built with `min_prediction_idx = cutoff + 1` rather than
-  `predict=True`, so *every* window after the cutoff is scored, and that same loader drives
-  `EarlyStopping` and `ModelCheckpoint`.
-- **`purge_horizon` / `embargo_days`** shrink the *training* slice only, never the scored
-  window. See {ref}`invariant 10 <invariant-purge-embargo>`.
-- **`calibration_days`** carves out a slice between the two, used solely to fit the
-  conformal offset — out-of-sample for training and disjoint from what the model is later
-  judged on.
+- **`validation_days`** (default 60 trading days) sets the scored holdout — what every
+  reported `EvaluationMetrics` comes from. It is *not* one horizon. A holdout of exactly one
+  horizon admits exactly one window, and that is where "directional accuracy 100.0%" came
+  from — it was 5/5. At the default 5-day horizon a 60-day holdout yields `60 − 5 + 1 = 56`
+  windows, or 280 individual predictions. The validation set is built with
+  `min_prediction_idx = cutoff + 1` rather than `predict=True`, so *every* window after the
+  cutoff is scored.
+- **`selection_days`** (default 30 trading days, PYQ-143) sets a *second*, earlier holdout
+  that `EarlyStopping` and `ModelCheckpoint` monitor instead. Before this existed, the
+  scored window above was the same window checkpoint selection watched — the best of up to
+  `max_epochs` epochs chosen against the exact data later reported as "the" metrics, a
+  selection-event bias identical in kind to the one `tune()`'s own held-out split exists to
+  avoid for Optuna trials. Every reported metric got worse when this landed (see the
+  resolution note on PYQ-143); that was expected, not a regression.
+- **`purge_horizon` / `embargo_days`** shrink the *training* slice, and now also the gap
+  either side of `selection`, never the scored window itself. See
+  {ref}`invariant 10 <invariant-purge-embargo>`.
+- **`calibration_days`** carves out a slice between `selection` and the scored window, used
+  solely to fit the conformal offset — out-of-sample for training and selection, and
+  disjoint from what the model is later judged on.
 
 `walk_forward_backtest()` repeats the whole thing at rolling origins, training a fresh
 model per origin and discarding it. Each origin is scored on *its own* out-of-sample window

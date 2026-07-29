@@ -776,6 +776,107 @@ def test_train_still_validates_on_the_full_holdout_after_purging(
     assert purged.evaluation.n_samples == unpurged.evaluation.n_samples
 
 
+# --- PYQ-143: checkpoint selection disjoint from the reported test window -----
+
+
+def _spy_trainer_val_dataset(monkeypatch, captured, key):
+    """Patch tft.Trainer so trainer.fit(...)'s val_dataloaders is recorded."""
+    real_trainer_cls = tft.Trainer
+
+    def spy_trainer(**kwargs):
+        trainer = real_trainer_cls(**kwargs)
+        real_fit = trainer.fit
+
+        def fit(model, train_dataloaders=None, val_dataloaders=None):
+            captured[key] = val_dataloaders.dataset
+            return real_fit(model, train_dataloaders=train_dataloaders, val_dataloaders=val_dataloaders)
+
+        trainer.fit = fit
+        return trainer
+
+    monkeypatch.setattr(tft, "Trainer", spy_trainer)
+
+
+def test_train_fits_against_a_selection_window_disjoint_from_the_reported_test_window(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-143: EarlyStopping/ModelCheckpoint must select the checkpoint against
+    a window that is neither the training data nor the window EvaluationMetrics
+    is later reported from. Before this fix both used the same `val_loader`,
+    so the reported metrics were a best-of-many-epochs statistic (the same
+    selection-event bias `TuneResult`'s own docstring names for Optuna trials,
+    applied to epochs instead)."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    captured: dict = {}
+    _spy_trainer_val_dataset(monkeypatch, captured, "fit_val_dataset")
+
+    real_evaluate = tft._evaluate_validation
+
+    def spy_evaluate(model, val_loader, *a, **k):
+        captured["reported_val_dataset"] = val_loader.dataset
+        return real_evaluate(model, val_loader, *a, **k)
+
+    monkeypatch.setattr(tft, "_evaluate_validation", spy_evaluate)
+
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+
+    assert "fit_val_dataset" in captured
+    assert "reported_val_dataset" in captured
+    fit_range = _decoder_range(captured["fit_val_dataset"])
+    reported_range = _decoder_range(captured["reported_val_dataset"])
+    assert fit_range != reported_range
+    # Selection strictly precedes the reported test window -- not just a
+    # different window, but the ordered, purged geometry PYQ-143 asks for.
+    assert fit_range[1] < reported_range[0]
+
+
+def test_walk_forward_backtest_fits_against_a_selection_window_per_origin(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """The walk-forward path is worse pre-fix: predict=True gives exactly one
+    sample per origin, so that single window was simultaneously what
+    early-stopping/checkpoint-selection optimized against and what the
+    per-window (and aggregate) reported metric came from. Each origin must now
+    select against its own disjoint selection window."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    captured: dict = {}
+    _spy_trainer_val_dataset(monkeypatch, captured, "fit_val_dataset")
+
+    real_evaluate = tft._evaluate_best_checkpoint
+
+    def spy_evaluate(best_path, model, val_loader, *a, **k):
+        captured["reported_val_dataset"] = val_loader.dataset
+        return real_evaluate(best_path, model, val_loader, *a, **k)
+
+    monkeypatch.setattr(tft, "_evaluate_best_checkpoint", spy_evaluate)
+
+    tft.walk_forward_backtest("TEST", fast_settings, n_windows=1, max_epochs=1, progress=False)
+
+    fit_range = _decoder_range(captured["fit_val_dataset"])
+    reported_range = _decoder_range(captured["reported_val_dataset"])
+    assert fit_range != reported_range
+    assert fit_range[1] < reported_range[0]
+
+
+def test_selection_days_is_configurable_and_recorded_on_the_bundle(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """selection_days is a TrainingConfig field like every other tunable split
+    knob, and (via the existing whole-config recording) ends up in meta.json."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.selection_days = 15
+
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    assert bundle.meta["config"]["training"]["selection_days"] == 15
+
+
 # --- PYQ-248: the conformal offset travels with the bundle --------------------
 
 

@@ -268,7 +268,11 @@ def train(
     table.add_row("Symbols", ", ".join(result.symbols))
     table.add_row("Features used", str(result.n_features))
     table.add_row("Epochs run", str(result.epochs_run))
-    table.add_row("Validation loss", f"{result.val_loss:.5f}")
+    # The best checkpoint's loss on the *selection* window EarlyStopping/
+    # ModelCheckpoint monitored, not the test window the metrics below are
+    # computed from -- a selection-event statistic, not a quality number
+    # (PYQ-143; see TrainResult.val_loss's docstring).
+    table.add_row("Selection loss", f"{result.val_loss:.5f}")
     _add_metric_rows(table, result.evaluation, settings.tft.quantiles)
     console.print(table)
     if not _output.quiet:

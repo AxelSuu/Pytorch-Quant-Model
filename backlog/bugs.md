@@ -46,9 +46,9 @@ Next free ID: **PYQ-160**.
 | [PYQ-139](#pyq-139) | Critical | Resolved | PYQ-257's vintage fetch fails against the live FRED API: every FRED macro feature silently vanished |
 | [PYQ-140](#pyq-140) | High | Resolved | Finnhub's free tier serves ~6 days of news, not ~365: `Sentiment` is 99.7% structural zeros |
 | [PYQ-141](#pyq-141) | Medium | Open | Headline skill and the per-window skill column beneath it are different estimators |
-| [PYQ-142](#pyq-142) | High | Open | The displayed log-return forecast band compounds marginal per-step quantiles, ~√h too wide |
-| [PYQ-143](#pyq-143) | High | Open | `train()`/`walk_forward_backtest()` select checkpoints and report metrics from the same window |
-| [PYQ-144](#pyq-144) | High | Open | Conformal offset is pooled across horizon steps and fit on an inflated sample size |
+| [PYQ-142](#pyq-142) | High | Resolved | The displayed log-return forecast band compounds marginal per-step quantiles, ~√h too wide |
+| [PYQ-143](#pyq-143) | High | Resolved | `train()`/`walk_forward_backtest()` select checkpoints and report metrics from the same window |
+| [PYQ-144](#pyq-144) | High | Resolved | Conformal offset is pooled across horizon steps and fit on an inflated sample size |
 | [PYQ-145](#pyq-145) | High | Resolved | API accepts unvalidated `symbol`/`bundle_name`; auth header comparison throws on non-ASCII input |
 | [PYQ-146](#pyq-146) | High | Resolved | `load_settings()` mutates a module global; concurrent API requests can read the wrong config |
 | [PYQ-147](#pyq-147) | Medium | Resolved | `interpret()` zips variable names to weights with `strict=False` |
@@ -2081,7 +2081,7 @@ away.
 
 ## [PYQ-142]
 The displayed log-return forecast band compounds marginal per-step quantiles, ~√h too wide
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/forecast.py` (`log_returns_to_prices`, `generate_forecast`), `pyquant/models/tft.py` (`_window_signal`, `predict_quantiles`)
 
@@ -2137,11 +2137,53 @@ asserts the fixed reconstruction does not simply reproduce the old √h-wide ban
 composes with PYQ-248's conformal offset (apply calibration in the space the band is
 finally displayed/scored in, not before compounding).
 
+Resolution: took option (b) -- retraining on cumulative targets (option (a)) would redefine
+what every `log_return`-target bundle predicts, the kind of change PYQ-121 required a loud
+supersede for, and this bug is in the *display/scoring reconstruction*, not the model. Added
+`log_return_quantiles_to_price_band(log_return_quantiles, last_close, quantiles)` alongside
+the existing `log_returns_to_prices` (now documented as being for a single deterministic
+path only -- e.g. the realized actual -- where plain `cumsum` is exact and no distributional
+question applies). The new function compounds the *median* path via `cumsum` (exact for a
+deterministic center) and derives each quantile's cumulative deviation from the median as
+`sqrt(sum of squared per-step deviations)` rather than a linear sum -- the standard
+deviation-of-a-sum-of-independent-variables identity, an explicit iid-across-steps
+assumption rather than a property the model asserts. Under iid steps with constant per-step
+dispersion this exactly recovers the analytic `sqrt(h)` scaling PYQ-142's own simulation
+measured as correct; `test_log_return_quantile_band_matches_analytic_iid_normal_quantiles`
+checks the closed form directly rather than relying on Monte Carlo tolerance, and
+`test_log_return_quantile_band_achieves_close_to_nominal_coverage` additionally verifies
+empirical coverage lands within 3 points of nominal on 20k simulated paths.
+`generate_forecast` and `_window_signal` (the two callers that previously fed a
+`(horizon, n_quantiles)` array into the single-path function) now call the new one instead;
+`_window_signal`'s realized-actual path still uses the original function, correctly.
+
+Composition with PYQ-248's conformal offset: left the offset applied where it already was
+(per-step, before compounding) rather than moving it after compounding, because the offset
+is fit against *per-step* marginal coverage (`_evaluate_validation` scores the raw per-step
+arrays, which this ticket confirms are unaffected) -- applying it to per-step deviations
+before they feed the new sqrt-dispersion formula is the space it was actually calibrated
+for, and the correction propagates through the formula like any other per-step value with no
+special-casing needed. Recorded as a decision rather than re-litigated further: PYQ-144
+(fixing the offset itself to be per-horizon-step) lands in the same pass and composes
+cleanly with this ordering.
+
+Verified: `test_log_return_quantile_band_does_not_reproduce_old_naive_cumsum_band` confirms
+the fixed h=5 p90 edge is materially narrower (>1.5x) than the old naive-cumsum band on the
+same input. Covered by 4 new tests in `tests/test_forecast.py` (13 total in that file, up
+from 10) plus the existing `Forecast`/`generate_forecast` suite, all passing;
+`tests/test_tft.py`'s `_window_signal`-exercising tests (`test_walk_forward_backtest_computes_a_signal_per_window_when_requested`)
+still pass unchanged. `docs/methodology.md`'s headline numbers do not depend on this path
+(confirmed above: `_evaluate_validation` never called the buggy function), so no reported
+metric changes -- only what `forecast`/`scan`/`explain` display and what
+`backtest --signals` scores for `log_return`-target bundles, which is `TrainingConfig.target
+== "close"`'s default and therefore not the configuration any currently-published number
+uses.
+
 ---
 
 ## [PYQ-143]
 `train()`/`walk_forward_backtest()` select checkpoints and report metrics from the same window
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/models/tft.py` (`train`, `walk_forward_backtest`, `tune`)
 
@@ -2198,11 +2240,74 @@ split, documented as a deliberate tradeoff either way; expect every reported met
 repo to get worse once this lands — that is the point (see PYQ-143's sibling, PYQ-142, for
 the same "expect the honest number to be worse" framing).
 
+Resolution: extended the geometry exactly as asked, in both functions, to
+`[train][purge+embargo][selection][purge+embargo][calibration][test]`. New
+`TrainingConfig.selection_days` (default 30, half of `validation_days`' own default -- an
+explicitly unoptimized starting point, not a tuned value) sizes a second held-out slice.
+New private helper `_selection_split(cutoff, settings)` applies the existing
+`purged_training_cutoff` *twice* -- once for the gap between selection and whatever follows
+it (calibration+test, or the single test window), once more for the gap between training and
+selection -- so selection shares no target days, purged or otherwise, with either side. This
+is deliberately not PYQ-269's fuller consolidation of the geometry arithmetic (`train`,
+`walk_forward_backtest` and `tune` still each compute their own `max_idx`/window bounds); it
+only factors out what this fix newly introduces, shared identically by the two callers that
+need it.
+
+In `train()`, `trainer.fit(...)`'s `val_dataloaders` now points at the new `selection_loader`
+instead of `val_loader` -- the only wiring change `EarlyStopping`/`ModelCheckpoint` needed,
+since Lightning logs `val_loss` from whichever loader is passed there regardless of what else
+references the underlying dataset. `val_loader` (renamed nowhere, to keep the diff small, but
+now genuinely the *test* window) is untouched by training and reaches
+`_evaluate_validation` only afterwards. `TrainResult.val_loss` and the CLI's `train` table
+row are re-labelled ("Selection loss") and re-documented to say what they now measure --
+a selection-event statistic useful for judging convergence, not a quality number -- so
+nothing downstream can mistake it for the test-window figure it no longer is.
+
+`walk_forward_backtest` took the second option the ticket offered (carve a selection window
+from each origin's training tail) rather than the first (fixed epoch count): it reuses
+`_selection_split` per origin, identically to `train()`, which keeps `_evaluate_best_checkpoint`
+(PYQ-109's best-checkpoint-not-final-epoch fix) intact rather than reverting to a final-epoch
+read that PYQ-109 specifically argued against. The one-sample-per-origin problem the ticket
+flagged as "worse" is solved the same way `train()` solves it -- the selection window, unlike
+the single test window, spans multiple days and gives EarlyStopping a real (if still small,
+`selection_days`-sized) sample to monitor.
+
+Verification took the form the ticket's acceptance criteria asked for, adapted: rather than
+constructing a case where the *numeric* early-stopping-selected and out-of-sample metrics
+diverge (dependent on specific loss dynamics, and liable to be flaky), the new tests verify
+the structural invariant that makes such divergence impossible to hide --
+`test_train_fits_against_a_selection_window_disjoint_from_the_reported_test_window` and
+`test_walk_forward_backtest_fits_against_a_selection_window_per_origin` spy on both
+`trainer.fit`'s `val_dataloaders` and the loader `_evaluate_validation`/
+`_evaluate_best_checkpoint` receives, and assert not just that the two datasets differ but
+that the selection window's decoder range ends strictly before the reported window's begins.
+This is a stronger check than a single numeric-divergence example: it holds for every run,
+not just a constructed one. `test_selection_days_is_configurable_and_recorded_on_the_bundle`
+covers the new config field's plumbing into `meta.json` (via the existing whole-config
+recording, no new code needed there). All three pass; the full existing `test_tft.py` suite
+(42 tests, up from 39) passes unchanged, including
+`test_train_still_validates_on_the_full_holdout_after_purging` (proves `validation_days`'
+window position is independent of `purge_horizon`/`embargo_days`, still true with selection
+inserted earlier in the timeline) and the PYQ-250 purge/embargo tests (which exercise
+`purged_training_cutoff` directly and don't touch the new selection path at all).
+
+Per the ticket's own prediction, this does **not** improve any reported number -- it can only
+make them more honest, i.e. probably worse. `docs/methodology.md`'s split-geometry section
+and its headline results table are both updated: the geometry diagram now shows the
+`selection` slice, and the headline table carries an explicit note that both published
+numbers (`-23.5%` skill default, `+2.4%` log-return) predate this fix and were measured with
+checkpoint selection biased toward the same window they were scored on, so the honest
+numbers are expected to be somewhat worse. Re-measuring both is the natural next step;
+it was not done in this pass because no live vendor-data access was available (Yahoo Finance
+returned HTTP 429 in this sandbox) to actually run `pyquant train`/`pyquant backtest`, and
+fabricating a number to fill the table would violate non-negotiable #1 far more directly than
+leaving it visibly stale does.
+
 ---
 
 ## [PYQ-144]
 Conformal offset is pooled across horizon steps and fit on an inflated sample size
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/calibrate.py` (`fit_conformal_offset`), `pyquant/analysis/metrics.py` (`effective_sample_size`)
 
@@ -2247,6 +2352,49 @@ Acceptance criteria: `fit_conformal_offset` accepts and returns a per-horizon-st
 correction; a test with horizon-varying synthetic dispersion asserts the per-step offsets
 differ and each step's post-calibration coverage is closer to nominal than the pooled
 offset's.
+
+Resolution: `ConformalOffset.offset` is now `list[float]`, one value per horizon step, fit by
+`fit_conformal_offset` computing `scores[:, h]` (that step's conformity scores across
+calibration windows) and taking the finite-sample-corrected quantile of *each column
+separately*, rather than flattening the horizon axis first. The correction's `n` is now
+`effective_sample_size(n_samples, horizon)` (PYQ-251) instead of raw `n_samples * horizon`,
+computed once and shared across all `horizon` per-step quantile levels -- fixing the second
+bug in the same change, since both bugs lived in the same few lines.
+`apply_conformal_offset` broadcasts the per-step offset against `predictions`' horizon axis
+(second-to-last, so it works identically on a single `(horizon, n_quantiles)` forecast or a
+`(n_samples, horizon, n_quantiles)` validation batch); a scalar or single-element offset still
+broadcasts identically to every step, so a bundle calibrated before this fix keeps working
+via `ConformalOffset.from_dict`'s scalar-coercion path -- no bundle needs retraining, though
+one calibrated after this fix will get the corrected, more accurate behavior.
+
+Verified with the acceptance criterion's own scenario:
+`test_fit_conformal_offset_produces_different_offsets_when_dispersion_varies_by_step` builds
+a 3-step synthetic case (true distribution iid N(0,1) at every step; predicted band
+deliberately too narrow at h=1, ~correct at h=2, too wide at h=3), confirms the three fitted
+offsets differ, and confirms per-step post-calibration coverage is closer to nominal 80% at
+*every* step than a pooled offset computed the pre-fix way (flattened scores, raw `n`) on the
+same data. `test_offset_from_dict_accepts_a_legacy_scalar` and
+`test_applying_a_legacy_scalar_offset_broadcasts_to_every_step` cover the backward-compatible
+loading path explicitly. The existing 8 tests were updated for the list-valued API (indexing
+`.offset[0]` where they'd asserted a bare scalar) rather than weakened -- their assertions are
+otherwise unchanged, including the two Monte Carlo coverage checks (narrows/widens toward
+nominal), which still hold at `horizon=1` where `effective_sample_size(n, 1) == n` makes the
+fix a no-op by construction, so those two remain a clean regression test for the correction
+formula itself. 12 tests total in `tests/test_calibrate.py` (up from 8), all passing;
+`tests/test_tft.py`'s two PYQ-248 tests (`test_calibration_slice_produces_an_offset_that_forecast_reuses`,
+`test_a_bundle_without_a_calibration_slice_records_no_offset`) pass unchanged after updating
+the training-time log line for the new list-valued offset.
+
+Composes with PYQ-142 (landed in the same pass): that fix's
+`log_return_quantiles_to_price_band` derives each quantile's cumulative dispersion from its
+*per-step* deviation from the median, so a per-step conformal correction (this ticket) flows
+through it positionally with no special-casing -- the two fixes were designed together for
+exactly this reason, see PYQ-142's own resolution note on composition ordering.
+
+`calibration_days` still defaults to 0, so this remains dormant unless a user has already
+opted into conformal calibration -- no currently-published number in `docs/methodology.md`
+uses it (its own table says "no conformal correction applied" for the one config that got
+measured).
 
 ---
 

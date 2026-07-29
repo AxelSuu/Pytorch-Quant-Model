@@ -119,18 +119,31 @@ class TrainingConfig(BaseModel):
     # construction. Keep the established target until PYQ-247 records a
     # controlled backtest; ``log_return`` is available for that comparison.
     target: Literal["close", "log_return"] = "close"
-    # Length of the held-out validation tail, in trading days. This must be
-    # comfortably longer than max_prediction_length: the number of validation
-    # windows scored is (validation_days - max_prediction_length + 1), so a
-    # holdout of exactly one horizon yields a single window -- 5 points driving
-    # every reported metric plus early stopping and checkpoint selection
-    # (PYQ-117). 60 days gives ~56 windows at the default 5-day horizon.
+    # Length of the held-out *test* tail, in trading days -- what every
+    # reported metric (EvaluationMetrics, meta.json, the CLI) is computed
+    # from. This must be comfortably longer than max_prediction_length: the
+    # number of windows scored is (validation_days - max_prediction_length +
+    # 1), so a holdout of exactly one horizon yields a single window -- 5
+    # points driving every reported metric (PYQ-117). 60 days gives ~56
+    # windows at the default 5-day horizon. Disjoint from `selection_days`
+    # below (PYQ-143): nothing that selects a checkpoint ever sees this slice.
     validation_days: int = 60
-    # Trading days held out *between* the training slice and the validation
-    # window, used only to fit the PYQ-248 conformal offset. Zero disables
-    # conformal calibration entirely, which is the default because switching it
-    # on changes every reported coverage figure -- that has to be a measured,
-    # deliberate change, not a silent one. See docs/methodology.md.
+    # Length of a *second*, earlier held-out slice EarlyStopping/ModelCheckpoint
+    # select against, purged on both sides from training and from the test
+    # slice above (PYQ-143). Before this existed, `train()`/
+    # `walk_forward_backtest()` picked the best of many epochs against the
+    # exact window later reported as "the" metrics -- a selection-event bias
+    # identical in kind to the one `TuneResult`'s own docstring names for
+    # Optuna trials, just applied to epochs instead of trials. 30 days gives
+    # ~26 windows at the default 5-day horizon -- half of validation_days'
+    # default, a deliberately unoptimized starting point (see PYQ-143's
+    # resolution note), not a tuned value.
+    selection_days: int = 30
+    # Trading days held out *between* the (purged) selection slice and the
+    # test window, used only to fit the PYQ-248 conformal offset. Zero
+    # disables conformal calibration entirely, which is the default because
+    # switching it on changes every reported coverage figure -- that has to be
+    # a measured, deliberate change, not a silent one. See docs/methodology.md.
     calibration_days: int = 0
     # Look-ahead control around every split (PYQ-250). A training sample whose
     # decoder reaches into the horizon immediately before the validation window
