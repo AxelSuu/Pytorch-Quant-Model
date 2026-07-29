@@ -194,6 +194,109 @@ def moving_block_bootstrap_interval(
 
 
 @dataclass
+class ScoredWindows:
+    """The per-window results + window identity `compare_backtests` needs (PYQ-266).
+
+    Deliberately not `models.tft.BacktestResult` itself: that module imports
+    Lightning/pytorch-forecasting, and `analysis/` must stay free of both (the
+    layering rule CLAUDE.md states and PYQ-267's own resolution ran into when
+    `serialize.py` tried the reverse import). Any caller holding a
+    `BacktestResult` builds one with
+    ``ScoredWindows(result.per_window, result.origins)``.
+    """
+
+    per_window: list[EvaluationMetrics]
+    origins: list[int]
+
+
+@dataclass
+class PairedComparison:
+    """A moving-block-bootstrapped, window-paired comparison of two backtests' skill (PYQ-266).
+
+    The two configurations are scored on the *same* walk-forward windows, so
+    their difference is paired, not two independent marginal intervals --
+    overlapping marginal intervals do not imply no difference, which is
+    precisely the error this shape of reporting exists to avoid.
+    """
+
+    mean_diff: float  # mean(skill_a - skill_b) across paired windows
+    ci_low: float
+    ci_high: float
+    n_windows: int
+    block_size: int
+
+    @property
+    def excludes_zero(self) -> bool:
+        """True when the interval does not straddle zero.
+
+        The pre-registrable form of "is this difference real" that
+        investigations.md#pyq-322 asks for: "flip the default when the paired
+        interval excludes zero" can be written down before the run, unlike
+        "when the number looks better."
+        """
+        return self.ci_low > 0.0 or self.ci_high < 0.0
+
+
+def compare_backtests(
+    a: ScoredWindows,
+    b: ScoredWindows,
+    *,
+    block_size: int | None = None,
+    n_resamples: int = 1_000,
+    seed: int = 42,
+    confidence: float = 0.95,
+) -> PairedComparison:
+    """Paired moving-block-bootstrap comparison of two backtests' per-window skill.
+
+    Refuses to compare results whose windows do not verifiably align -- that
+    guard is the whole value of the paired framing over two eyeballed marginal
+    intervals. Both sides need a non-empty, equal, elementwise-identical
+    ``origins`` list (``models.tft.walk_forward_backtest`` populates it); a
+    `BacktestResult` built before PYQ-266, or from a different symbol/window
+    count/step, fails this and raises rather than being silently compared.
+
+    ``block_size`` defaults to the horizon recorded on ``a``'s first window
+    (``n_points / n_samples``, the same derivation `EvaluationMetrics.
+    effective_n_samples` uses) so overlapping windows don't inflate
+    significance, per PYQ-251's own reasoning; pass it explicitly to override.
+    """
+    if not a.origins or not b.origins:
+        raise ValueError(
+            "compare_backtests() requires both sides to carry recorded window origins "
+            "(walk_forward_backtest() populates BacktestResult.origins) -- refusing to "
+            "treat an unverifiable comparison as paired."
+        )
+    if len(a.per_window) != len(a.origins) or len(b.per_window) != len(b.origins):
+        raise ValueError("per_window and origins must be the same length on each side")
+    if a.origins != b.origins:
+        raise ValueError(
+            f"window origins do not align: a has {a.origins}, b has {b.origins}. "
+            "compare_backtests() only compares two configurations scored on identical "
+            "walk-forward windows -- rerun both with the same symbol, n_windows, step "
+            "and start/end."
+        )
+
+    skill_a = np.array([w.skill_vs_baseline for w in a.per_window])
+    skill_b = np.array([w.skill_vs_baseline for w in b.per_window])
+    diffs = skill_a - skill_b
+
+    if block_size is None:
+        first = a.per_window[0]
+        block_size = max(1, round(first.n_points / first.n_samples)) if first.n_samples else 1
+
+    ci_low, ci_high = moving_block_bootstrap_interval(
+        diffs, block_size, n_resamples=n_resamples, seed=seed, confidence=confidence
+    )
+    return PairedComparison(
+        mean_diff=float(np.mean(diffs)),
+        ci_low=ci_low,
+        ci_high=ci_high,
+        n_windows=len(diffs),
+        block_size=block_size,
+    )
+
+
+@dataclass
 class PerHorizonMetrics:
     """One decoder step's metrics, isolated from the horizon-wide mean (PYQ-267).
 

@@ -120,6 +120,86 @@ def test_aggregate_metrics_averages_across_windows():
     assert abs(agg.calibration_coverage - 0.8) < 1e-9
 
 
+# --- PYQ-266: paired comparison of two backtests -----------------------------
+
+
+def _windows(model_maes, baseline_maes, origins):
+    per_window = [
+        metrics.EvaluationMetrics(
+            model_mae=m,
+            baseline_mae=b,
+            directional_accuracy=0.5,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=5,
+        )
+        for m, b in zip(model_maes, baseline_maes, strict=True)
+    ]
+    return metrics.ScoredWindows(per_window=per_window, origins=list(origins))
+
+
+def test_compare_backtests_identical_inputs_give_zero_difference():
+    a = _windows([1.0, 2.0, 3.0], [2.0, 2.0, 2.0], origins=[100, 105, 110])
+    result = metrics.compare_backtests(a, a)
+    assert result.mean_diff == pytest.approx(0.0)
+    assert result.ci_low <= 0.0 <= result.ci_high
+    assert result.n_windows == 3
+    assert result.excludes_zero is False
+
+
+def test_compare_backtests_recovers_a_constant_offset():
+    # a's skill is exactly 1.0 at every window; b's is exactly 0.2 -- a noiseless
+    # +0.8 difference, so the bootstrap interval should collapse to a point.
+    a = _windows([0.0, 0.0, 0.0, 0.0], [1.0, 1.0, 1.0, 1.0], origins=[1, 2, 3, 4])
+    b = _windows([0.8, 0.8, 0.8, 0.8], [1.0, 1.0, 1.0, 1.0], origins=[1, 2, 3, 4])
+
+    result = metrics.compare_backtests(a, b)
+
+    assert result.mean_diff == pytest.approx(0.8)
+    assert result.ci_low == pytest.approx(0.8)
+    assert result.ci_high == pytest.approx(0.8)
+    assert result.excludes_zero is True
+
+
+def test_compare_backtests_defaults_block_size_from_recorded_horizon():
+    """The block length is keyed to the horizon (n_points / n_samples) recorded
+    on each window, so overlapping windows don't inflate significance."""
+    a = _windows([1.0, 1.0], [2.0, 2.0], origins=[1, 2])  # n_points=5, n_samples=1
+    result = metrics.compare_backtests(a, a)
+    assert result.block_size == 5
+
+
+def test_compare_backtests_raises_on_misaligned_origins():
+    a = _windows([1.0], [2.0], origins=[100])
+    b = _windows([1.0], [2.0], origins=[105])
+    with pytest.raises(ValueError, match="origins"):
+        metrics.compare_backtests(a, b)
+
+
+def test_compare_backtests_raises_without_recorded_origins():
+    """A `BacktestResult` built before PYQ-266 (or by hand) has no `origins` --
+    refuse to treat the comparison as paired when alignment can't be verified,
+    rather than silently trusting the caller."""
+    a = _windows([1.0], [2.0], origins=[])
+    b = _windows([1.0], [2.0], origins=[])
+    with pytest.raises(ValueError, match="origins"):
+        metrics.compare_backtests(a, b)
+
+
+def test_compare_backtests_excludes_zero_is_false_when_the_interval_straddles_it():
+    rng = np.random.default_rng(0)
+    n = 50
+    origins = list(range(n))
+    noise_a = rng.normal(0, 0.5, n)
+    noise_b = rng.normal(0, 0.5, n)
+    a = _windows((1.0 - noise_a).tolist(), [1.0] * n, origins=origins)
+    b = _windows((1.0 - noise_b).tolist(), [1.0] * n, origins=origins)
+
+    result = metrics.compare_backtests(a, b, block_size=1)
+
+    assert result.excludes_zero is False
+
+
 # --- PYQ-267: per-horizon-step breakdown --------------------------------------
 
 

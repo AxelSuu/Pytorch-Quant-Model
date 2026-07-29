@@ -103,6 +103,11 @@ def test_walk_forward_backtest_aggregates_across_windows(monkeypatch, sample_ohl
     # compute_signals defaults off (PYQ-255): no extra forward pass unless asked.
     assert result.signals == []
     assert result.signal_returns_pct == []
+    # Window identity, in per_window order -- what compare_backtests (PYQ-266)
+    # verifies before treating two backtests' per-window differences as paired.
+    assert len(result.origins) == 2
+    assert result.origins == sorted(result.origins)
+    assert len(set(result.origins)) == 2  # distinct origins, not the same window twice
 
 
 def test_walk_forward_backtest_computes_a_signal_per_window_when_requested(

@@ -133,6 +133,9 @@ def backtest_to_dict(br: BacktestResult) -> dict[str, Any]:
         "n_windows": br.n_windows,
         "aggregated": evaluation_to_dict(br.aggregated),
         "per_window": [evaluation_to_dict(w) for w in br.per_window],
+        # Window identity, in `per_window` order -- what lets `compare_backtests`
+        # (PYQ-266) verify two backtests were scored on the same windows.
+        "origins": list(br.origins),
     }
 
 

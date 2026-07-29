@@ -78,6 +78,13 @@ class BacktestResult:
     # than always computed -- it costs one extra forward pass per window.
     signals: list[str] = field(default_factory=list)
     signal_returns_pct: list[float] = field(default_factory=list)
+    # This backtest's window origins (each window's `cutoff`, i.e. its decoder
+    # starts at `cutoff + 1`), in the same order as `per_window` (PYQ-266). Lets
+    # `analysis.metrics.compare_backtests` verify two results were scored on
+    # literally the same walk-forward windows before treating their per-window
+    # differences as paired -- comparing unlike windows is the failure mode a
+    # paired test exists to rule out, not something to trust by convention.
+    origins: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -716,6 +723,7 @@ def walk_forward_backtest(
         aggregated=aggregate_metrics(per_window),
         signals=signals,
         signal_returns_pct=signal_returns_pct,
+        origins=list(cutoffs),
     )
 
 

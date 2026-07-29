@@ -70,7 +70,7 @@ Next free ID: **PYQ-281**.
 | [PYQ-263](#pyq-263) | Low | Resolved | `pyquant doctor` — environment and bundle health check |
 | [PYQ-264](#pyq-264) | Medium | Resolved | Fold PYQ-247/248/250 into the docs; deploy to GitHub Pages; nightly docs-drift check |
 | [PYQ-265](#pyq-265) | High | Open | Report skill across seeds, not from a single seed |
-| [PYQ-266](#pyq-266) | High | Open | Paired significance test for comparing two configurations |
+| [PYQ-266](#pyq-266) | High | Resolved | Paired significance test for comparing two configurations |
 | [PYQ-267](#pyq-267) | High | Resolved | Break every metric down by horizon step |
 | [PYQ-268](#pyq-268) | High | Open | A reusable multi-symbol sweep harness, replacing the one-off scripts |
 | [PYQ-269](#pyq-269) | Medium | Open | Split `models/tft.py` (1075 lines) without breaking Lightning containment |
@@ -3258,7 +3258,7 @@ different seed list produces different ones.
 
 ## [PYQ-266]
 Paired significance test for comparing two configurations
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`, `docs/methodology.md`
 
@@ -3294,6 +3294,64 @@ interval, raises on window misalignment, and is exercised by tests covering: ide
 inputs give a difference of zero, a constant offset is recovered, and misaligned windows
 raise. `docs/methodology.md` re-states PYQ-247's +2.4% and #pyq-316's sentiment delta with
 an interval attached, or says plainly that the sample is too small to place one.
+
+Resolution: took the moving-block bootstrap over Diebold-Mariano, per the ticket's own
+suggestion -- it reuses `moving_block_bootstrap_interval` (PYQ-251) unchanged rather than
+adding a new statistical procedure and its own assumptions (asymptotic normality of the loss
+differential) on top of what the codebase already has and has already tested. `compare_backtests(a,
+b)` takes two new `ScoredWindows(per_window, origins)` values rather than
+`models.tft.BacktestResult` directly -- `BacktestResult` lives in `models/tft.py`, which
+imports Lightning/pytorch-forecasting, and `analysis/` must stay free of both per CLAUDE.md's
+layering rule (the reverse direction bit PYQ-267's own resolution note, where
+`serialize.py` already imports `TrainResult`/`BacktestResult` *from* `tft.py`, making the
+opposite import circular). A caller holding a real `BacktestResult` builds one with
+`ScoredWindows(result.per_window, result.origins)`.
+
+The alignment guard needed a new field: `BacktestResult` had no recorded window identity at
+all before this, so "refuse to compare misaligned windows" had nothing to check against.
+Added `BacktestResult.origins: list[int]` (each window's `cutoff`, in `per_window` order),
+populated from `walk_forward_backtest`'s own `cutoffs` list (already computed, previously
+discarded after driving the loop) and threaded through `serialize.backtest_to_dict`.
+`compare_backtests` raises if either side has an empty `origins` (a `BacktestResult` from
+before this fix, or hand-built) or if the two lists differ elementwise -- refusing to *guess*
+alignment from `n_windows` or `per_window` length alone, since two backtests can share a
+window count while scoring completely different dates.
+
+`block_size` defaults to the horizon recorded on the comparison's own first window
+(`n_points / n_samples`, the same derivation `EvaluationMetrics.effective_n_samples` already
+uses for the identical overlapping-windows reason), so a caller gets the "keyed to the
+horizon" behavior the ticket asks for without having to plumb settings.training.
+max_prediction_length through by hand; it can still be overridden.
+
+`PairedComparison.excludes_zero` is the pre-registrable primitive
+investigations.md#pyq-322's decision rule is written to consume directly.
+
+Verified against the acceptance criterion's own list:
+`test_compare_backtests_identical_inputs_give_zero_difference`,
+`test_compare_backtests_recovers_a_constant_offset` (a noiseless +0.8 difference collapses
+the bootstrap interval to a point, `[0.8, 0.8]`), and
+`test_compare_backtests_raises_on_misaligned_origins` (plus a second raise case,
+`test_compare_backtests_raises_without_recorded_origins`, for the "no recorded origins at
+all" branch the ticket's guard also has to cover). `test_compare_backtests_defaults_block_size_from_recorded_horizon`
+and `test_compare_backtests_excludes_zero_is_false_when_the_interval_straddles_it` round out
+the six new tests (36 total in `tests/test_metrics.py`, up from 30, all passing).
+`test_walk_forward_backtest_aggregates_across_windows` gained an assertion that `origins` is
+populated, distinct, and sorted, confirming the plumbing end to end rather than only at the
+unit level.
+
+Not built: a `pyquant compare`-shaped CLI command. The ticket's `Files:` list names
+`pyquant/cli/app.py`, but its own body says the function is "consumed by PYQ-268's sweep
+harness" for the arm-vs-arm comparison -- that is where a CLI surface for this belongs (`pyquant
+sweep`), and building a second, redundant one here before PYQ-268 exists would be scope
+without a caller. Recorded as a decision, not an oversight.
+
+`docs/methodology.md` does not attach an interval to PYQ-247's +2.4% or
+investigations.md#pyq-316's sentiment delta -- both were measured before `BacktestResult`
+recorded `origins`, so their raw per-window arrays cannot be verified to align with a
+re-run's, and no live vendor-data access was available this pass to produce a fresh paired
+comparison from scratch. Added a caveat stating this plainly (the acceptance criterion's own
+fallback option) rather than fabricating or retrofitting an interval onto data that can't
+support one.
 
 ---
 

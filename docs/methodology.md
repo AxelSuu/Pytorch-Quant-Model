@@ -289,6 +289,17 @@ cannot see. Do not assume bit-identical reproducibility across GPU-trained bundl
 - MAE in price space is denominated in dollars, so it is not comparable across symbols;
   the log-return target fixes that as a side effect, which is one more argument for it
   beyond the skill number itself.
+- **Neither PYQ-247's +2.4% nor `investigations.md#pyq-316`'s sentiment delta has a
+  confidence interval attached here.** `analysis.metrics.compare_backtests` (PYQ-266) now
+  exists to do this properly -- a paired moving-block bootstrap over the per-window skill
+  *difference* between two configurations scored on the same walk-forward windows, which is
+  strictly more powerful than eyeballing two marginal point estimates. It was not run against
+  either finding in this pass: both were originally measured before `BacktestResult` recorded
+  window origins, so their raw per-window arrays cannot be verified to align, and there was no
+  live vendor-data access available to re-run either comparison from scratch. Re-running both
+  under `compare_backtests` is the natural next step, and is what
+  `investigations.md#pyq-322`'s pre-registered decision rule should require before either
+  finding is allowed to flip a default.
 
 ## Landed since this page was first written
 
