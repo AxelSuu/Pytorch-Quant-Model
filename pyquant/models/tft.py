@@ -88,6 +88,49 @@ class BacktestResult:
 
 
 @dataclass
+class SeedSweepResult:
+    """Multiple independent walk-forward backtests of the same configuration, one per seed.
+
+    Every number this project has ever reported is one draw from one seed
+    (`TrainingConfig.seed`, fixed at 42); this is the tooling half of
+    investigations.md#pyq-321's question -- how much of that number is
+    initialisation noise rather than signal (PYQ-265). `per_seed` retains
+    every individual `BacktestResult`, not just the summary below, so
+    `analysis.metrics.compare_backtests` can consume them pairwise -- e.g.
+    comparing seed-by-seed across two different configurations, once such a
+    comparison is wanted.
+    """
+
+    symbol: str
+    seeds: list[int]
+    per_seed: list[BacktestResult]
+
+    @property
+    def _skills(self) -> list[float]:
+        return [result.aggregated.skill_vs_baseline for result in self.per_seed]
+
+    @property
+    def skill_mean(self) -> float:
+        """Mean skill vs. baseline across seeds."""
+        return float(np.mean(self._skills))
+
+    @property
+    def skill_sd(self) -> float:
+        """Sample standard deviation (ddof=1); 0.0 for a single seed."""
+        return float(np.std(self._skills, ddof=1)) if len(self._skills) > 1 else 0.0
+
+    @property
+    def skill_min(self) -> float:
+        """Minimum skill vs. baseline across seeds."""
+        return float(np.min(self._skills))
+
+    @property
+    def skill_max(self) -> float:
+        """Maximum skill vs. baseline across seeds."""
+        return float(np.max(self._skills))
+
+
+@dataclass
 class TuneResult:
     """An Optuna hyperparameter search (PYQ-253), plus its winner's honest score.
 
@@ -725,6 +768,62 @@ def walk_forward_backtest(
         signal_returns_pct=signal_returns_pct,
         origins=list(cutoffs),
     )
+
+
+def walk_forward_backtest_multi_seed(
+    symbol: str,
+    settings: Settings,
+    *,
+    seeds: list[int] | None = None,
+    n_windows: int = 5,
+    step: int | None = None,
+    start: str | None = None,
+    end: str | None = None,
+    max_epochs: int | None = None,
+    progress: bool = False,
+    compute_signals: bool = False,
+) -> SeedSweepResult:
+    """Repeat `walk_forward_backtest` once per seed (PYQ-265).
+
+    ``seeds`` defaults to ``settings.training.seeds`` (itself defaulting to a
+    single-element list, so nothing changes unless a caller opts in -- the
+    same shape PYQ-248 shipped conformal calibration defaulted off). Every
+    other argument means exactly what it means on `walk_forward_backtest`,
+    applied identically across seeds.
+
+    Each seed gets its own deep-copied `Settings` (only `training.seed`
+    differs) rather than mutating the caller's object, and its own call to
+    `build_panel` inside `walk_forward_backtest` -- the panel is identical
+    across seeds, so this re-fetches/re-builds it `len(seeds)` times. Left
+    as-is rather than threading a pre-built panel through
+    `walk_forward_backtest`'s signature: that is a real inefficiency, but
+    fixing it means changing a function three other callers already share,
+    for a cost that is a caching problem (`DataConfig.cache_enabled`,
+    PYQ-205) rather than a correctness one.
+
+    Cost is the obvious objection and should be stated rather than hidden:
+    this multiplies training time by ``len(seeds)``. That is the correct
+    price for the claim investigations.md#pyq-321 needs answered.
+    """
+    chosen_seeds = list(seeds) if seeds is not None else list(settings.training.seeds)
+    per_seed: list[BacktestResult] = []
+    for seed in chosen_seeds:
+        seed_settings = settings.model_copy(deep=True)
+        seed_settings.training.seed = seed
+        per_seed.append(
+            walk_forward_backtest(
+                symbol,
+                seed_settings,
+                n_windows=n_windows,
+                step=step,
+                start=start,
+                end=end,
+                max_epochs=max_epochs,
+                progress=progress,
+                compute_signals=compute_signals,
+            )
+        )
+    return SeedSweepResult(symbol=symbol.upper(), seeds=chosen_seeds, per_seed=per_seed)
 
 
 def tune(

@@ -322,6 +322,70 @@ def train(
         console.print("[dim]Next: pyquant forecast " + result.symbols[0] + "[/dim]")
 
 
+def _run_seed_sweep(symbol: str, settings, windows: int, epochs: int | None, signals: bool, seeds: int) -> None:
+    """The `backtest --seeds N` path (PYQ-265).
+
+    Reports mean +/- sd (min, max) skill across N independent walk-forward
+    backtests, rather than the single-seed point estimate every number this
+    project has otherwise ever reported.
+    """
+
+    def _run_sweep():
+        """Run the seed sweep; a closure so it can be called with or without the spinner."""
+        return tft.walk_forward_backtest_multi_seed(
+            symbol,
+            settings,
+            seeds=list(range(seeds)),
+            n_windows=windows,
+            max_epochs=epochs,
+            progress=False,
+            compute_signals=signals,
+        )
+
+    try:
+        if _output.quiet:
+            sweep = _run_sweep()
+        else:
+            console.print(
+                f"[bold cyan]Walk-forward backtesting {symbol.upper()} across {seeds} seeds[/bold cyan]"
+            )
+            with console.status(f"Training and evaluating {windows} rolling window(s) x {seeds} seed(s)..."):
+                sweep = _run_sweep()
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
+
+    if _output.json:
+        _emit_json(serialize.seed_sweep_to_dict(sweep))
+        return
+
+    table = Table(
+        title=f"Walk-forward backtest — {sweep.symbol} ({seeds} seeds x {windows} windows)",
+        show_header=False,
+    )
+    table.add_row("Seeds", ", ".join(str(s) for s in sweep.seeds))
+    table.add_row(
+        "Skill vs. baseline (mean ± sd)",
+        f"{sweep.skill_mean:+.1%} ± {sweep.skill_sd:.1%} "
+        f"(min {sweep.skill_min:+.1%}, max {sweep.skill_max:+.1%})",
+    )
+    console.print(table)
+
+    quantiles = settings.tft.quantiles
+    seed_table = Table(title="Per-seed results", title_style="dim")
+    seed_table.add_column("Seed", justify="right")
+    seed_table.add_column("Skill", justify="right")
+    seed_table.add_column("Directional", justify="right")
+    seed_table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
+    for seed, result in zip(sweep.seeds, sweep.per_seed, strict=True):
+        seed_table.add_row(
+            str(seed),
+            f"{result.aggregated.skill_vs_baseline:+.1%}",
+            f"{result.aggregated.directional_accuracy:.1%}",
+            f"{result.aggregated.calibration_coverage:.1%}",
+        )
+    console.print(seed_table)
+
+
 @app.command()
 def backtest(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
@@ -340,12 +404,22 @@ def backtest(
         help="Also score scan()'s BUY/SELL/HOLD signal: hit rate, turnover, P&L vs. buy-and-hold",
     ),
     cost_bps: float = typer.Option(5.0, help="Per-trade round-trip cost in basis points, with --signals"),
+    seeds: int = typer.Option(
+        1,
+        "--seeds",
+        help="Repeat the backtest across this many seeds (0..N-1, PYQ-265) and report mean "
+        "+/- sd (min, max) skill instead of a single point. Multiplies runtime by this count.",
+    ),
 ):
     """Walk-forward backtest SYMBOL across multiple rolling origins."""
     try:
         settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
     except EXPECTED_FAILURES as exc:
         _fail(exc)
+
+    if seeds > 1:
+        _run_seed_sweep(symbol, settings, windows, epochs, signals, seeds)
+        return
 
     def _run():
         """Run the backtest; a closure so it can be called with or without the spinner."""

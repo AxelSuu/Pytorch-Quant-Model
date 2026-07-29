@@ -161,6 +161,16 @@ class TrainingConfig(BaseModel):
     # Reproducibility: seed_everything() is called with this before each fit and
     # the value is recorded in meta.json so a run can be reproduced.
     seed: int = 42
+    # Seeds a multi-seed sweep repeats a walk-forward backtest across (PYQ-265,
+    # tooling for investigations.md#pyq-321's seed-variance question). Defaults
+    # to `[seed]` so a single-element list reproduces today's one-seed behaviour
+    # exactly; `walk_forward_backtest_multi_seed()` and `pyquant backtest
+    # --seeds N` are the only things that read this -- `train()` still reads
+    # `seed` above alone; see PYQ-265's resolution note for why multi-seed
+    # bundle deployment is out of scope. Multiplies training time by
+    # `len(seeds)`, the correct price for the claim -- the same tradeoff
+    # PYQ-248 made shipping conformal calibration defaulted off.
+    seeds: list[int] = Field(default_factory=lambda: [42])
     # DataLoader worker processes. 0 = single-process loading (safe default);
     # a non-zero value parallelises data loading during training.
     num_workers: int = 0

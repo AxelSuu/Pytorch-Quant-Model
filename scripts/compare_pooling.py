@@ -66,7 +66,7 @@ def pooled_skill_per_symbol(symbols: list[str], settings) -> dict[str, float]:
             min_prediction_idx=validation_start,
         )
         dl = ds.to_dataloader(train=False, batch_size=64, num_workers=0)
-        predictions, actuals, last_observed = tft._raw_validation_arrays(bundle.model, dl)
+        predictions, actuals, last_observed, _ = tft._raw_validation_arrays(bundle.model, dl)
         ev = evaluate_predictions(
             predictions,
             actuals,

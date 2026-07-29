@@ -903,6 +903,108 @@ def test_selection_days_is_configurable_and_recorded_on_the_bundle(
     assert bundle.meta["config"]["training"]["selection_days"] == 15
 
 
+# --- PYQ-265: repeat a backtest across seeds -----------------------------------
+
+
+def test_walk_forward_backtest_multi_seed_runs_once_per_seed_and_retains_each_result(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, seeds=[1, 2], n_windows=2, max_epochs=1, progress=False
+    )
+
+    assert result.symbol == "TEST"
+    assert result.seeds == [1, 2]
+    assert len(result.per_seed) == 2
+    assert all(isinstance(r, tft.BacktestResult) for r in result.per_seed)
+    assert all(r.n_windows == 2 for r in result.per_seed)
+    # The caller's own settings object must be left alone (each seed gets a
+    # deep-copied Settings, not a mutation of the shared one).
+    assert fast_settings.training.seed == 42
+
+
+def test_walk_forward_backtest_multi_seed_defaults_to_configured_training_seeds(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """Omitting `seeds=` falls back to `settings.training.seeds`, which itself
+    defaults to a single-element list -- so a caller who never opts in gets
+    exactly today's one-seed behaviour, just wrapped."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    assert fast_settings.training.seeds == [42]
+
+    result = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, n_windows=2, max_epochs=1, progress=False
+    )
+
+    assert result.seeds == [42]
+    assert len(result.per_seed) == 1
+
+
+def test_walk_forward_backtest_multi_seed_same_seeds_reproduce_identical_results(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    a = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, seeds=[7, 8], n_windows=2, max_epochs=1, progress=False
+    )
+    b = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, seeds=[7, 8], n_windows=2, max_epochs=1, progress=False
+    )
+
+    assert [r.aggregated for r in a.per_seed] == [r.aggregated for r in b.per_seed]
+    assert a.skill_mean == b.skill_mean
+
+
+def test_walk_forward_backtest_multi_seed_different_seeds_give_different_results(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    a = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, seeds=[1], n_windows=2, max_epochs=1, progress=False
+    )
+    b = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, seeds=[2], n_windows=2, max_epochs=1, progress=False
+    )
+
+    assert a.per_seed[0].aggregated != b.per_seed[0].aggregated
+
+
+def test_seed_sweep_result_summary_stats_match_manual_calculation(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, seeds=[1, 2, 3], n_windows=2, max_epochs=1, progress=False
+    )
+
+    skills = [r.aggregated.skill_vs_baseline for r in result.per_seed]
+    assert result.skill_mean == pytest.approx(sum(skills) / len(skills))
+    assert result.skill_min == pytest.approx(min(skills))
+    assert result.skill_max == pytest.approx(max(skills))
+    assert result.skill_sd >= 0.0
+
+
+def test_seed_sweep_result_skill_sd_is_zero_for_a_single_seed(monkeypatch, sample_ohlcv_df, fast_settings):
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    result = tft.walk_forward_backtest_multi_seed(
+        "TEST", fast_settings, seeds=[1], n_windows=2, max_epochs=1, progress=False
+    )
+
+    assert result.skill_sd == 0.0
+
+
 # --- PYQ-248: the conformal offset travels with the bundle --------------------
 
 

@@ -233,6 +233,30 @@ live vendor-data access available in the pass that added it to re-run either con
 Re-running both under `pyquant backtest` and reporting skill against each baseline — and
 specifically against whichever is strongest for that symbol — is the natural next step.
 
+(seed-variance)=
+## Seed variance
+
+Every number on this page is one draw from one seed: `TrainingConfig.seed` is fixed at 42,
+and until now nothing measured how much of any reported delta is run-to-run initialisation
+noise rather than signal. `TrainingConfig.seeds: list[int]` (default `[42]`, so nothing
+changes unless a caller opts in) and `models.tft.walk_forward_backtest_multi_seed()` now
+repeat a walk-forward backtest once per seed and report skill as mean ± sd (min, max) across
+them; `pyquant backtest SYMBOL --seeds N` is the CLI surface, expanding to seeds `0..N-1`
+(`--format json` carries every individual seed's result, not only the summary, so a pair of
+seeds can be fed into `compare_backtests`).
+
+Deliberately scoped to `backtest` only, not `train`: a multi-seed **backtest** needs nothing
+extra to make sense (each seed is an independent, disposable fit, the existing
+`walk_forward_backtest` semantics). A multi-seed **train**, by contrast, would fit N models
+and has to decide which one's weights actually get deployed in the persisted bundle — a real
+product decision this pass did not make. `TrainingConfig.seeds` is still recorded in every
+bundle's `meta.json` (generic whole-config recording already does this), but `train()` itself
+does not loop across it.
+
+**No seed sweep has been run against live data yet.** This section describes the tool, not a
+result — investigations.md#pyq-321 is the open question this tool exists to answer, and is
+where the actual seed-to-seed standard deviation, once measured, will be reported.
+
 (sample-size)=
 ## Sample size
 

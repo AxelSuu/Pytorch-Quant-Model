@@ -15,7 +15,7 @@ from pyquant.analysis.forecast import Forecast
 from pyquant.analysis.interpret import Interpretation
 from pyquant.analysis.metrics import EvaluationMetrics
 from pyquant.analysis.signals import SignalEvaluation, classify_signal
-from pyquant.models.tft import BacktestResult, TrainResult
+from pyquant.models.tft import BacktestResult, SeedSweepResult, TrainResult
 
 
 def evaluation_to_dict(ev: EvaluationMetrics) -> dict[str, Any]:
@@ -145,6 +145,24 @@ def backtest_to_dict(br: BacktestResult) -> dict[str, Any]:
         # Window identity, in `per_window` order -- what lets `compare_backtests`
         # (PYQ-266) verify two backtests were scored on the same windows.
         "origins": list(br.origins),
+    }
+
+
+def seed_sweep_to_dict(sweep: SeedSweepResult) -> dict[str, Any]:
+    """Serialize a multi-seed backtest sweep (PYQ-265), per-seed results included.
+
+    The per-seed list is retained, not just the summary: it is what lets a
+    consumer re-derive anything the summary stats don't capture, or feed a
+    pair of seeds into ``compare_backtests``.
+    """
+    return {
+        "symbol": sweep.symbol,
+        "seeds": list(sweep.seeds),
+        "per_seed": [backtest_to_dict(r) for r in sweep.per_seed],
+        "skill_mean": sweep.skill_mean,
+        "skill_sd": sweep.skill_sd,
+        "skill_min": sweep.skill_min,
+        "skill_max": sweep.skill_max,
     }
 
 

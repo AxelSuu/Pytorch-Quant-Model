@@ -194,6 +194,79 @@ def test_backtest_without_signals_flag_skips_the_extra_pass(monkeypatch):
     assert "Signal evaluation" not in result.stdout
 
 
+# --- PYQ-265: repeat a backtest across seeds ------------------------------------
+
+
+def _seed_sweep_fixture():
+    from pyquant.models.tft import BacktestResult, SeedSweepResult
+
+    def _ev(mae):
+        return EvaluationMetrics(
+            model_mae=mae, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+        )
+
+    per_seed = [
+        BacktestResult(symbol="AAPL", n_windows=2, per_window=[_ev(1.0)], aggregated=_ev(1.0)),  # skill 0.5
+        BacktestResult(symbol="AAPL", n_windows=2, per_window=[_ev(1.5)], aggregated=_ev(1.5)),  # skill 0.25
+    ]
+    return SeedSweepResult(symbol="AAPL", seeds=[0, 1], per_seed=per_seed)
+
+
+def test_backtest_without_seeds_flag_uses_the_single_run_path_unchanged(monkeypatch):
+    """`--seeds` defaults to 1, which must reach `walk_forward_backtest`, not
+    the multi-seed path -- existing behaviour is unchanged (PYQ-265)."""
+    from pyquant.models.tft import BacktestResult
+
+    ev = EvaluationMetrics(
+        model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+    )
+    fake_result = BacktestResult(symbol="AAPL", n_windows=1, per_window=[ev], aggregated=ev)
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", lambda *a, **k: fake_result)
+
+    def fail_if_called(*a, **k):
+        raise AssertionError("multi-seed path must not run when --seeds is not passed")
+
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest_multi_seed", fail_if_called)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL"])
+    assert result.exit_code == 0
+
+
+def test_backtest_seeds_flag_expands_to_a_deterministic_sequence_and_reports_summary_stats(
+    monkeypatch,
+):
+    fake_sweep = _seed_sweep_fixture()
+    captured = {}
+
+    def fake_multi_seed(symbol, settings, **kwargs):
+        captured["seeds"] = kwargs.get("seeds")
+        return fake_sweep
+
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest_multi_seed", fake_multi_seed)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL", "--seeds", "2"])
+
+    assert result.exit_code == 0
+    assert captured["seeds"] == [0, 1]  # "the first N of a deterministic sequence"
+    assert "Per-seed results" in result.stdout
+    assert "+37.5%" in result.stdout  # mean of skills 0.5 and 0.25
+
+
+def test_backtest_seeds_flag_json_output_includes_summary_and_per_seed(monkeypatch):
+    fake_sweep = _seed_sweep_fixture()
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest_multi_seed", lambda *a, **k: fake_sweep)
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "backtest", "AAPL", "--seeds", "2"])
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["seeds"] == [0, 1]
+    assert len(data["per_seed"]) == 2
+    assert data["skill_mean"] == pytest.approx(0.375)
+    assert data["skill_min"] == pytest.approx(0.25)
+    assert data["skill_max"] == pytest.approx(0.5)
+
+
 def test_tune_command_reports_the_held_out_score_not_the_in_search_value(monkeypatch, tmp_path):
     """PYQ-253: the in-search value and the held-out evaluation are different numbers
     for a reason -- both must reach the user, clearly distinguished."""

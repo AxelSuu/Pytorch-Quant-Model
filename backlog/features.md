@@ -69,7 +69,7 @@ Next free ID: **PYQ-281**.
 | [PYQ-262](#pyq-262) | Low | Resolved | Pre-commit configuration |
 | [PYQ-263](#pyq-263) | Low | Resolved | `pyquant doctor` — environment and bundle health check |
 | [PYQ-264](#pyq-264) | Medium | Resolved | Fold PYQ-247/248/250 into the docs; deploy to GitHub Pages; nightly docs-drift check |
-| [PYQ-265](#pyq-265) | High | Open | Report skill across seeds, not from a single seed |
+| [PYQ-265](#pyq-265) | High | Resolved | Report skill across seeds, not from a single seed |
 | [PYQ-266](#pyq-266) | High | Resolved | Paired significance test for comparing two configurations |
 | [PYQ-267](#pyq-267) | High | Resolved | Break every metric down by horizon step |
 | [PYQ-268](#pyq-268) | High | Open | A reusable multi-symbol sweep harness, replacing the one-off scripts |
@@ -3213,7 +3213,7 @@ one clean); all three workflow YAML files parse; `scripts/backlog.py check` clea
 
 ## [PYQ-265]
 Report skill across seeds, not from a single seed
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/config.py`, `pyquant/models/tft.py`, `pyquant/analysis/metrics.py`, `pyquant/cli/app.py`
 
@@ -3253,6 +3253,60 @@ Acceptance criteria: `pyquant backtest SYMBOL --seeds 5` reports skill as `mean 
 fits; `--format json` carries the per-seed metrics; `meta.json` records the seed list; a
 test asserts that two runs at the same seed list produce identical results and that a
 different seed list produces different ones.
+
+Resolution: `TrainingConfig.seeds: list[int]` defaults to `[42]`, matching `seed`'s own
+default so a single-element list reproduces today's behaviour exactly. New
+`walk_forward_backtest_multi_seed(symbol, settings, *, seeds=None, ...)` in `models/tft.py`
+loops `walk_forward_backtest` once per seed, each iteration on its own `settings.model_copy(deep=True)`
+with only `training.seed` overridden -- the caller's own `Settings` object is never mutated.
+New `SeedSweepResult(symbol, seeds, per_seed: list[BacktestResult])` retains every individual
+result (per the ticket's own ask, so `compare_backtests` can consume them pairwise) plus
+`skill_mean`/`skill_sd`/`skill_min`/`skill_max` properties over `aggregated.skill_vs_baseline`
+across seeds (`skill_sd` uses `ddof=1`, reporting `0.0` for a single seed rather than `nan`).
+
+`pyquant backtest SYMBOL --seeds N` is the CLI surface: `N` expands to the deterministic
+sequence `range(N)` (seeds `0..N-1`), matching the ticket's "sugar for the first N of a
+deterministic sequence" ask. `--seeds` defaults to `1`, and the existing single-run code path
+is reached completely unchanged when it is omitted or left at 1 -- the new multi-seed branch
+(`_run_seed_sweep`, a small helper factored out to keep the `backtest` command readable) is
+structurally a separate `if seeds > 1: ...; return` at the top of the command, not a
+conditional woven through the existing path, specifically so "unchanged when not opted in"
+is visibly true from the diff rather than something to trust by inspection.
+`serialize.seed_sweep_to_dict` carries the full per-seed breakdown plus the summary stats into
+`--format json`; the Rich table names each seed's own skill/directional accuracy/coverage
+alongside the mean ± sd (min, max) headline.
+
+**Deliberately scoped to `backtest`, not `train`.** A multi-seed *backtest* needs nothing
+extra to make sense: each seed's walk-forward run is independent and none of them are
+persisted. A multi-seed *train* is a different problem -- it would fit N models and has to
+decide which seed's weights actually get deployed in the bundle, the exact question the
+ticket's own "reproducibility's three legs" paragraph raises and does not resolve. Making that
+product decision under this pass's time budget, alongside the four other tickets landing in
+it, risked a rushed answer to a question worth getting right; deferred rather than guessed.
+Consequently: `meta.json` records `TrainingConfig.seeds` (automatically, via the existing
+whole-config recording -- no new code needed for that half), but `train()` does not loop
+across it, and there is no "which seed's weights it kept" answer because `train()` still fits
+exactly one model, at `training.seed`, exactly as before. This does not block
+investigations.md#pyq-321: that investigation's own method section names a *backtest* sweep,
+not a trained-bundle sweep, as what it needs.
+
+One further, minor tradeoff recorded rather than fixed: each seed re-calls `build_panel`
+inside its own `walk_forward_backtest`, re-fetching/re-building an identical panel `len(seeds)`
+times. Real waste, but a caching problem (`DataConfig.cache_enabled`, PYQ-205) rather than a
+correctness one, and fixing it means threading a pre-built panel through
+`walk_forward_backtest`'s signature -- a function three other callers already share -- which
+is a larger change than this ticket's own scope.
+
+Verified against the acceptance criterion's own test: `test_walk_forward_backtest_multi_seed_same_seeds_reproduce_identical_results`
+and `test_walk_forward_backtest_multi_seed_different_seeds_give_different_results` cover
+exactly the "same seed list -> identical, different seed list -> different" pair asked for,
+built on the same seed-determinism property `test_two_identically_seeded_runs_produce_identical_metrics`
+already established for `train()`. 6 new tests in `tests/test_tft.py`
+(`walk_forward_backtest_multi_seed`/`SeedSweepResult`) plus 3 new CLI tests (the unchanged-
+single-run path, the deterministic seed expansion, and JSON output) all pass; ruff clean;
+`scripts/backlog.py check` clean. `docs/methodology.md` gained a `## Seed variance` section
+describing the tool and stating plainly that no sweep has been run against live data yet --
+investigations.md#pyq-321 is where that measurement, once made, belongs.
 
 ---
 
