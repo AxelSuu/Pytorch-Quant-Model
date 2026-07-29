@@ -59,7 +59,18 @@ def start_train(
     """Queue a training run; poll GET /train/{job_id} for its status/result."""
     if not request.symbols:
         raise HTTPException(status_code=422, detail="symbols must not be empty")
-    job_id = registry.create()
+    if request.period:
+        settings.data.period = request.period
+    # Mirrors tft.train()'s own default (bundle_name or "_".join(symbols)).upper())
+    # so the in-flight check below can run before scheduling (bugs.md#pyq-161).
+    # tft.train() still computes this itself; duplicated here only for the lock key.
+    bundle_name = (request.bundle_name or "_".join(request.symbols)).upper()
+    job_id = registry.try_start_train(bundle_name)
+    if job_id is None:
+        raise HTTPException(
+            status_code=409,
+            detail=f"A training job for bundle {bundle_name!r} is already queued or running",
+        )
     background_tasks.add_task(_run_train_job, job_id, request, settings, registry, bundle_cache)
     return TrainJobResponse(job_id=job_id, status="queued")
 
@@ -70,7 +81,7 @@ def get_train_job(
 ) -> TrainJobStatusResponse:
     """Current status of a training job, and its result once it succeeds."""
     record = registry.get(job_id)
-    if record is None:
+    if record is None or record.kind != "train":
         raise HTTPException(status_code=404, detail=f"No job {job_id!r}")
     result = (
         serialize.train_result_to_dict(record.result) if record.result is not None else None

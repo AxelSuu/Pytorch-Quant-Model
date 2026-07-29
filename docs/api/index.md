@@ -106,6 +106,7 @@ particular, {py:mod}`pyquant.api.deps`.
    pyquant.api.routes.forecast
    pyquant.api.routes.explain
    pyquant.api.routes.train
+   pyquant.api.routes.backtest
 ```
 
 ## Notes on this reference

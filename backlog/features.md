@@ -75,7 +75,7 @@ Next free ID: **PYQ-281**.
 | [PYQ-268](#pyq-268) | High | Resolved | A reusable multi-symbol sweep harness, replacing the one-off scripts |
 | [PYQ-269](#pyq-269) | Medium | Open | Split `models/tft.py` (1075 lines) without breaking Lightning containment |
 | [PYQ-270](#pyq-270) | Medium | Open | Put a confidence interval on the headline skill number |
-| [PYQ-271](#pyq-271) | Medium | Open | `/backtest` endpoint: close the CLI/API front-end gap |
+| [PYQ-271](#pyq-271) | Medium | Resolved | `/backtest` endpoint: close the CLI/API front-end gap |
 | [PYQ-272](#pyq-272) | Medium | Open | Dedicated tests for `serialize`, `doctor`, `provenance` and `charts` |
 | [PYQ-273](#pyq-273) | Medium | Open | Regression cases for PYQ-139/140 on PYQ-243's existing replay harness |
 | [PYQ-274](#pyq-274) | Low | Open | CHANGELOG and a release/tagging workflow |
@@ -3704,7 +3704,7 @@ alongside the three headline configurations, or state that n is too small to pla
 
 ## [PYQ-271]
 `/backtest` endpoint: close the CLI/API front-end gap
-Status: Open
+Status: Resolved — 2026-07-29
 Priority: Medium
 Files: `pyquant/api/routes/`, `pyquant/api/schemas.py`, `docs/http-api.md`, `tests/test_api.py`
 
@@ -3741,6 +3741,45 @@ Acceptance criteria: `POST /backtest` + `GET /backtest/{job_id}` work end to end
 documented in `docs/http-api.md`, and are covered in `tests/test_api.py` including the
 job-not-found and job-failed paths. The resolution note states whether serving both
 front-ends required changing the shared serializer.
+
+Resolution: built exactly as scoped. New `pyquant/api/routes/backtest.py` mirrors
+`routes/train.py`'s shape: `POST /backtest` validates the body (`BacktestRequest`: `symbol`,
+`windows=5`, `epochs`, `period` — the same subset of CLI flags `TrainRequest` exposes, on
+the same reasoning `tune`/`doctor`/`cache`/`snapshot` were excluded above), calls
+`registry.create(kind="backtest")` and schedules `_run_backtest_job` via
+`BackgroundTasks`, which calls `tft.walk_forward_backtest(...)` and reports through
+`registry.mark_succeeded`/`mark_failed` — the *exact* `JobRegistry` `/train` already used,
+not a second instance or a second class. `GET /backtest/{job_id}` returns
+`BacktestJobStatusResponse(result=BacktestResponse(**serialize.backtest_to_dict(...)))`.
+
+**`backtest_to_dict` needed no reshaping.** Its four keys (`symbol`, `n_windows`,
+`aggregated`, `per_window`, `origins`) mapped onto `BacktestResponse` with `EvaluationResponse`
+reused unchanged for both `aggregated` and each `per_window` entry — the shared-serializer
+claim held on first contact, unlike the note this ticket's Problem/Ask left open. The one
+new piece of shared infrastructure was in `JobRegistry` itself, not the serializer: a
+`kind: Literal["train", "backtest"]` field on `JobRecord` so one `job_id` dict can serve two
+resources without a train job id resolving via `GET /backtest/{job_id}` (or vice versa) —
+each route now checks `record.kind` and 404s on a mismatch, covered by
+`test_train_job_id_not_found_via_backtest_endpoint`.
+
+`--signals`, `--seeds`, `--cost-bps`, `start`/`end`/`step` (the last three aren't even CLI
+flags, only raw `walk_forward_backtest()` parameters) are deliberately not exposed —
+recording that judgement rather than silently narrowing the endpoint, per the ticket's own
+instruction. Backtests also get none of PYQ-161's per-bundle-name lock: unlike `/train`,
+`walk_forward_backtest()` never persists a bundle (each window's model is discarded after
+evaluation), so two concurrent backtests for the same symbol duplicate work rather than
+racing shared on-disk state — no correctness gap to close.
+
+Verification: `test_backtest_returns_202_and_a_pollable_job_id`,
+`test_backtest_job_404_for_an_unknown_id`,
+`test_backtest_job_reports_failed_status_and_error`,
+`test_backtest_rejects_a_path_traversal_symbol`,
+`test_backtest_request_period_overrides_settings_data_period`, and
+`test_train_job_id_not_found_via_backtest_endpoint` in `tests/test_api.py`.
+`docs/http-api.md` gained a Backtesting section (curl + Python examples, body fields,
+the cross-namespace 404 behaviour) and an updated Endpoints table;
+`docs/architecture.md`'s route list now names `backtest.py`. `ruff check .`, `pytest -q`
+and `scripts/backlog.py check` all clean.
 
 ---
 

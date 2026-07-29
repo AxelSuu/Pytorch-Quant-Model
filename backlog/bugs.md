@@ -63,10 +63,10 @@ Next free ID: **PYQ-163**.
 | [PYQ-156](#pyq-156) | Low | Resolved | `cli/app.py` hides a metric row at exactly 0.0; `aggregate_metrics([])` raises `ZeroDivisionError` |
 | [PYQ-157](#pyq-157) | Medium | Resolved | `Settings` swallows misspelled nested env keys; `TFTConfig.quantiles` allows a bandless config |
 | [PYQ-158](#pyq-158) | Medium | Resolved | `tests/conftest.py`'s `settings` fixture leaves `use_options` pointed at the real repo |
-| [PYQ-159](#pyq-159) | Low | Open | `TrainRequest.period` is dead; `JobRegistry` never evicts and indexes `_jobs` unguarded |
-| [PYQ-160](#pyq-160) | Medium | Open | `/docs`, `/redoc`, `/openapi.json` are reachable with no `X-API-Key`, contradicting the documented auth contract |
-| [PYQ-161](#pyq-161) | Medium | Open | No lock guards concurrent `POST /train` calls for the same bundle name |
-| [PYQ-162](#pyq-162) | Low | Open | `POST /train`'s documented `failed` job status has zero test coverage |
+| [PYQ-159](#pyq-159) | Low | Resolved | `TrainRequest.period` is dead; `JobRegistry` never evicts and indexes `_jobs` unguarded |
+| [PYQ-160](#pyq-160) | Medium | Resolved | `/docs`, `/redoc`, `/openapi.json` are reachable with no `X-API-Key`, contradicting the documented auth contract |
+| [PYQ-161](#pyq-161) | Medium | Resolved | No lock guards concurrent `POST /train` calls for the same bundle name |
+| [PYQ-162](#pyq-162) | Low | Resolved | `POST /train`'s documented `failed` job status has zero test coverage |
 
 ---
 
@@ -2984,7 +2984,7 @@ already do, still resolves under `tmp_path` rather than the real directory).
 
 ## [PYQ-159]
 `TrainRequest.period` is dead; `JobRegistry` never evicts and indexes `_jobs` unguarded
-Status: Open
+Status: Resolved — 2026-07-29
 Priority: Low
 Files: `pyquant/api/schemas.py`, `pyquant/api/jobs.py`
 
@@ -3017,11 +3017,33 @@ asserts `JobRegistry` bounds its size under sustained job creation; a test asser
 `mark_running`/`mark_succeeded`/`mark_failed` with an unknown `job_id` fails predictably
 rather than raising a bare `KeyError` from inside a background task.
 
+Resolution: `TrainRequest.period` now does something — `routes/train.py`'s `start_train`
+sets `settings.data.period = request.period` when given, before scheduling the background
+fit, the same `if period:` pattern `cli/app.py::_build_settings` already uses for the CLI
+flag. `BacktestRequest.period` (new, PYQ-271) gets the identical treatment in
+`routes/backtest.py`, so the API doesn't reintroduce the gap for its second job endpoint.
+
+`JobRegistry` (`api/jobs.py`) now takes a `max_jobs` constructor argument (default 500)
+and an insertion-order list alongside its `dict`; every `create()`/`try_start_train()` call
+evicts the oldest record once the count exceeds `max_jobs`, mirroring `BundleCache`'s LRU
+shape. `mark_running`/`mark_succeeded`/`mark_failed` all now do `self._jobs.get(job_id)`
+and log a warning + return on a miss instead of an unguarded `self._jobs[job_id]`.
+
+Verification: `test_job_registry_bounds_its_size_under_sustained_job_creation` (`max_jobs=3`,
+5 `create()` calls, asserts the oldest two are gone and the newest three remain retrievable)
+and `test_job_registry_mark_methods_are_a_no_op_for_an_unknown_job_id` (all three `mark_*`
+calls against a nonexistent id, asserts none raises) in `tests/test_api.py`.
+`test_train_request_period_overrides_settings_data_period` and
+`test_backtest_request_period_overrides_settings_data_period` monkeypatch the underlying
+`tft.train`/`tft.walk_forward_backtest` call to capture the `Settings` object it actually
+received and assert `settings.data.period` matches the request body. `ruff check .`,
+`pytest -q` and `scripts/backlog.py check` all clean.
+
 ---
 
 ## [PYQ-160]
 `/docs`, `/redoc`, `/openapi.json` are reachable with no `X-API-Key`, contradicting the documented auth contract
-Status: Open
+Status: Resolved — 2026-07-29
 Priority: Medium
 Files: `pyquant/api/app.py`, `docs/http-api.md`
 
@@ -3058,11 +3080,26 @@ Acceptance criteria: a test in `tests/test_api.py` asserts the chosen behaviour 
 comment pointing at this ticket so the exemption reads as deliberate. `docs/http-api.md`'s
 Authentication section matches whatever the test asserts.
 
+Resolution: chose (a) — gate all three behind `require_api_key`, matching the documented
+"every endpoint except `/healthz`" contract rather than carving out three more exceptions
+to it. `app.py` now passes `docs_url=None, redoc_url=None, openapi_url=None` to the
+`FastAPI(...)` constructor (disabling the unguarded defaults) and hand-mounts
+`GET /openapi.json` (via `fastapi.openapi.utils.get_openapi`), `GET /docs` (via
+`fastapi.openapi.docs.get_swagger_ui_html`) and `GET /redoc` (via `get_redoc_html`), each
+carrying `dependencies=[Depends(require_api_key)]` — the identical dependency the other
+routers use, imported directly from `deps.py` rather than reimplemented.
+
+Verification: `test_openapi_json_requires_auth` and `test_docs_and_redoc_require_auth` in
+`tests/test_api.py` assert `401` with no key and `200` with a correct one for all three
+routes. `docs/http-api.md`'s Authentication section and Endpoints table now state the gate
+applies to these three as fact, not as an open question. `ruff check .`, `pytest -q` and
+`scripts/backlog.py check` all clean.
+
 ---
 
 ## [PYQ-161]
 No lock guards concurrent `POST /train` calls for the same bundle name
-Status: Open
+Status: Resolved — 2026-07-29
 Priority: Medium
 Files: `pyquant/api/routes/train.py`, `pyquant/api/deps.py`, `pyquant/models/tft.py`
 
@@ -3103,11 +3140,36 @@ cannot corrupt the first's on-disk bundle — mirroring how
 `test_forecast_serializes_concurrent_requests_against_the_same_bundle` proves the prediction
 lock. `docs/http-api.md` documents the resulting behaviour under Training.
 
+Resolution: chose the explicit-rejection half of the "Ask" — a per-bundle-name flag in
+`JobRegistry` (`api/jobs.py`), not a separate registry. `JobRegistry.try_start_train
+(bundle_name)` atomically checks-and-registers under the registry's existing lock: if
+`bundle_name` is already a key in a new `_active_bundle_names: dict[str, str]` (bundle_name
+-> job_id), it returns `None` and `routes/train.py::start_train` turns that into `409`
+before `background_tasks.add_task` is ever called — the second fit is never scheduled, so
+it never reaches `_bundle_dir`/`mkdir`/`torch.save` at all, which is stronger than letting
+both run and rejecting after the fact. `mark_succeeded`/`mark_failed` release the guard
+under the same lock, so a bundle becomes available again the moment its job resolves either
+way. `start_train` computes the candidate `bundle_name` as `(request.bundle_name or
+"_".join(request.symbols)).upper()` — the same default expression `tft.train()` itself
+uses — purely so the lock key matches what `tft.train()` will actually resolve to; that
+computation is duplicated, not shared, and `tft.train()` still computes its own copy.
+
+Verification: `test_train_rejects_a_second_request_for_a_bundle_already_in_flight` uses two
+real `threading.Thread`s (the same pattern as
+`test_forecast_serializes_concurrent_requests_against_the_same_bundle`) against a
+monkeypatched `tft.train` that sleeps 0.1s, staggered 0.02s apart, and asserts the pair of
+status codes is exactly `[202, 409]` — proving rejection happens for a request that is
+genuinely concurrent with an in-flight job, not merely sequential.
+`test_train_conflict_names_the_bundle_in_the_error` asserts the `409` body names the actual
+bundle. `docs/http-api.md`'s Training section now shows the `409` response and states the
+bundle-name default explicitly. `ruff check .`, `pytest -q` and `scripts/backlog.py check`
+all clean.
+
 ---
 
 ## [PYQ-162]
 `POST /train`'s documented `failed` job status has zero test coverage
-Status: Open
+Status: Resolved — 2026-07-29
 Priority: Low
 Files: `tests/test_api.py`, `pyquant/api/routes/train.py`, `pyquant/api/jobs.py`
 
@@ -3136,3 +3198,18 @@ Acceptance criteria: the new test fails against a deliberately broken `mark_fail
 branch (confirmed test-first, per this repo's convention) and passes against the current
 code; `docs/http-api.md`'s `failed` claim is now backed by a test rather than only by
 reading the source.
+
+Resolution: added `test_train_job_reports_failed_status_and_error`, exactly the shape the
+Ask describes — `monkeypatch.setattr("pyquant.api.routes.train.tft.train", raise_error)`,
+`POST /train`, poll `GET /train/{job_id}`, assert `status == "failed"`, `result is None`,
+and the exception message is in `error`. Confirmed test-first: reverting the `except`
+branch in `_run_train_job` to re-raise instead of calling `registry.mark_failed` makes this
+test fail with an unhandled `RuntimeError` inside the background task rather than a clean
+assertion failure, so it does exercise the branch it claims to. No production code changed
+— the `failed` path itself was already correct, only untested, exactly as filed. Added
+`_run_backtest_job`'s equivalent `test_backtest_job_reports_failed_status_and_error`
+alongside it for the new PYQ-271 endpoint, so the new job type doesn't reintroduce the same
+coverage gap on day one.
+
+Verification: both tests pass; `ruff check .`, `pytest -q` and `scripts/backlog.py check`
+all clean.

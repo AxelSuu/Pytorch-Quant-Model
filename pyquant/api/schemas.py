@@ -153,6 +153,53 @@ class TrainJobStatusResponse(BaseModel):
     error: str | None = None
 
 
+class BacktestResponse(BaseModel):
+    """Mirrors analysis.serialize.backtest_to_dict(); result of GET /backtest/{job_id}."""
+
+    symbol: str
+    n_windows: int
+    aggregated: EvaluationResponse
+    per_window: list[EvaluationResponse]
+    origins: list[int]
+
+
+class BacktestRequest(BaseModel):
+    """Request body for POST /backtest.
+
+    Deliberately mirrors the subset of `pyquant backtest`'s flags that map onto
+    a single `walk_forward_backtest()` call: `--signals`/`--seeds`/`--cost-bps`
+    are CLI-only for this pass, same judgement features.md#pyq-271 already
+    makes for `tune`/`doctor`/`cache`/`snapshot` -- not obviously wanted
+    remotely, and each would need its own reasoning about job-result shape.
+    """
+
+    symbol: str
+    windows: int = 5
+    epochs: int | None = None
+    period: str | None = None
+
+    @field_validator("symbol")
+    @classmethod
+    def _validate_symbol_field(cls, value: str) -> str:
+        return _validate_symbol(value)
+
+
+class BacktestJobResponse(BaseModel):
+    """202 response to POST /backtest: the job to poll via GET /backtest/{job_id}."""
+
+    job_id: str
+    status: str
+
+
+class BacktestJobStatusResponse(BaseModel):
+    """Response for GET /backtest/{job_id}."""
+
+    job_id: str
+    status: str
+    result: BacktestResponse | None = None
+    error: str | None = None
+
+
 class HealthResponse(BaseModel):
     """Response for GET /healthz."""
 

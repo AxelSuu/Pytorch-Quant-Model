@@ -1,8 +1,10 @@
-"""In-process training-job registry (v1), per docs/api-design.md #2.
+"""In-process training/backtest-job registry (v1), per docs/api-design.md #2.
 
-`tft.train()` blocks for a full Lightning fit; a request thread must not block on it.
-This registry backs `POST /train` (returns a job id immediately) and `GET /train/{job_id}`
-(polls status), run via FastAPI's `BackgroundTasks`.
+`tft.train()`/`tft.walk_forward_backtest()` both block for one or more full Lightning
+fits; a request thread must not block on either. This registry backs `POST /train` +
+`GET /train/{job_id}` and `POST /backtest` + `GET /backtest/{job_id}` (features.md#pyq-271
+reuses this registry rather than building a second job mechanism), run via FastAPI's
+`BackgroundTasks`.
 
 Where this stops scaling -- the trigger to graduate to a real queue (arq/Celery + Redis),
 per the design note: job state lives in process memory, so it is lost on restart/redeploy
@@ -12,40 +14,98 @@ backpressure, no cancellation. None of that is needed for a single-instance v1.
 
 from __future__ import annotations
 
+import logging
 import threading
 import uuid
 from dataclasses import dataclass
 from typing import Literal
 
-from pyquant.models.tft import TrainResult
+from pyquant.models.tft import BacktestResult, TrainResult
+
+logger = logging.getLogger(__name__)
 
 JobStatus = Literal["queued", "running", "succeeded", "failed"]
+JobKind = Literal["train", "backtest"]
+JobResult = TrainResult | BacktestResult
+
+# Bound in-process job history (bugs.md#pyq-159): with no cap, a long-running server
+# accumulates one JobRecord per POST /train or /backtest forever. Oldest-first eviction
+# is enough for v1 -- the same tradeoff deps.BundleCache's LRU already makes for loaded
+# bundles, just without the "reload on next use" recovery (an evicted job's status is
+# just gone, matching a queue-backed job store's own retention limits).
+_DEFAULT_MAX_JOBS = 500
 
 
 @dataclass
 class JobRecord:
-    """One training job's status, and its result or error once it finishes."""
+    """One job's status, and its result or error once it finishes."""
 
     job_id: str
+    kind: JobKind
+    # Set only for "train" jobs (PYQ-161's in-flight guard); None for "backtest",
+    # which never writes a persistent bundle so has nothing to race on disk.
+    bundle_name: str | None = None
     status: JobStatus = "queued"
-    result: TrainResult | None = None
+    result: JobResult | None = None
     error: str | None = None
 
 
 class JobRegistry:
-    """Thread-safe in-process store of JobRecords, keyed by job id."""
+    """Thread-safe in-process store of JobRecords, keyed by job id.
 
-    def __init__(self) -> None:
-        """No jobs yet."""
+    Shared by /train and /backtest: both are "runs in the background, poll for
+    status" jobs, and duplicating the bookkeeping for a second resource would
+    be exactly the second job mechanism features.md#pyq-271 says not to build.
+    `kind` keeps their id spaces from colliding in meaning even though they
+    share one dict -- polling a train job id via GET /backtest/{job_id} 404s
+    rather than trying to serialize a TrainResult as a BacktestResponse.
+    """
+
+    def __init__(self, max_jobs: int = _DEFAULT_MAX_JOBS) -> None:
+        """No jobs yet; evict beyond `max_jobs`, oldest first."""
         self._lock = threading.Lock()
         self._jobs: dict[str, JobRecord] = {}
+        self._order: list[str] = []
+        self._max_jobs = max_jobs
+        # bundle_name -> job_id, for "train" jobs currently queued/running
+        # (bugs.md#pyq-161). Lets a second POST /train for the same bundle be
+        # rejected before it races the first onto the same on-disk checkpoint
+        # directory, mirroring deps.py's per-bundle prediction lock.
+        self._active_bundle_names: dict[str, str] = {}
 
-    def create(self) -> str:
-        """Register a new queued job and return its id."""
+    def create(self, kind: JobKind = "train") -> str:
+        """Register a new queued job (no bundle-name guard) and return its id."""
         job_id = uuid.uuid4().hex
         with self._lock:
-            self._jobs[job_id] = JobRecord(job_id=job_id)
+            self._jobs[job_id] = JobRecord(job_id=job_id, kind=kind)
+            self._order.append(job_id)
+            self._evict_locked()
         return job_id
+
+    def try_start_train(self, bundle_name: str) -> str | None:
+        """Atomically register a queued "train" job for bundle_name.
+
+        Returns the new job id, or ``None`` if a job for the same bundle_name
+        is already queued/running -- the caller should reject the request
+        (409) rather than schedule a second fit onto the same checkpoint
+        directory (bugs.md#pyq-161).
+        """
+        bundle_name = bundle_name.upper()
+        with self._lock:
+            if bundle_name in self._active_bundle_names:
+                return None
+            job_id = uuid.uuid4().hex
+            self._jobs[job_id] = JobRecord(job_id=job_id, kind="train", bundle_name=bundle_name)
+            self._order.append(job_id)
+            self._active_bundle_names[bundle_name] = job_id
+            self._evict_locked()
+            return job_id
+
+    def _evict_locked(self) -> None:
+        while len(self._order) > self._max_jobs:
+            oldest = self._order.pop(0)
+            record = self._jobs.pop(oldest, None)
+            self._release_bundle_name_locked(record)
 
     def get(self, job_id: str) -> JobRecord | None:
         """Return the record for job_id, or None if it doesn't exist."""
@@ -53,23 +113,46 @@ class JobRegistry:
             return self._jobs.get(job_id)
 
     def mark_running(self, job_id: str) -> None:
-        """Flip a queued job to running, once its background task starts."""
-        with self._lock:
-            self._jobs[job_id].status = "running"
+        """Flip a queued job to running, once its background task starts.
 
-    def mark_succeeded(self, job_id: str, result: TrainResult) -> None:
-        """Record a job's successful TrainResult."""
+        A no-op (logged) for an unknown job_id rather than a bare KeyError
+        (bugs.md#pyq-159) -- this runs inside a BackgroundTask, where an
+        unhandled exception has no request to surface a 500 to.
+        """
         with self._lock:
-            record = self._jobs[job_id]
+            record = self._jobs.get(job_id)
+            if record is None:
+                logger.warning("mark_running: unknown job_id %r", job_id)
+                return
+            record.status = "running"
+
+    def mark_succeeded(self, job_id: str, result: JobResult) -> None:
+        """Record a job's successful result and release its bundle-name guard."""
+        with self._lock:
+            record = self._jobs.get(job_id)
+            if record is None:
+                logger.warning("mark_succeeded: unknown job_id %r", job_id)
+                return
             record.status = "succeeded"
             record.result = result
+            self._release_bundle_name_locked(record)
 
     def mark_failed(self, job_id: str, error: str) -> None:
-        """Record a job's failure message."""
+        """Record a job's failure message and release its bundle-name guard."""
         with self._lock:
-            record = self._jobs[job_id]
+            record = self._jobs.get(job_id)
+            if record is None:
+                logger.warning("mark_failed: unknown job_id %r", job_id)
+                return
             record.status = "failed"
             record.error = error
+            self._release_bundle_name_locked(record)
+
+    def _release_bundle_name_locked(self, record: JobRecord | None) -> None:
+        if record is None or record.bundle_name is None:
+            return
+        if self._active_bundle_names.get(record.bundle_name) == record.job_id:
+            del self._active_bundle_names[record.bundle_name]
 
 
 _REGISTRY = JobRegistry()

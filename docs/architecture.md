@@ -73,13 +73,15 @@ the same calls, without either being a rewrite of the other.
 `api/`
 : FastAPI, optional (`uv sync --extra api`) — the second front-end the design note below
   planned, now built. `app.py` mounts one router per resource (`routes/{health,forecast,
-  explain,train}.py`); response models in `schemas.py` are thin pydantic wrappers
+  explain,train,backtest}.py`); response models in `schemas.py` are thin pydantic wrappers
   constructed directly from `analysis/serialize.py`'s functions, so a response and the
   CLI's `--format json` output cannot drift — they are produced by the same code, not two
   independently-typed schemas that happen to agree today. `deps.py` holds the per-bundle
-  prediction lock and LRU bundle cache; `jobs.py` is the in-process training-job registry
-  behind `POST /train`. Full shape and the reasoning behind each choice:
-  [FastAPI design note](api-design.md).
+  prediction lock and LRU bundle cache; `jobs.py` is the in-process job registry (bounded,
+  oldest-first eviction) shared by `POST /train` and `POST /backtest`, including a
+  per-bundle-name lock that rejects a second concurrent `/train` for the same bundle with
+  `409` (bugs.md#pyq-161) rather than racing two fits onto the same checkpoint directory.
+  Full shape and the reasoning behind each choice: [FastAPI design note](api-design.md).
 
 ## Two structural rules
 
