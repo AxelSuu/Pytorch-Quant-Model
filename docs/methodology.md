@@ -253,9 +253,47 @@ product decision this pass did not make. `TrainingConfig.seeds` is still recorde
 bundle's `meta.json` (generic whole-config recording already does this), but `train()` itself
 does not loop across it.
 
-**No seed sweep has been run against live data yet.** This section describes the tool, not a
-result — investigations.md#pyq-321 is the open question this tool exists to answer, and is
-where the actual seed-to-seed standard deviation, once measured, will be reported.
+**A seed sweep has now been run** (investigations.md#pyq-321, 2026-07-29): AAPL, 10 seeds
+(`0..9`), 5 walk-forward windows (25 points/seed), price+technicals only, a smoke-scale model
+(`hidden_size=16`, `max_epochs=10`) — not the project's full default (`32`/`30`). At
+`target=log_return` (the format investigations.md#pyq-315/#pyq-316 were themselves measured
+in):
+
+| Metric | Mean | SD | Min | Max |
+|---|---|---|---|---|
+| Skill vs. baseline | +0.0072 | 0.0114 | −0.0112 | +0.0283 |
+| Directional accuracy | 0.528 | 0.053 | 0.400 | 0.600 |
+| Calibration coverage | 0.708 | 0.026 | 0.680 | 0.760 |
+| CRPS | 0.0057 | 0.0001 | 0.0056 | 0.0058 |
+
+Re-expressed against this sd: PYQ-247's target-change effect (≈0.62) is 54x it and clearly
+survives. investigations.md#pyq-316's sentiment delta (−0.0276) is 2.4x it — under the
+ticket's own "~0.03 means noise" bar, so it survives, but with less margin than PYQ-247.
+investigations.md#pyq-315's pooling delta is **smaller than one sd for AAPL** (−0.0032 vs.
+0.0114) — not distinguishable from seed noise by this calibration, a genuine caveat on that
+specific number (ARM's own delta, −0.0167, is more suggestive at ~1.5x). None of this is a
+formal paired significance test of those specific comparisons — `compare_backtests` (PYQ-266)
+run on matched seeds for each arm pair is the natural next step and was not done here.
+
+At `target=close` (the project's actual default), the same smoke-scale config measured
+something qualitatively different: skill sd was **18x larger** (0.203 vs. 0.0114), and
+directional accuracy was bit-for-bit identical (0.400) across all ten seeds — suggestive of
+the small/short-trained model collapsing to the same degenerate solution regardless of
+initialisation, in price-level space specifically. This does not show the *published*
+−23.5%/99.3% headline (measured at full model scale, and predating PYQ-143's checkpoint-
+selection fix) is degenerate — only that this smaller config is, in this space. Whether the
+full-scale default shows the same pattern is an open follow-up, not answered here.
+
+Per-horizon-step variance is concentrated at the near horizon: h=1 was both the
+worst-performing (mean skill −0.279) and noisiest (sd 0.076) step; h=4 was the most stable
+(sd 0.015). The sample-size-scaling secondary question (does a 25-point result scale to the
+280-point default the way you'd expect) was **not** answered — `train()`'s 280-point figure
+comes from a different mechanism (internal multi-window validation) than
+`walk_forward_backtest`'s origin count, and multi-seed support was deliberately scoped to
+`backtest` only (see PYQ-265's resolution note), so there is no multi-seed `train()` result
+to compare against yet.
+
+Full numbers, config, and reasoning: investigations.md#pyq-321's resolution note.
 
 (sample-size)=
 ## Sample size

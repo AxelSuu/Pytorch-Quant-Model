@@ -39,7 +39,7 @@ edit lands.
 ## Now
 
 A hand-curated shortlist, not auto-generated — re-pick this after every review pass.
-Re-picked 2026-07-28. **141 tickets, 22 open.**
+Re-picked 2026-07-29. **163 tickets, 24 open, zero Critical/High.**
 
 ### The decision this list encodes
 
@@ -53,79 +53,84 @@ now 'no detectable edge after fixing the formulation'" — chose the measurement
 a rigorous negative result over another repo claiming edge. It then named the single thing
 blocking that reframing: **the multi-symbol repeat.**
 
-That is the same item this list carried at #1 across two passes without it starting. So the
-project has committed to a deliverable and stalled on its one prerequisite. Everything below
-is ordered to unstall it.
+That item carried at #1 across three passes without starting. This pass (2026-07-29)
+finished the entire measurement apparatus it was blocked on — every Critical/High ticket
+that stood between "stalled" and "able to run the repeat and mean it" is now closed. What is
+left is the repeat itself, which is a run, not a ticket, and bugs.md#pyq-141 (demoted to the
+top Medium item, see below).
 
-**Adding data vendors is the worst available move right now**, and the evidence is the
-project's own. investigations.md#pyq-312 puts the mainstream prior at no edge for 5-day
-single-name direction from public daily data. investigations.md#pyq-316 measured that adding
-a *fourth* source made things worse, not better — sentiment cost skill. And
-investigations.md#pyq-321 has not been answered, so nothing here can currently distinguish a
-+0.027 effect from seed noise. A fifth vendor would be an input nobody can evaluate, added
-to a panel whose last addition hurt, chasing an edge the project's own analysis says is
-probably absent. Vendor work is not blocked forever — it is blocked on being able to measure
-whether it helped.
+**Adding data vendors is still the worst available move right now.** investigations.md#pyq-312
+puts the mainstream prior at no edge for 5-day single-name direction from public daily data.
+investigations.md#pyq-316 measured that adding a *fourth* source made things worse, not
+better. investigations.md#pyq-321 (below) measured the seed-noise floor and found PYQ-316's
+effect survives it, but with less margin than PYQ-247's — not a reason to add a fifth source
+chasing an edge the project's own analysis still says is probably absent.
 
-### Phase 1 — finish the measurement apparatus (do this now)
+### Finished this pass (2026-07-29) — the full measurement apparatus
 
-Nothing else on this list should start before these. They are cheap relative to their
-leverage and every one of them changes what a later result *means*.
+All nine Critical/High tickets closed in one session:
 
-1. **investigations.md#pyq-321** (Critical) — the seed-variance floor. `TrainingConfig.seed`
-   is fixed at 42, so every headline is one draw. Four existing findings span three orders
-   of effect size and are trusted equally. This is one experiment and it decides which of
-   them survive. Cheaper than the multi-symbol sweep and possibly a substitute for it: if
-   one symbol at ten seeds already spans the effect being claimed, more symbols is not the
-   missing evidence.
-2. **features.md#pyq-265/266/267** (High) — the instruments PYQ-321 and everything after it
-   need: metrics across seeds rather than one; a paired test on the windows two configs
-   share, instead of two eyeballed point estimates; and per-horizon-step breakdown, since
-   every number today is a mean over h=1..5 and a model whose skill rises with horizon is
-   currently indistinguishable from one whose skill collapses at h=5.
-3. **features.md#pyq-275** (High) — baselines beyond persistence. The reframed deliverable is
-   a negative result, and a negative result is a claim about the baselines it was measured
-   against. One baseline — which is near-optimal on a random walk by construction — is a weak
-   claim. This is the highest-value build on the list and it is not a data source.
-4. **bugs.md#pyq-141** (Medium) — `backtest`'s headline skill and the per-window column
+- **investigations.md#pyq-321** (Critical) — the seed-variance floor. Measured, not just
+  built: AAPL, 10 seeds, smoke-scale config. `log_return` skill sd ≈ 0.0114 — PYQ-247's
+  effect survives it 54x over, investigations.md#pyq-316's sentiment delta survives it 2.4x
+  (per the ticket's own stated bar), and investigations.md#pyq-315's **AAPL** pooling delta
+  does *not* clear one sd — flagged as a real caveat on that specific number, not a
+  supersession. `target=close` (the actual default) showed 18x more skill variance and
+  *zero* variance in directional accuracy across all ten seeds — a smoke-scale artifact
+  worth a closer look, not evidence about the full-scale published headline. Full numbers in
+  the ticket and in `docs/methodology.md`'s "Seed variance" section.
+- **bugs.md#pyq-142/143/144** (High) — three interacting corrections to what a `log_return`
+  bundle displays, what `train()`/`walk_forward_backtest()` select checkpoints against, and
+  how the conformal offset (PYQ-248) is fit. All three change what a re-measured headline
+  would read as "more honest," not "better" — expect every number to look worse once
+  re-measured, per non-negotiable #1.
+- **features.md#pyq-265/266/267** (High) — multi-seed backtest reporting
+  (`pyquant backtest --seeds N`), paired significance testing (`compare_backtests`), and the
+  per-horizon-step breakdown. The instruments PYQ-321 needed, and needed them first.
+- **features.md#pyq-275** (High) — `analysis/baselines.py`: four comparators beyond
+  persistence (random-walk-with-drift, seasonal-naive, climatological, a hand-rolled AR(1) —
+  `statsmodels`' ARIMA/ETS declined per non-negotiable #5).
+- **features.md#pyq-268 + investigations.md#pyq-322** (High) — the sweep harness
+  (`pyquant sweep`, `pyquant/experiments/sweep.py`) and the pre-registered rule for what
+  evidence flips a default (`docs/methodology.md`'s "What it takes to flip a default"):
+  N≥10 symbols/3 sectors, per-symbol `effective_n_samples`≥10, K≥5 seeds, a per-symbol
+  paired interval excluding zero, an explicit "helped 11/hurt 4" resolution, and a higher
+  bar for `target` (blast radius) than for `use_sentiment`.
+
+None of the three pending repeats (PYQ-247's target comparison at multi-symbol scale,
+investigations.md#pyq-315/#pyq-316's pooling and feature findings) were actually re-run —
+that remains a run, not a ticket, and needs live vendor-data access at a scale (N≥10 symbols
+x K≥5 seeds) this pass's smoke-scale investigations did not attempt. It is, for the first
+time, fully unblocked: the harness, the seed tooling, the paired test, the baselines, and the
+decision rule all now exist.
+
+### What is left
+
+1. **bugs.md#pyq-141** (Medium) — `backtest`'s headline skill and the per-window column
    beneath it are different estimators that already disagree by 71 points in
-   `docs/methodology.md`. Fix before generating a lot more of both.
-
-### Phase 2 — run the thing, then say what it showed (gated on Phase 1)
-
-5. **features.md#pyq-268 + investigations.md#pyq-322** — the sweep harness, and the
-   pre-registered rule for what result flips a default, written *before* the run. An
-   unspecified threshold is a deferred decision, not a conservative one. Both landed
-   2026-07-29: `pyquant sweep` (`pyquant/experiments/sweep.py`) is the harness, and
-   `docs/methodology.md`'s "What it takes to flip a default" section is the rule —
-   N≥10 symbols/3 sectors, per-symbol `effective_n_samples`≥10, K≥5 seeds (raised if
-   investigations.md#pyq-321 finds seed variance requires it), a per-symbol paired
-   interval excluding zero, an explicit "helped 11/hurt 4" resolution, and a higher bar
-   for `target` (blast radius) than for `use_sentiment`.
-6. **Run the sweep.** The three pending repeats — PYQ-247's target comparison,
-   investigations.md#pyq-315's pooling result, #pyq-316's feature ablation — at the sample
-   size non-negotiable #1 requires. This is the step that unblocks everything PYQ-312 was
-   waiting on. It is a run, not a ticket, and it is finally possible once (5) exists.
-7. **features.md#pyq-276** — execute PYQ-312's reframing in `README.md` and `docs/index.md`.
-   Explicitly gated on (6): rewriting the README on today's n≈5 evidence is the same move
+   `docs/methodology.md`. The one item that was already Phase-1-adjacent and is still open;
+   fix before running the sweep in earnest, since the sweep will generate a lot more of both
+   numbers.
+2. **Run the sweep**, against the decision rule, at the scale it specifies. This is what
+   everything above was for.
+3. **features.md#pyq-276** — execute PYQ-312's reframing in `README.md`/`docs/index.md`.
+   Explicitly gated on (2): rewriting the README on pre-sweep evidence is the same move
    non-negotiable #1 forbids for `TrainingConfig.target`.
-
-### Phase 3 — only after Phase 2 has a result
-
-8. **features.md#pyq-249** (Medium) — foundation-model baseline. Belongs with
-   features.md#pyq-275's baseline interface rather than growing its own, and is worth running
-   once there is an apparatus that can tell whether it beat anything.
-9. Structural and coverage work, none of it urgent and none of it blocking:
+4. **features.md#pyq-249** (Medium) — foundation-model baseline, sharing PYQ-275's baseline
+   interface. Worth running once (2) exists to say whether it beat anything.
+5. Structural and coverage work, none of it urgent and none of it blocking:
    features.md#pyq-269 (split the 1075-line `models/tft.py`), #pyq-272 (dedicated tests for
    `serialize`/`doctor`/`provenance`/`charts`), #pyq-273 (the four PYQ-139/140 failure-mode
    regressions on PYQ-243's existing harness), #pyq-271 (`/backtest` endpoint), #pyq-270
-   (interval on the headline skill), investigations.md#pyq-323 (`Settings` coupling),
+   (interval on the headline skill), #pyq-277 (Tiingo selectability), bugs.md#pyq-149
+   (signal-scoring calibration mismatch), investigations.md#pyq-323 (`Settings` coupling),
    #pyq-324 (does the forecast band fan or translate?).
-10. **PYQ-217** (Low) — Dockerfile. Deprioritised by explicit user call in the 2026-07-27
-    pass, and blocked on verification — no sandbox in this project's history has had a Docker
-    CLI to confirm `docker build`/`docker run` against.
-11. PYQ-237/242/245/274 (Low) — doctests, property-based tests, mutation testing, and a
-    CHANGELOG/release workflow. Never picked up across four passes; not urgent.
+6. **PYQ-217** (Low) — Dockerfile. Deprioritised by explicit user call in the 2026-07-27
+   pass, and blocked on verification — no sandbox in this project's history has had a Docker
+   CLI to confirm `docker build`/`docker run` against.
+7. Remaining Low tickets (PYQ-151/153/154/159/237/242/245/274) — doctests, property-based
+   tests, mutation testing, a CHANGELOG/release workflow, and a handful of small bugs. Never
+   picked up across five passes; not urgent.
 
 ### Not now, and why
 
@@ -495,3 +500,27 @@ No existing ticket's status, priority or content was changed. The `## Now` list 
 not re-picked against these additions — several (PYQ-142/143/145/146/150) are plausible
 candidates for it on a future pass, but that call is deliberately left to one, rather than
 made as a side effect of filing.
+
+A ninth pass (2026-07-29) closed the entire Critical/High backlog left after the previous
+review — nine tickets in one session: bugs.md#pyq-142/143/144 (the forecast band's √h-wide
+compounding, checkpoint selection scored against its own reported window, and the pooled
+conformal offset — three bugs that composed with each other and were fixed together),
+features.md#pyq-265/266/267/268/275 (multi-seed backtest reporting, paired significance
+testing, per-horizon breakdown, the multi-symbol sweep harness, and baselines beyond
+persistence — the full measurement apparatus PYQ-312 named as the blocker on its own
+reframing), investigations.md#pyq-322 (a pre-registered rule for what evidence flips a
+default, written before any run rather than after), and investigations.md#pyq-321 (the
+seed-variance floor, Critical) — which, after an initial network check suggested it was
+blocked, turned out not to be: `curl`'s default User-Agent was drawing an HTTP 429 from
+Yahoo Finance, not the sandbox itself, and the project's actual `yfinance` client worked
+fine. A real 10-seed, smoke-scale sweep against live AAPL data measured a `log_return` skill
+sd of ≈0.0114 — PYQ-247's target-change effect survives it 54x over,
+investigations.md#pyq-316's sentiment finding survives it (2.4x, per PYQ-321's own stated
+bar) with less margin than PYQ-247, and investigations.md#pyq-315's AAPL-specific pooling
+delta does *not* clear one sd, flagged as a caveat on that number rather than a
+supersession. Every resolution note states plainly what real-data limitation applied and
+what was deliberately deferred (multi-seed `train()`, `--seeds` support inside `pyquant
+sweep`'s cells, PYQ-205 pin support in `walk_forward_backtest`) rather than rushed. 65 new
+tests; `pyquant/experiments/` and `pyquant/analysis/baselines.py` are new modules. What
+remains is bugs.md#pyq-141 (Medium) and then the sweep itself — a run, not a ticket, now
+fully unblocked. The `## Now` list above was re-picked to reflect this.
