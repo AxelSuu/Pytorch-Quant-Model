@@ -1,7 +1,7 @@
 # Bugs (PYQ-1xx)
 
 Concrete, reproducible defects — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-163**.
+Next free ID: **PYQ-171**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -67,6 +67,14 @@ Next free ID: **PYQ-163**.
 | [PYQ-160](#pyq-160) | Medium | Resolved | `/docs`, `/redoc`, `/openapi.json` are reachable with no `X-API-Key`, contradicting the documented auth contract |
 | [PYQ-161](#pyq-161) | Medium | Resolved | No lock guards concurrent `POST /train` calls for the same bundle name |
 | [PYQ-162](#pyq-162) | Low | Resolved | `POST /train`'s documented `failed` job status has zero test coverage |
+| [PYQ-163](#pyq-163) | High | Open | `POST /train`/`POST /backtest` background jobs share the request-serving thread pool with every other endpoint |
+| [PYQ-164](#pyq-164) | Low | Open | Per-bundle-name lock dicts (`_PredictionLocks`, `BundleCache._load_locks`) never evict |
+| [PYQ-165](#pyq-165) | Medium | Resolved | `/healthz` was a sync `def`, sharing the request/background-job thread pool its own liveness check needs to bypass |
+| [PYQ-166](#pyq-166) | High | Resolved | `POST /scan`/`POST /train`/`POST /backtest` request fields (`symbols`, `epochs`, `windows`, `period`) had no upper bound |
+| [PYQ-167](#pyq-167) | Medium | Resolved | Per-bundle prediction lock blocked indefinitely; a slow request could hold every subsequent caller hostage |
+| [PYQ-168](#pyq-168) | Medium | Resolved | `BundleCache.get()` re-deserializes the same checkpoint N times under concurrent cold-start requests |
+| [PYQ-169](#pyq-169) | Medium | Resolved | Untrained-bundle `404`s leaked the absolute checkpoint filesystem path to the caller |
+| [PYQ-170](#pyq-170) | Low | Resolved | `PYQUANT_API_KEYS` misconfiguration was only caught per-request (`500`), not at process startup |
 
 ---
 
@@ -3213,3 +3221,339 @@ coverage gap on day one.
 
 Verification: both tests pass; `ruff check .`, `pytest -q` and `scripts/backlog.py check`
 all clean.
+
+---
+
+## [PYQ-163]
+`POST /train`/`POST /backtest` background jobs share the request-serving thread pool with every other endpoint
+Status: Open
+Priority: High
+Files: `pyquant/api/jobs.py`, `pyquant/api/routes/train.py`, `pyquant/api/routes/backtest.py`, `docs/api-design.md`, `docs/http-api.md`
+
+Problem: found by an external production-readiness review of the API (2026-07-30),
+independently verified against the installed Starlette/anyio source rather than taken on
+the review's word. `docs/api-design.md` #2 already documents that "a request thread must
+not block on" a full Lightning fit and that's why `POST /train`/`POST /backtest` run via
+FastAPI's `BackgroundTasks`, but it does not name what pool that background work actually
+runs on.
+
+Verified: `BackgroundTask.__call__` (`starlette/background.py`), for a sync function, does
+`await run_in_threadpool(self.func, ...)`. FastAPI's own sync-`def`-route dispatch
+(`fastapi/routing.py`, `run_endpoint_function`) does the identical
+`await run_in_threadpool(dependant.call, **values)`. Both go through
+`starlette/concurrency.py::run_in_threadpool`, which calls
+`anyio.to_thread.run_sync(func)` with no `limiter=` argument — i.e. both paths draw from
+`anyio`'s single process-wide default `CapacityLimiter` (`AsyncIOBackend
+.current_default_thread_limiter`, 40 slots, lazily created). There is no separate pool for
+background jobs; a `POST /train` background task and a concurrent `GET /forecast` request
+compete for the same 40 slots, and a training job holds its slot for minutes rather than
+milliseconds. `/healthz` was one of the sync handlers sharing this pool — bugs.md#pyq-165
+made it `async def` this same pass, which gets the liveness probe itself off the shared
+pool entirely, but does not address the pool sharing for `/forecast`/`/explain`/`/scan`,
+which still compete with background jobs for the same 40 slots.
+
+At the default limiter size (40) this needs sustained concurrent training/backtest load to
+actually exhaust every slot, not "two or three fits" as the review's own phrasing claimed —
+that specific number was not reproduced and is not asserted here. The structural problem is
+real regardless of the exact threshold: an unbounded number of concurrent `POST
+/train`/`POST /backtest` calls (schemas.py's new bounds cap the *cost* of one job, not how
+many can run at once) each consume a slot for the job's full duration, and nothing
+currently limits how many can be in flight together.
+
+Ask: a dedicated executor for background jobs, so they stop drawing from the same pool
+request handling needs. Smallest change with no new dependency: bypass
+`BackgroundTasks.add_task` for `/train`/`/backtest` and submit to a module-level
+`concurrent.futures.ThreadPoolExecutor(max_workers=N)` directly (`loop.run_in_executor
+(dedicated_executor, func, ...)` from an `async def` route), keeping the job registry and
+locking exactly as-is. Longer-term, `docs/api-design.md` already names the real fix this
+merely delays: a process/queue boundary (arq/Celery + Redis, or a `ProcessPoolExecutor` so
+`torch`'s own CPU usage is isolated from the request-serving process) — that is a new
+dependency and needs its own justification per this repo's non-negotiable #5, not a
+decision to make inside this ticket.
+
+Acceptance criteria: background jobs run on a pool separate from request-handling threads,
+verified by a test that starts a slow (mocked) training job and asserts a concurrent
+`GET /healthz` (or another cheap endpoint) responds promptly rather than queuing behind it;
+`docs/api-design.md` #2 and `docs/http-api.md`'s Concurrency model section state which pool
+background jobs run on, not just that they're backgrounded.
+
+---
+
+## [PYQ-164]
+Per-bundle-name lock dicts (`_PredictionLocks`, `BundleCache._load_locks`) never evict
+Status: Open
+Priority: Low
+Files: `pyquant/api/deps.py`
+
+Problem: found by the same external review (2026-07-30) that produced bugs.md#pyq-163,
+re-verified directly against the current source. `_PredictionLocks._locks`
+(`api/deps.py`) grows by one entry per distinct bundle name ever requested and never
+shrinks. This pass's own `BundleCache._load_locks` (added to fix the cold-load stampede
+this same review flagged) has the identical shape for the same reason.
+
+Both dicts are keyed by input that has already passed `SYMBOL_PATTERN`
+(`^[A-Za-z0-9][A-Za-z0-9.\-]{0,15}$`, api/schemas.py) — a large but finite space, not an
+arbitrary-string injection point — so this is bounded, slow memory growth under a
+long-running process fielding many distinct symbol names, not an unbounded DoS from one
+request. Lower severity than bugs.md#pyq-163 for that reason, but real: a server that has
+ever been asked about thousands of distinct (even nonexistent) symbols retains a lock
+object for every one of them forever.
+
+Ask: bound both dicts. The tempting fix — evict an entry once its lock is released — is
+wrong: a lock object referenced by a thread currently waiting on `.acquire()` must not be
+replaced out from under it. Safer shapes: an LRU cap mirroring `BundleCache`'s own
+(evict the least-recently-used lock *only when unheld*, checking `lock.locked()` before
+evicting under the registry lock), or accept the bound growth and cap it with a hard
+ceiling past which the oldest unheld lock is dropped and a warning logged.
+
+Acceptance criteria: a test creates locks for more than some cap's worth of distinct names
+and asserts the registries stay bounded; the fix does not introduce a use-after-evict race
+(a lock currently held or awaited is never evicted out from under its holder/waiter).
+
+---
+
+## [PYQ-165]
+`/healthz` was a sync `def`, sharing the request/background-job thread pool its own liveness check needs to bypass
+Status: Resolved — 2026-07-30
+Priority: Medium
+Files: `pyquant/api/routes/health.py`
+
+Problem: found and verified alongside bugs.md#pyq-163 (same external review, same source
+audit). `/healthz` was `def healthz()`, so FastAPI dispatched it through
+`run_in_threadpool` — the identical shared 40-slot anyio limiter a `POST /train`
+background job also draws from (see PYQ-163 for the verified mechanism). A liveness probe
+is exactly the request an orchestrator (k8s, Render, etc.) needs answered fastest and most
+reliably; queuing it behind a training job's thread is the failure mode that gets a healthy
+container killed for a reason unrelated to its actual health.
+
+Ask: make it `async def`. The handler does no I/O (just returns a static
+`HealthResponse()`), so nothing is lost — an async handler with no `await` inside still
+runs entirely on the event loop, never touching the threadpool at all.
+
+Acceptance criteria: `healthz` is `async def`; a test asserts
+`inspect.iscoroutinefunction(healthz)` as a regression guard against it being changed back.
+
+Resolution: exactly the Ask. `routes/health.py::healthz` is now `async def`, with a
+docstring explaining why (citing the same verified `run_in_threadpool`/anyio-limiter
+mechanism as PYQ-163). This is a *partial* mitigation of PYQ-163's underlying problem — it
+gets the liveness probe itself permanently off the shared pool, but `/forecast`,
+`/explain`, `/scan` and the other sync routes still share it with background jobs, which is
+what PYQ-163 (left Open) tracks.
+
+Verification: `test_healthz_handler_is_async` in `tests/test_api.py` (an `inspect
+.iscoroutinefunction` assertion — a direct, load-free regression guard, not a timing-based
+proof, since reliably demonstrating threadpool starvation in a unit test would need
+saturating all 40 default slots). `ruff check .`, `pytest -q` and `scripts/backlog.py
+check` all clean.
+
+---
+
+## [PYQ-166]
+`POST /scan`/`POST /train`/`POST /backtest` request fields (`symbols`, `epochs`, `windows`, `period`) had no upper bound
+Status: Resolved — 2026-07-30
+Priority: High
+Files: `pyquant/api/schemas.py`
+
+Problem: found by the same external review as bugs.md#pyq-163, verified directly against
+`api/schemas.py`. `ScanRequest.symbols`/`TrainRequest.symbols` were plain `list[str]` with
+no `max_length`; `TrainRequest.epochs`/`BacktestRequest.epochs` and
+`BacktestRequest.windows` were plain `int`/`int | None` with no bound; `TrainRequest
+.period`/`BacktestRequest.period` were plain `str | None`, forwarded unchecked into
+`yfinance.history(period=...)` (`data/macro.py`, `data/providers.py`) via `settings.data
+.period = request.period` — `DataConfig` doesn't set `validate_assignment=True`, so nothing
+re-validates the mutated value, and `period` has no pattern.
+
+Impact: a single authenticated request could demand unbounded vendor-quota spend
+(`POST /scan` with hundreds of symbols, each a ~65s cold forecast per
+investigations.md#pyq-319) or unbounded training compute (`{"windows": 10000}` on
+`POST /backtest`). A bad `period` value fails deep inside the yfinance fetch layer with an
+unhelpful vendor-side error rather than a clean `422` at the request boundary.
+
+Ask: bound every caller-controlled numeric/list field; restrict `period` to yfinance's
+actual accepted vocabulary.
+
+Acceptance criteria: `ScanRequest.symbols`/`TrainRequest.symbols` capped; `epochs`/`windows`
+bounded to a sane positive range; `period` restricted to a known-valid pattern; each bound
+covered by a test asserting the boundary rejects with `422`.
+
+Resolution: four new module-level constants in `schemas.py`
+(`MAX_SYMBOLS_PER_REQUEST=50`, `MAX_EPOCHS=500`, `MAX_BACKTEST_WINDOWS=50`,
+`YFINANCE_PERIOD_PATTERN` — the exact set yfinance accepts: `1d/5d/1mo/3mo/6mo/1y/2y/5y
+/10y/ytd/max`), applied via pydantic `Field(max_length=...)`/`Field(gt=0, le=...)`
+/`Field(pattern=...)` on `ScanRequest.symbols`, `TrainRequest.symbols`/`epochs`/`period`,
+and `BacktestRequest.windows`/`epochs`/`period`. Bounds chosen generously (50 symbols, 500
+epochs, 50 windows) to not constrain legitimate use, not tuned to a specific measured
+attack cost.
+
+Verification: `test_scan_rejects_more_symbols_than_the_cap`,
+`test_train_rejects_more_symbols_than_the_cap`, `test_train_rejects_an_out_of_range_epochs`,
+`test_train_rejects_an_invalid_period`, `test_backtest_rejects_an_out_of_range_windows`,
+`test_backtest_rejects_an_invalid_period` in `tests/test_api.py`, each asserting `422` at
+the boundary. `docs/http-api.md` gained a "Request limits" table under Status codes.
+`ruff check .`, `pytest -q` and `scripts/backlog.py check` all clean.
+
+---
+
+## [PYQ-167]
+Per-bundle prediction lock blocked indefinitely; a slow request could hold every subsequent caller hostage
+Status: Resolved — 2026-07-30
+Priority: Medium
+Files: `pyquant/api/deps.py`, `pyquant/api/routes/forecast.py`, `pyquant/api/routes/explain.py`
+
+Problem: found by the same external review as bugs.md#pyq-163. `_get_forecast`
+(`routes/forecast.py`) and `get_explanation` (`routes/explain.py`) both did
+`with get_prediction_lock(symbol): ...` — a bare `threading.Lock()` context manager, which
+blocks forever if the lock is held. Combined with bugs.md#pyq-163's shared threadpool, a
+slow or hung `predict()` call for one bundle would hold every subsequent request for that
+same bundle queuing on its request thread indefinitely, with no way for a caller to know it
+was queued rather than just slow.
+
+Ask: a bounded wait with a clean error past the bound, mirroring how `require_api_key`
+fails loudly rather than hanging.
+
+Acceptance criteria: a caller queuing behind a busy bundle for longer than some timeout
+gets a clean error response (`429`, since this is a retry-appropriate "busy" signal, not a
+client mistake) instead of an indefinite hang; covered by a test that holds the lock and
+asserts the timeout path.
+
+Resolution: `deps.acquire_prediction_lock(name, timeout=None)`, a `contextmanager` wrapping
+`lock.acquire(timeout=...)` and raising `HTTPException(429, ...)` on failure to acquire
+within `PREDICTION_LOCK_TIMEOUT_SECONDS` (30s, a module constant, deliberately read inside
+the function body rather than bound into the signature's default value so it stays
+`monkeypatch`-able for tests). Replaces the bare `with get_prediction_lock(symbol):` in
+both `routes/forecast.py` and `routes/explain.py`; `get_prediction_lock` itself is
+unchanged and still used internally.
+
+Verification: `test_acquire_prediction_lock_returns_429_when_the_bundle_is_busy` (holds the
+lock, asserts a 0.05s-timeout acquire raises `HTTPException(429)`),
+`test_acquire_prediction_lock_releases_on_success`, and
+`test_forecast_returns_429_when_the_bundle_is_busy` (end-to-end through
+`GET /forecast/{symbol}`, `monkeypatch`ing the timeout constant to 0.05s so the test doesn't
+take 30s) in `tests/test_api.py`. The existing
+`test_forecast_serializes_concurrent_requests_against_the_same_bundle` (0.05s hold, default
+30s timeout) still passes unmodified — the timeout is generous enough not to affect normal
+serialization. `ruff check .`, `pytest -q` and `scripts/backlog.py check` all clean.
+
+---
+
+## [PYQ-168]
+`BundleCache.get()` re-deserializes the same checkpoint N times under concurrent cold-start requests
+Status: Resolved — 2026-07-30
+Priority: Medium
+Files: `pyquant/api/deps.py`
+
+Problem: found by the same external review as bugs.md#pyq-163. `BundleCache.get()`
+deliberately calls `tft.load()` *outside* its own `_lock` (a documented, correct choice —
+so loading one bundle doesn't block requests for already-cached ones), but that meant N
+simultaneous first-requests for the *same* not-yet-cached bundle name each independently
+missed the cache, each called `tft.load()`, and each redundantly paid the full checkpoint
+deserialization cost before whichever finished last won the cache slot. Not a correctness
+bug (every load produces an equivalent bundle), but wasted I/O/CPU exactly during the
+highest-latency case this project has measured (investigations.md#pyq-319: a cold path is
+dominated by vendor fetch, and checkpoint deserialization adds real milliseconds on top).
+
+Ask: dedupe concurrent misses for the same name without serializing misses for
+*different* names (the property the outside-the-lock design was built to preserve).
+
+Acceptance criteria: a test with concurrent `get()` calls for the same name asserts the
+underlying load function was called exactly once; a test with concurrent `get()` calls for
+*different* names asserts they still overlap in time (proving the fix didn't accidentally
+serialize the whole cache).
+
+Resolution: double-checked locking, per-bundle-name. A new `_load_locks: dict[str,
+threading.Lock]` (own registry lock, same shape as `_PredictionLocks`) is acquired around
+the miss-path load; inside it, the cache is re-checked (in case another thread already
+finished loading while this one waited for the load lock) before calling `tft.load()`. The
+fast path — an already-cached hit — is unaffected, since it returns before touching any
+load lock at all. This introduces the same never-evicts shape bugs.md#pyq-164 tracks for
+`_PredictionLocks`; noted there rather than re-filed.
+
+Verification: `test_bundle_cache_dedupes_concurrent_loads_of_the_same_bundle_name` (5
+threads, same name, monkeypatched `tft.load` sleeping 0.05s — asserts exactly one call and
+that every thread got the identical bundle instance) and
+`test_bundle_cache_still_loads_different_names_in_parallel` (2 threads, different names —
+asserts their load spans overlap in time) in `tests/test_api.py`. `ruff check .`,
+`pytest -q` and `scripts/backlog.py check` all clean.
+
+---
+
+## [PYQ-169]
+Untrained-bundle `404`s leaked the absolute checkpoint filesystem path to the caller
+Status: Resolved — 2026-07-30
+Priority: Medium
+Files: `pyquant/api/routes/forecast.py`, `pyquant/api/routes/explain.py`, `docs/http-api.md`
+
+Problem: found by the same external review as bugs.md#pyq-163, with a live example already
+sitting in this project's own docs. `tft.py`'s `_load` raises `FileNotFoundError(f"No
+trained model for {symbol} at {ckpt}. Run \`pyquant train\` first.")`, where `ckpt` is an
+absolute path. `_get_forecast` (`routes/forecast.py`) and `get_explanation`
+(`routes/explain.py`) both did `raise HTTPException(404, detail=str(exc))`, forwarding that
+absolute path straight into the response body — visible in `docs/http-api.md`'s own
+`POST /scan` example (`"... at /.../checkpoints/ZZZZNOPE/model.ckpt. ..."`). Every
+non-health endpoint requires a valid `X-API-Key`, which bounds the exposure to authenticated
+callers rather than the public internet, but it's still handing any caller the server's
+directory layout for no operational benefit.
+
+Ask: sanitize the client-facing message; keep the full detail server-side for operators.
+
+Acceptance criteria: the `404` `detail` for an untrained symbol names the symbol but not an
+absolute path; the full original message is still logged; `docs/http-api.md`'s example
+matches the actual (now-sanitized) response.
+
+Resolution: both routes now catch the `FileNotFoundError`, log it in full
+(`logger.info("Forecast/Explanation requested for untrained bundle: %s", exc)`), and raise
+`HTTPException(404, detail=f"No trained model for {symbol}. Run \`pyquant train\` first.")`
+— same wording, no path. `tft.py`'s underlying message is deliberately left unchanged,
+since the CLI wants the full path (a human operator debugging locally benefits from it) —
+only the two API boundary call sites sanitize. `docs/http-api.md`'s `POST /scan` example and
+its `404` status-code-table row were updated to match.
+
+Verification: `test_forecast_404_does_not_leak_the_absolute_checkpoint_path` and
+`test_explain_404_does_not_leak_the_absolute_checkpoint_path` in `tests/test_api.py`, each
+constructing a `FileNotFoundError` with an embedded absolute path and asserting it's absent
+from the response while the symbol name is present. `ruff check .`, `pytest -q` and
+`scripts/backlog.py check` all clean.
+
+---
+
+## [PYQ-170]
+`PYQUANT_API_KEYS` misconfiguration was only caught per-request (`500`), not at process startup
+Status: Resolved — 2026-07-30
+Priority: Low
+Files: `pyquant/api/app.py`, `pyquant/api/deps.py`, `docs/http-api.md`
+
+Problem: found by the same external review as bugs.md#pyq-163. `require_api_key` already
+fails loudly with `500` when `PYQUANT_API_KEYS` is unset and unauthenticated access wasn't
+explicitly enabled — the right behaviour, but purely per-request. A misconfigured
+deployment still starts, still passes a liveness check, and only reveals the problem to
+whoever happens to send the first real request — slower and quieter than it needs to be for
+something an orchestrator could instead treat as "this deployment never came up."
+
+Ask: check once at startup too, so the process refuses to start rather than accepting
+traffic while misconfigured.
+
+Acceptance criteria: an unconfigured app fails to start (verified via a lifespan-hook
+exception, not just a documentation claim); a correctly configured app (keys set, or
+`PYQUANT_API_ALLOW_UNAUTHENTICATED=1`) starts normally; the existing per-request check is
+unchanged, since it's legitimate defense in depth against the env var changing after
+startup.
+
+Resolution: `app.py` now takes a `lifespan` async context manager (`_lifespan`) that calls a
+new shared helper, `deps.api_auth_is_configured()` (factored out of `require_api_key` so the
+two checks cannot disagree about what "configured" means), and raises `RuntimeError` before
+`yield` if it returns `False`. Verified empirically before shipping (not assumed): a
+`RuntimeError` raised during ASGI lifespan startup propagates cleanly out of
+`TestClient.__enter__` in the installed Starlette version, so `uvicorn` (or any real ASGI
+server) refuses to start the same way. Confirmed this does **not** affect the existing test
+suite: `TestClient(app)` used without a `with` block (every existing test in
+`tests/test_api.py`, at module scope) never triggers ASGI lifespan events at all — only
+`with TestClient(app) as c:` does, verified against the installed Starlette source before
+relying on it.
+
+Verification: `test_app_refuses_to_start_when_api_keys_unconfigured` (asserts
+`pytest.raises(RuntimeError, match="PYQUANT_API_KEYS")` around `with TestClient(app):`),
+`test_app_starts_cleanly_when_api_keys_configured`, and
+`test_app_starts_cleanly_with_the_explicit_dev_opt_out` in `tests/test_api.py` — the one
+place in the file that uses `with TestClient(app) as c:` rather than the module-level
+`client`. `docs/http-api.md`'s Authentication section states the new boot-time behaviour.
+`ruff check .`, `pytest -q` and `scripts/backlog.py check` all clean.

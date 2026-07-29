@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-281**.
+Next free ID: **PYQ-284**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -85,6 +85,9 @@ Next free ID: **PYQ-281**.
 | [PYQ-278](#pyq-278) | Low | Open | Ruff format drift has grown to 33 files vs. the CI comment's 20-22 baseline |
 | [PYQ-279](#pyq-279) | Low | Open | `git_sha()`/`code_version()` shells out uncached on every `build_panel` call |
 | [PYQ-280](#pyq-280) | Low | Open | `backlog.py check` should verify a resolved ticket's acceptance-criteria tests actually exist |
+| [PYQ-281](#pyq-281) | High | Open | API keys authenticate but carry no identity — no quotas, revocation, audit, or per-key cost attribution |
+| [PYQ-282](#pyq-282) | Medium | Open | Precompute forecasts on a nightly schedule instead of fetching live on every `GET /forecast` |
+| [PYQ-283](#pyq-283) | Medium | Open | `GET /symbols`, `GET /metrics/{symbol}`, `GET /forecast/{symbol}/history` — no way to discover what's trained |
 
 ---
 
@@ -4178,4 +4181,147 @@ Acceptance criteria: `backlog.py check` extracts backtick-quoted `test_*`-shaped
 from Resolved tickets' resolution notes/acceptance criteria and fails if none of them exist
 under `tests/` (allowing tickets that name no test to pass through unchanged); a test on the
 checker itself using a synthetic backlog fixture with a dangling test reference.
+
+---
+
+## [PYQ-281]
+API keys authenticate but carry no identity — no quotas, revocation, audit, or per-key cost attribution
+Status: Open
+Priority: High
+Files: `pyquant/api/deps.py`, `pyquant/api/app.py`, `pyquant/cli/app.py` (new subcommand), new storage module
+
+Problem/Ask: found by an external production-readiness review of the API (2026-07-30). The
+review's framing is the useful part, quoted because it names the actual defect precisely:
+*"the real defect isn't that keys live in an env var — it's that `require_api_key` returns
+`None`. The request has no identity. That's why 'no rate limiting' isn't a missing
+middleware; there's no subject to meter. Everything you want (quotas, revocation, audit,
+scopes, per-key cost attribution) is downstream of that one change."*
+
+`require_api_key` (`api/deps.py`) currently does a constant-time string comparison against
+`PYQUANT_API_KEYS` and returns `None` on success — every valid key is interchangeable and
+the request that follows has no way to know *which* key authenticated it. `docs/http-api.md`
+already documents this v1 scaffold's honest limits ("No rate limiting. API keys
+authenticate; they do not meter. An authenticated caller can still exhaust the operator's
+vendor quota.") — this ticket is the concrete design for closing that gap, not a claim that
+the current state is an oversight; PYQ-213's original design note scoped auth to "minimum:
+an API-key gate," deliberately deferring exactly this.
+
+Proposed shape (minimum viable, no user-account system needed):
+
+- An `api_keys` store — `id`, `key_hash`, `prefix`, `name`, `scopes`, `created_at`,
+  `revoked_at`, `last_used_at`. SQLite is enough until more than one instance is running
+  (the same trigger `docs/http-api.md`'s "What v1 deliberately does not do" already names
+  for the job registry and bundle cache); Postgres is the natural point to move the job
+  registry and bundle store there too, not before.
+- Key format `pq_live_<24 random chars>`; shown once at issuance, only the hash is stored;
+  looked up by `prefix` (a short unhashed slice), compared with `hmac.compare_digest`
+  against the hash — same constant-time discipline `require_api_key` already has, extended
+  to a hash lookup instead of a flat list scan.
+- `require_api_key` returns an `ApiKey` (id, name, scopes), not `None`.
+- Scopes fold in what would otherwise be a separate "admin vs public" ticket: `/train` and
+  `/backtest` require a scope a read-only key wouldn't carry — the review's separate
+  observation that "nobody consuming a forecast API wants to trigger fits, and exposing
+  them means exposing your compute budget" is a scopes problem, not a routing problem, so
+  it belongs in this same design rather than a parallel one.
+- Issued via a new `pyquant keys create --name X --scopes read,train` CLI subcommand
+  (operator-run, matching this project's "CLI is the admin surface" pattern elsewhere —
+  `cache`/`doctor`/`snapshot`). Self-serve registration only if actually wanted; not
+  assumed here.
+- Two meters once identity exists: request rate (cheap, per key) and vendor quota (the
+  actual cost driver — investigations.md#pyq-319 measured a cold forecast at 8 yfinance +
+  15 FRED + 1 Finnhub calls). Meter the second in cold-fetches/day, not requests/second;
+  conflating the two under-counts the thing that actually costs money.
+
+This is a new dependency (a database, even SQLite) and a real design commitment, which is
+why it's filed rather than built inside the production-hardening pass that surfaced it —
+per this repo's non-negotiable #5, a new dependency needs a recorded reason, and per
+non-negotiable #1's spirit, a half-built auth system is worse than the honestly-documented
+gap that exists today.
+
+Acceptance criteria: `require_api_key` resolves to an identity, not `None`; at least one
+scope distinction is enforced (`/train`/`/backtest` vs. read endpoints); a key can be
+revoked and a revoked key is rejected; `pyquant keys create` issues a key whose raw value is
+shown exactly once; `docs/http-api.md`'s Authentication section is rewritten around
+identity rather than a flat shared-secret list; `docs/http-api.md`'s "What v1 deliberately
+does not do" is updated to drop "no rate limiting" once a meter exists, or narrowed to
+state precisely what's still unmetered.
+
+---
+
+## [PYQ-282]
+Precompute forecasts on a nightly schedule instead of fetching live on every `GET /forecast`
+Status: Open
+Priority: Medium
+Files: `pyquant/api/routes/forecast.py`, `pyquant/api/schemas.py`, new scheduled-job entry point
+
+Problem/Ask: found by the same external review as features.md#pyq-281. This project's own
+measurement already decides the shape: investigations.md#pyq-319 found a cold `GET
+/forecast` is **~98% vendor fetch and panel build (~65s)**, and a forecast is only fresh
+once per trading day (the panel is daily-bar data; nothing in it changes intraday). Serving
+it live on every request means paying that 65s (or serving a stale panel-cache hit) on a
+value that only actually changes once a day.
+
+Proposed shape: a nightly batch job (after market close) that runs `generate_forecast` for
+every trained symbol and writes the result to a store, tagged with an `as_of` trading date
+and a `computed_at` timestamp; `GET /forecast/{symbol}` becomes a read against that store
+(a millisecond response with an `ETag`) instead of a live pipeline run. This is the same
+precompute-vs-serve split `docs/api-design.md` already gestures at for the job registry and
+bundle cache ("multi-instance / serverless... needs shared/object storage") without
+spelling out for the forecast itself.
+
+This reframes what `/forecast` *is* more than it changes its interface — worth stating
+plainly rather than treating as a drop-in optimization: a precomputed forecast is now "what
+the model said as of last night's close," which needs surfacing (`as_of`) rather than
+implied. `GET /forecast/{symbol}/history` (features.md#pyq-283) is the natural companion —
+once forecasts are stored rather than transient, comparing past forecasts to realized
+outcomes becomes a read instead of a re-run.
+
+Scope explicitly not decided here: what runs the nightly job (a cron-triggered CLI
+invocation is the cheapest starting point and needs no new infrastructure; a proper
+scheduler is a later step), and what the store is (same SQLite-then-Postgres trigger as
+features.md#pyq-281, and plausibly the same database once one exists).
+
+Acceptance criteria: a scheduled entry point computes and stores forecasts for every
+trained symbol; `GET /forecast/{symbol}` reads from that store and returns in well under a
+second on a warm store; the response carries `as_of`/`computed_at`; a stale-store case
+(nightly job hasn't run, or failed) fails clearly rather than silently serving arbitrarily
+old data; `docs/http-api.md` documents the new latency profile and what "fresh" means.
+
+---
+
+## [PYQ-283]
+`GET /symbols`, `GET /metrics/{symbol}`, `GET /forecast/{symbol}/history` — no way to discover what's trained
+Status: Open
+Priority: Medium
+Files: `pyquant/api/routes/`, `pyquant/api/schemas.py`, `docs/http-api.md`
+
+Problem/Ask: found by the same external review as features.md#pyq-281. Every read endpoint
+(`/forecast/{symbol}`, `/explain/{symbol}`) requires already knowing a trained symbol, and
+the only way to find out whether one is trained is to try it and read the `404`. There is no
+list endpoint. The review's framing: this is "why the API feels broken" for a first-time
+caller — a forecasting API with no way to ask "what can you forecast" is a dead end before
+it's a feature gap.
+
+Three read-only, cheap additions:
+
+- **`GET /symbols`** — every bundle under `checkpoint_dir`, from each bundle's `meta.json`
+  (symbols, `trained_at`, recorded skill). No existing helper does this walk today (`cli
+  /app.py`'s `cache_list` is the *data* cache, not trained bundles) — new, small logic.
+- **`GET /metrics/{symbol}`** — a bundle's recorded evaluation (skill vs. persistence,
+  calibration coverage, directional accuracy) without fetching a forecast. Already computed
+  at train time and sitting in `meta.json`/the bundle; this is a read, not a computation.
+  Publishing this by default (not just via `/explain`'s caveat banner) is, per the review,
+  "the honest differentiator" this project already has the discipline to say out loud.
+- **`GET /forecast/{symbol}/history`** — past forecasts vs. realized outcomes. Only cheap
+  to build well once forecasts are actually stored rather than regenerated per request
+  (features.md#pyq-282) — until then this would mean re-running historical panels live,
+  which defeats its own purpose. Sequence after #pyq-282, not before.
+
+Acceptance criteria: `GET /symbols` lists every trained bundle with at least `symbol`,
+`trained_at`, `bundle_skill`; `GET /metrics/{symbol}` returns the bundle's recorded
+`EvaluationResponse` (404 if untrained, matching the existing convention); `GET /forecast
+/{symbol}/history` is scoped to land after features.md#pyq-282's store exists, and this
+ticket says so explicitly rather than building a live-recompute version that would need
+throwing away later. All three documented in `docs/http-api.md`'s Endpoints table and
+covered in `tests/test_api.py`.
 

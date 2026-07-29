@@ -42,6 +42,11 @@ quota on every caller. For local development only:
 PYQUANT_API_ALLOW_UNAUTHENTICATED=1 uv run uvicorn pyquant.api.app:app
 ```
 
+**The process refuses to start at all if unconfigured** (a `lifespan` hook makes the same
+check once at boot, not just per-request) — a misconfigured deployment crash-loops
+immediately instead of starting, passing a liveness check, and 500ing on the first real
+request. The per-request check in `require_api_key` stays as defense in depth on top of it.
+
 ## Endpoints
 
 | Method | Path | Auth | Returns |
@@ -69,10 +74,28 @@ endpoint except `/healthz`" is exact, not aspirational.
 | Code | When |
 |---|---|
 | `401` | Missing or invalid `X-API-Key`. Body: `{"detail": "Missing or invalid API key"}`. |
-| `404` | No trained bundle for that symbol, or no job with that id. Body: `{"detail": "No trained model for ... Run \`pyquant train\` first."}` or `{"detail": "No job '<id>'"}`. |
+| `404` | No trained bundle for that symbol, or no job with that id. Body: `{"detail": "No trained model for SYMBOL. Run \`pyquant train\` first."}` or `{"detail": "No job '<id>'"}`. Deliberately does **not** include the bundle's absolute filesystem path — the full detail (which does) is logged server-side only. |
 | `409` | {py:class}`~pyquant.models.tft.FeatureSchemaMismatch` — the bundle was trained on features that can no longer be assembled. A conflict, not a server error: the model is fine, the world moved. Also returned by `POST /train` when a job for the same bundle name is already queued or running (bugs.md#pyq-161). |
-| `422` | An empty `symbols` list on `POST /train` (`{"detail": "symbols must not be empty"}`), or a body that fails pydantic validation — e.g. an invalid symbol shape returns FastAPI's structured form: `{"detail": [{"type": "value_error", "loc": ["body", "symbols"], "msg": "Value error, Invalid symbol/bundle name '../x': must match ...", ...}]}`. Note the two `422` shapes differ (plain string vs. a list of error objects) depending on which check rejected the request. |
+| `422` | An empty `symbols` list on `POST /train` (`{"detail": "symbols must not be empty"}`), a body that fails pydantic validation — e.g. an invalid symbol shape returns FastAPI's structured form: `{"detail": [{"type": "value_error", "loc": ["body", "symbols"], "msg": "Value error, Invalid symbol/bundle name '../x': must match ...", ...}]}` — or a request field outside its bound (more than 50 symbols, `windows`/`epochs` out of range, an unrecognised `period`; see "Request limits" below). Note the two `422` shapes differ (plain string vs. a list of error objects) depending on which check rejected the request. |
+| `429` | The requested bundle's prediction lock (`/forecast`, `/explain`) is still held by another in-flight request after `PREDICTION_LOCK_TIMEOUT_SECONDS` (30s). Retry — this is a queue-length signal, not a client error. |
 | `500` | `PYQUANT_API_KEYS` is unset and unauthenticated access was not explicitly enabled. |
+
+### Request limits
+
+Every request body field a caller controls is bounded, so one authenticated request can't
+turn into unbounded vendor-quota spend or training compute — a cold forecast is ~65s of
+mostly vendor fetch (investigations.md#pyq-319), so an unbounded `POST /scan` symbol list or
+an unbounded `windows`/`epochs` is a real cost multiplier, not just an input-shape nicety:
+
+| Field | Bound |
+|---|---|
+| `ScanRequest.symbols`, `TrainRequest.symbols` | ≤ 50 entries |
+| `TrainRequest.epochs`, `BacktestRequest.epochs` | 1–500 |
+| `BacktestRequest.windows` | 1–50 |
+| `TrainRequest.period`, `BacktestRequest.period` | one of yfinance's accepted tokens (`1d`, `5d`, `1mo`, `3mo`, `6mo`, `1y`, `2y`, `5y`, `10y`, `ytd`, `max`) — anything else 422s at the request boundary instead of failing deep inside the fetch layer with an unhelpful vendor-side error. |
+
+All four constants live in {py:mod}`pyquant.api.schemas` (`MAX_SYMBOLS_PER_REQUEST`,
+`MAX_EPOCHS`, `MAX_BACKTEST_WINDOWS`, `YFINANCE_PERIOD_PATTERN`).
 
 ### Forecasting
 
@@ -109,7 +132,7 @@ A real two-symbol response, one trained and one not, looks like this:
   },
   {
     "symbol": "ZZZZNOPE", "status": "not_trained",
-    "error": "No trained model for ZZZZNOPE at /.../checkpoints/ZZZZNOPE/model.ckpt. Run `pyquant train` first.",
+    "error": "No trained model for ZZZZNOPE. Run `pyquant train` first.",
     "current_price": null, "median_target": null,
     "expected_return_pct": null, "band_width_pct": null, "signal": null
   }
@@ -246,19 +269,37 @@ Two mechanisms, both from measured behaviour rather than assumption:
 
 **An LRU cache of loaded bundles**, holding 8. Loading a bundle is real file I/O plus
 checkpoint deserialisation; reloading per request would re-pay it every time. The load
-happens *outside* the cache lock, so loading one bundle does not block requests for
-bundles already resident.
+happens *outside* the cache-wide lock, so loading one bundle does not block requests for
+bundles already resident — but concurrent first-requests for the *same* not-yet-cached
+name are deduped by a separate per-name load lock, so N simultaneous cold requests for one
+symbol pay the deserialisation cost once, not N times.
 
-**One lock per bundle.** `TemporalFusionTransformer.predict()` is not safe to call
-concurrently on the same model instance — pytorch-forecasting spins up an internal
-Lightning `Trainer` per call and mutates model state. Requests against *different* bundles
-proceed in parallel; requests against the same one serialise. That costs less than it
-sounds: torch already uses multiple cores within a single call.
+**One lock per bundle, with a bounded wait.**
+`TemporalFusionTransformer.predict()` is not safe to call concurrently on the same model
+instance — pytorch-forecasting spins up an internal Lightning `Trainer` per call and
+mutates model state. Requests against *different* bundles proceed in parallel; requests
+against the same one queue for its lock, up to `PREDICTION_LOCK_TIMEOUT_SECONDS` (30s) —
+past that, the request returns `429` rather than blocking indefinitely, since an unbounded
+wait would otherwise hold a request thread hostage on the same shared threadpool
+`BackgroundTasks` uses (see the note below). That costs less than it sounds: torch already
+uses multiple cores within a single call.
 
 Both are informed by `investigations.md#pyq-319`, which measured where forecast latency
 actually goes: a cold call is **~98% vendor fetch and panel build (~65 s)**, and the
 forward pass itself is under a second either way. Optimising the model path would have been
 optimising 2% of the wall clock.
+
+**A sync FastAPI route and a sync `BackgroundTasks` function share one thread pool.**
+Verified against the installed Starlette/anyio source: both `def` route handlers and a
+sync function passed to `BackgroundTasks.add_task` dispatch through
+`starlette.concurrency.run_in_threadpool`, which uses anyio's single default worker-thread
+limiter (40 slots) with no separate pool for either. A long-running `POST /train` or
+`POST /backtest` job therefore occupies one of the same slots a concurrent `GET /forecast`
+needs — this is why `/healthz` is `async def` (it does no I/O, so it never needs a slot at
+all) and why the request limits above exist. A dedicated executor for training/backtest
+jobs — so they stop competing with request-handling threads for the same limited pool — is
+the next step if training concurrency under load becomes a real bottleneck; not built yet
+(see "What v1 deliberately does not do").
 
 ## What v1 deliberately does not do
 
@@ -273,8 +314,17 @@ to graduate rather than defects to file:
   another worker's cached copy. Same trigger.
 - **Bundles live on the local filesystem.** No object storage, so instances do not share
   trained models.
-- **No rate limiting.** API keys authenticate; they do not meter. An authenticated caller
-  can still exhaust the operator's vendor quota.
+- **No rate limiting, and no request identity to attach one to.** `require_api_key`
+  authenticates but resolves to nothing — every valid key is interchangeable, so there's no
+  subject to meter, revoke individually, or attribute vendor-quota cost to
+  (features.md#pyq-281 is the design for closing this; a new dependency, deliberately not
+  built inside a hardening pass).
+- **Every sync route and every background job (`POST /train`, `POST /backtest`) share one
+  40-slot thread pool.** Verified against the installed Starlette/anyio source
+  (bugs.md#pyq-163, Open): a long-running training job occupies a slot a concurrent
+  `/forecast` request also needs. `/healthz` was moved off this pool entirely
+  (bugs.md#pyq-165); the read endpoints have not been, and there is no dedicated executor
+  for background jobs yet.
 
 Each of these is cheap to live with for a single instance and wrong to pretend away for
 more than one.
@@ -288,5 +338,12 @@ more than one.
 - **`/backtest` does not expose `--signals`, `--seeds` or `--cost-bps`.** CLI-only for this
   pass — each would need its own reasoning about job-result shape rather than being folded
   in silently (see the Backtesting section above).
-- **No rate limiting and no per-key request quota** — see "What v1 deliberately does not
-  do" above.
+- **No way to discover what's trained.** No `GET /symbols`, `GET /metrics/{symbol}`, or
+  `GET /forecast/{symbol}/history` yet (features.md#pyq-283) — a caller who doesn't already
+  know a trained symbol has to try it and read the `404`.
+- **Every `GET /forecast` runs the live pipeline**, even though a forecast is only fresh
+  once per trading day and a cold call is ~65s (investigations.md#pyq-319). A nightly
+  precompute (features.md#pyq-282) would make this a millisecond read; not built yet.
+- **No dedicated executor for background jobs** (bugs.md#pyq-163) and **no identity-bearing
+  API keys / rate limiting** (features.md#pyq-281) — see "What v1 deliberately does not do"
+  above for both.

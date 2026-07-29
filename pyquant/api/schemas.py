@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import re
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 # A ticker symbol or bundle name becomes a filesystem path segment
 # (`_bundle_dir`: `settings.checkpoint_dir / name.upper()`). Unlike a GET
@@ -23,6 +23,21 @@ from pydantic import BaseModel, field_validator
 # (e.g. "BRK.B", "AAPL_MSFT").
 SYMBOL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,15}$"
 _SYMBOL_RE = re.compile(SYMBOL_PATTERN)
+
+# yfinance's `Ticker.history(period=...)` only accepts this fixed vocabulary; anything
+# else fails deep inside the fetch layer with an unhelpful vendor-side error rather than
+# a clean 422 at the request boundary. `data.period` has no pydantic validation on
+# assignment (`DataConfig` doesn't set `validate_assignment=True`), so `settings.data.period
+# = request.period` would otherwise forward an arbitrary string straight to yfinance.
+YFINANCE_PERIOD_PATTERN = r"^(1d|5d|1mo|3mo|6mo|1y|2y|5y|10y|ytd|max)$"
+
+# A remotely-triggered POST /scan or /train with an unbounded symbol list, or an
+# unbounded `windows`/`epochs`, turns one authenticated request into an arbitrarily large
+# amount of vendor-quota spend and training compute (a cold forecast is ~65s per symbol,
+# investigations.md#pyq-319) -- these caps make that a 422 instead of a slow-motion outage.
+MAX_SYMBOLS_PER_REQUEST = 50
+MAX_EPOCHS = 500
+MAX_BACKTEST_WINDOWS = 50
 
 
 def _validate_symbol(value: str) -> str:
@@ -99,7 +114,7 @@ class ScanRow(BaseModel):
 class ScanRequest(BaseModel):
     """Request body for POST /scan."""
 
-    symbols: list[str]
+    symbols: list[str] = Field(max_length=MAX_SYMBOLS_PER_REQUEST)
 
     @field_validator("symbols")
     @classmethod
@@ -121,10 +136,10 @@ class TrainResultResponse(BaseModel):
 class TrainRequest(BaseModel):
     """Request body for POST /train."""
 
-    symbols: list[str]
+    symbols: list[str] = Field(max_length=MAX_SYMBOLS_PER_REQUEST)
     bundle_name: str | None = None
-    epochs: int | None = None
-    period: str | None = None
+    epochs: int | None = Field(default=None, gt=0, le=MAX_EPOCHS)
+    period: str | None = Field(default=None, pattern=YFINANCE_PERIOD_PATTERN)
 
     @field_validator("symbols")
     @classmethod
@@ -174,9 +189,9 @@ class BacktestRequest(BaseModel):
     """
 
     symbol: str
-    windows: int = 5
-    epochs: int | None = None
-    period: str | None = None
+    windows: int = Field(default=5, gt=0, le=MAX_BACKTEST_WINDOWS)
+    epochs: int | None = Field(default=None, gt=0, le=MAX_EPOCHS)
+    period: str | None = Field(default=None, pattern=YFINANCE_PERIOD_PATTERN)
 
     @field_validator("symbol")
     @classmethod

@@ -122,6 +122,19 @@ def test_healthz_needs_no_auth():
     assert r.json() == {"status": "ok"}
 
 
+def test_healthz_handler_is_async():
+    """Regression guard: a sync `def` here would dispatch through FastAPI's
+    run_in_threadpool, sharing anyio's single default worker-thread limiter
+    with every other sync endpoint *and* with BackgroundTasks -- a liveness
+    probe queuing behind a long-running POST /train job is the failure mode
+    this guards against."""
+    import inspect
+
+    from pyquant.api.routes.health import healthz
+
+    assert inspect.iscoroutinefunction(healthz)
+
+
 def test_forecast_returns_the_serialized_forecast(monkeypatch):
     _override_settings_and_cache()
     monkeypatch.setattr(
@@ -141,6 +154,32 @@ def test_forecast_404_for_an_untrained_symbol():
     _override_settings_and_cache(_FakeBundleCache(raises=FileNotFoundError("no bundle")))
     r = client.get("/forecast/NEVERTRAINED")
     assert r.status_code == 404
+
+
+def test_forecast_404_does_not_leak_the_absolute_checkpoint_path():
+    """The underlying FileNotFoundError names an absolute filesystem path
+    (tft.py's `_load`) -- a remote caller only needs "not trained", not the
+    server's directory layout."""
+    leaky = FileNotFoundError(
+        "No trained model for NEVERTRAINED at /home/svc/checkpoints/NEVERTRAINED/model.ckpt. "
+        "Run `pyquant train` first."
+    )
+    _override_settings_and_cache(_FakeBundleCache(raises=leaky))
+    r = client.get("/forecast/NEVERTRAINED")
+    assert r.status_code == 404
+    assert "/home/svc" not in r.json()["detail"]
+    assert "NEVERTRAINED" in r.json()["detail"]
+
+
+def test_explain_404_does_not_leak_the_absolute_checkpoint_path():
+    leaky = FileNotFoundError(
+        "No trained model for NEVERTRAINED at /home/svc/checkpoints/NEVERTRAINED/model.ckpt. "
+        "Run `pyquant train` first."
+    )
+    _override_settings_and_cache(_FakeBundleCache(raises=leaky))
+    r = client.get("/explain/NEVERTRAINED")
+    assert r.status_code == 404
+    assert "/home/svc" not in r.json()["detail"]
 
 
 def test_forecast_409_on_a_feature_schema_mismatch(monkeypatch):
@@ -222,6 +261,108 @@ def test_forecast_serializes_concurrent_requests_against_the_same_bundle(monkeyp
     assert len(call_spans) == 2
     (_, first_end), (second_start, _) = sorted(call_spans)
     assert second_start >= first_end, f"concurrent calls overlapped: {call_spans}"
+
+
+# --- prediction lock now times out instead of blocking forever --------------------
+
+
+def test_acquire_prediction_lock_returns_429_when_the_bundle_is_busy():
+    """`with lock:` blocks indefinitely; acquire_prediction_lock must not --
+    a caller stuck behind a slow request should get a clean 429, not hang."""
+    from fastapi import HTTPException
+
+    lock = deps.get_prediction_lock("BUSYTEST")
+    lock.acquire()
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            with deps.acquire_prediction_lock("BUSYTEST", timeout=0.05):
+                pass  # pragma: no cover -- must never be reached
+        assert exc_info.value.status_code == 429
+    finally:
+        lock.release()
+
+
+def test_acquire_prediction_lock_releases_on_success():
+    with deps.acquire_prediction_lock("FREETEST", timeout=1.0):
+        pass
+    # A second immediate acquire must succeed -- proves the first `with` released it.
+    with deps.acquire_prediction_lock("FREETEST", timeout=0.5):
+        pass
+
+
+def test_forecast_returns_429_when_the_bundle_is_busy(monkeypatch):
+    _override_settings_and_cache()
+    monkeypatch.setattr(deps, "PREDICTION_LOCK_TIMEOUT_SECONDS", 0.05)
+    lock = deps.get_prediction_lock("AAPL")
+    lock.acquire()
+    try:
+        r = client.get("/forecast/AAPL")
+        assert r.status_code == 429
+    finally:
+        lock.release()
+
+
+# --- BundleCache: concurrent misses for the same name must not stampede -----------
+
+
+def test_bundle_cache_dedupes_concurrent_loads_of_the_same_bundle_name(monkeypatch):
+    load_calls: list[str] = []
+    calls_lock = threading.Lock()
+
+    def slow_load(name, settings):
+        with calls_lock:
+            load_calls.append(name)
+        time.sleep(0.05)
+        return object()
+
+    monkeypatch.setattr("pyquant.api.deps.tft.load", slow_load)
+
+    cache = deps.BundleCache()
+    results: list[object] = []
+    results_lock = threading.Lock()
+
+    def get():
+        bundle = cache.get("AAPL", object())
+        with results_lock:
+            results.append(bundle)
+
+    threads = [threading.Thread(target=get) for _ in range(5)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert load_calls == ["AAPL"]  # exactly one real load, not five
+    assert len(results) == 5
+    assert len({id(r) for r in results}) == 1  # every caller got the same instance
+
+
+def test_bundle_cache_still_loads_different_names_in_parallel(monkeypatch):
+    call_spans: list[tuple[float, float]] = []
+    spans_lock = threading.Lock()
+
+    def slow_load(name, settings):
+        start = time.monotonic()
+        time.sleep(0.05)
+        with spans_lock:
+            call_spans.append((start, time.monotonic()))
+        return object()
+
+    monkeypatch.setattr("pyquant.api.deps.tft.load", slow_load)
+    cache = deps.BundleCache()
+
+    threads = [
+        threading.Thread(target=lambda s=s: cache.get(s, object())) for s in ("AAPL", "MSFT")
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(call_spans) == 2
+    (first_start, first_end), (second_start, _) = sorted(call_spans)
+    # Overlapping spans (second starts before the first ends) is what "parallel" means here.
+    assert second_start < first_end, f"different-name loads serialized: {call_spans}"
 
 
 def test_train_returns_202_and_a_pollable_job_id(monkeypatch):
@@ -418,6 +559,76 @@ def test_scan_rejects_a_path_traversal_symbol():
     assert r.status_code == 422
 
 
+# --- unbounded request fields: one authenticated request must not be able to -------
+# --- demand unbounded vendor-quota spend or training compute -----------------------
+
+
+def test_scan_rejects_more_symbols_than_the_cap():
+    from pyquant.api.schemas import MAX_SYMBOLS_PER_REQUEST
+
+    _override_settings_and_cache()
+    too_many = [f"SYM{i}" for i in range(MAX_SYMBOLS_PER_REQUEST + 1)]
+    r = client.post("/scan", json={"symbols": too_many})
+    assert r.status_code == 422
+
+
+def test_train_rejects_more_symbols_than_the_cap():
+    from pyquant.api.schemas import MAX_SYMBOLS_PER_REQUEST
+
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
+    app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+    too_many = [f"SYM{i}" for i in range(MAX_SYMBOLS_PER_REQUEST + 1)]
+    r = client.post("/train", json={"symbols": too_many})
+    assert r.status_code == 422
+
+
+def test_train_rejects_an_out_of_range_epochs():
+    from pyquant.api.schemas import MAX_EPOCHS
+
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
+    app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+    assert (
+        client.post("/train", json={"symbols": ["AAPL"], "epochs": 0}).status_code == 422
+    )
+    assert (
+        client.post(
+            "/train", json={"symbols": ["AAPL"], "epochs": MAX_EPOCHS + 1}
+        ).status_code
+        == 422
+    )
+
+
+def test_train_rejects_an_invalid_period():
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
+    app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+    r = client.post("/train", json={"symbols": ["AAPL"], "period": "'; DROP TABLE x"})
+    assert r.status_code == 422
+
+
+def test_backtest_rejects_an_out_of_range_windows():
+    from pyquant.api.schemas import MAX_BACKTEST_WINDOWS
+
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
+    assert client.post("/backtest", json={"symbol": "AAPL", "windows": 0}).status_code == 422
+    assert (
+        client.post(
+            "/backtest", json={"symbol": "AAPL", "windows": MAX_BACKTEST_WINDOWS + 1}
+        ).status_code
+        == 422
+    )
+
+
+def test_backtest_rejects_an_invalid_period():
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
+    r = client.post("/backtest", json={"symbol": "AAPL", "period": "forever"})
+    assert r.status_code == 422
+
+
 def test_bundle_dir_never_resolves_outside_checkpoint_dir(tmp_path):
     from pyquant.config import Settings
     from pyquant.models import tft as tft_mod
@@ -552,6 +763,33 @@ def test_require_api_key_fails_loudly_when_unconfigured(monkeypatch):
     monkeypatch.delenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", raising=False)
     r = client.get("/forecast/AAPL")
     assert r.status_code == 500  # not a silent 200 -- an unconfigured gate must not open
+
+
+def test_app_refuses_to_start_when_api_keys_unconfigured(monkeypatch):
+    """The lifespan hook makes the same check require_api_key does, once at
+    boot -- a misconfigured deployment should crash-loop immediately rather
+    than start, pass a liveness check, and 500 on the first real request.
+    Only entering TestClient as a context manager runs ASGI lifespan events
+    (verified against the installed Starlette source); the module-level
+    `client` used elsewhere never does, so this is the one test that does."""
+    monkeypatch.delenv("PYQUANT_API_KEYS", raising=False)
+    monkeypatch.delenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", raising=False)
+    with pytest.raises(RuntimeError, match="PYQUANT_API_KEYS"):
+        with TestClient(app):
+            pass  # pragma: no cover -- startup must fail before this runs
+
+
+def test_app_starts_cleanly_when_api_keys_configured(monkeypatch):
+    monkeypatch.setenv("PYQUANT_API_KEYS", "a-real-key")
+    with TestClient(app) as c:
+        assert c.get("/healthz").status_code == 200
+
+
+def test_app_starts_cleanly_with_the_explicit_dev_opt_out(monkeypatch):
+    monkeypatch.delenv("PYQUANT_API_KEYS", raising=False)
+    monkeypatch.setenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", "1")
+    with TestClient(app) as c:
+        assert c.get("/healthz").status_code == 200
 
 
 def test_require_api_key_allows_the_explicit_dev_opt_out(monkeypatch):

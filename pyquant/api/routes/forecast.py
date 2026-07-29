@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi import Path as PathParam
 
@@ -9,8 +11,8 @@ from pyquant.analysis import serialize
 from pyquant.analysis.forecast import generate_forecast
 from pyquant.api.deps import (
     BundleCache,
+    acquire_prediction_lock,
     get_bundle_cache,
-    get_prediction_lock,
     get_settings,
     require_api_key,
 )
@@ -19,6 +21,7 @@ from pyquant.config import Settings
 from pyquant.models import tft
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
+logger = logging.getLogger(__name__)
 
 
 def _get_forecast(symbol: str, settings: Settings, bundle_cache: BundleCache):
@@ -26,11 +29,19 @@ def _get_forecast(symbol: str, settings: Settings, bundle_cache: BundleCache):
     try:
         bundle = bundle_cache.get(symbol, settings)
     except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        # The underlying message includes an absolute checkpoint path
+        # (tft.py's `_load`); logged in full server-side, but not handed to a
+        # remote caller, who only needs "this symbol isn't trained."
+        logger.info("Forecast requested for untrained bundle: %s", exc)
+        raise HTTPException(
+            status_code=404,
+            detail=f"No trained model for {symbol}. Run `pyquant train` first.",
+        ) from exc
     # Per-bundle lock (docs/api-design.md #4): serialize predictions against this
     # bundle's model instance; concurrent requests for *different* bundles proceed
-    # unblocked since each has its own lock.
-    with get_prediction_lock(symbol):
+    # unblocked since each has its own lock. Bounded wait (429 past
+    # PREDICTION_LOCK_TIMEOUT_SECONDS), not an indefinite block.
+    with acquire_prediction_lock(symbol):
         try:
             return generate_forecast(symbol, settings, bundle=bundle)
         except tft.FeatureSchemaMismatch as exc:
