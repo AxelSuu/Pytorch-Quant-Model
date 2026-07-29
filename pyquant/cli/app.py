@@ -207,6 +207,33 @@ def _per_window_table(result, quantiles: list[float]) -> Table:
     return table
 
 
+def _per_horizon_table(evaluation, quantiles: list[float], title: str = "Per-horizon breakdown") -> Table:
+    """The per-decoder-step profile every other metric averages away (PYQ-267).
+
+    Persistence is hardest to beat at h=1 and progressively less so as h grows,
+    so a model that is genuinely learning something should show skill
+    *increasing* with horizon while one that only tracks the last close shows
+    the opposite -- indistinguishable in a single mean-over-horizon number.
+    """
+    table = Table(title=title, title_style="dim")
+    table.add_column("Step", justify="right")
+    table.add_column("Model MAE", justify="right")
+    table.add_column("Baseline MAE", justify="right")
+    table.add_column("Skill", justify="right")
+    table.add_column("Directional", justify="right")
+    table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
+    for step in evaluation.per_horizon:
+        table.add_row(
+            f"h={step.step}",
+            f"{step.model_mae:.4f}",
+            f"{step.baseline_mae:.4f}",
+            f"{step.skill_vs_baseline:+.1%}",
+            f"{step.directional_accuracy:.1%}",
+            f"{step.calibration_coverage:.1%}",
+        )
+    return table
+
+
 def _directional_interval(result, horizon: int) -> tuple[float, float]:
     """Moving-block interval for backtest window directional accuracy (PYQ-251)."""
     return moving_block_bootstrap_interval(
@@ -275,6 +302,8 @@ def train(
     table.add_row("Selection loss", f"{result.val_loss:.5f}")
     _add_metric_rows(table, result.evaluation, settings.tft.quantiles)
     console.print(table)
+    if len(result.evaluation.per_horizon) > 1:
+        console.print(_per_horizon_table(result.evaluation, settings.tft.quantiles))
     if not _output.quiet:
         console.print("[dim]Next: pyquant forecast " + result.symbols[0] + "[/dim]")
 
@@ -353,6 +382,10 @@ def backtest(
     console.print(table)
     if len(result.per_window) > 1:
         console.print(_per_window_table(result, settings.tft.quantiles))
+    if len(result.aggregated.per_horizon) > 1:
+        console.print(
+            _per_horizon_table(result.aggregated, settings.tft.quantiles, title="Per-horizon breakdown (pooled)")
+        )
 
     if signal_eval is not None:
         sig_table = Table(title="Signal evaluation (scan's BUY/SELL/HOLD)", show_header=False)

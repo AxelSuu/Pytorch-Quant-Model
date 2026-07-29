@@ -43,6 +43,18 @@ def evaluation_to_dict(ev: EvaluationMetrics) -> dict[str, Any]:
         "n_samples": ev.n_samples,
         "n_points": ev.n_points,
         "effective_n_samples": ev.effective_n_samples,
+        # The profile every field above is a mean over h=1..horizon of (PYQ-267).
+        "per_horizon": [
+            {
+                "step": step.step,
+                "model_mae": step.model_mae,
+                "baseline_mae": step.baseline_mae,
+                "skill_vs_baseline": step.skill_vs_baseline,
+                "directional_accuracy": step.directional_accuracy,
+                "calibration_coverage": step.calibration_coverage,
+            }
+            for step in ev.per_horizon
+        ],
     }
 
 

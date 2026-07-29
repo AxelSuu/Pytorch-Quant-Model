@@ -176,6 +176,32 @@ A backtest reports **per-window** metrics as well as the aggregate, because the 
 across time is the reason to run more than one window. A single mean over five origins
 hides whether the model is consistently mediocre or wildly unstable.
 
+(per-horizon)=
+## Per-horizon breakdown
+
+Every metric above is also a mean over decoder steps h=1..horizon, which hides a second kind
+of structure (PYQ-267): persistence is hardest to beat at h=1 and progressively less so as h
+grows, so a model that has learned something should show skill *increasing* with horizon,
+while one that is only tracking the last close should show the opposite. A flat headline
+number and a profile like `[-60%, -35%, -10%, +5%, +15%]` are the same mean and very
+different findings. `EvaluationMetrics.per_horizon` (one `PerHorizonMetrics` per decoder
+step, pooled position-wise across windows the same weighted way the aggregate is) now carries
+this; `--format json` includes it, and `train`/`backtest` print it as a "Per-horizon
+breakdown" table whenever the horizon exceeds one step.
+
+The same applies to calibration: a 99.3% coverage on a nominal 80% band could be ~100% at
+h=1 (the band is far too wide where uncertainty is smallest) decaying toward nominal at h=5,
+or flat across every step — two different pathologies with the same headline number, and
+`investigations.md#pyq-324` (see {ref}`related-open-questions`) is the open question of which
+one this project's own band shows.
+
+**This section does not yet show the actual profile** for the default or `log_return`
+configurations, unlike the rest of this document's measured numbers — no live vendor-data
+access was available in the pass that added `per_horizon` to re-run `pyquant train`/`backtest`
+and capture it. Filling in the real profile for both configurations (ideally after PYQ-143's
+geometry fix has also been re-measured, since both landed in the same pass) is the natural
+next step, not a placeholder to leave standing.
+
 (sample-size)=
 ## Sample size
 

@@ -194,6 +194,35 @@ def moving_block_bootstrap_interval(
 
 
 @dataclass
+class PerHorizonMetrics:
+    """One decoder step's metrics, isolated from the horizon-wide mean (PYQ-267).
+
+    Every field on `EvaluationMetrics` above averages over h=1..horizon, which
+    discards exactly the structure most likely to distinguish a model that is
+    genuinely learning something (skill rising with horizon, since persistence
+    is hardest to beat at h=1) from one that is only tracking the last close
+    (skill falling). `model_mae`/`baseline_mae` are kept rather than a bare
+    `skill` float so a caller can derive it (`skill_vs_baseline` below, same
+    formula as `EvaluationMetrics`) without hand-copying the formula, and so
+    position-wise pooling in `aggregate_metrics` can weight-average the same
+    way the top-level metrics do.
+    """
+
+    step: int  # 1-indexed decoder position
+    model_mae: float
+    baseline_mae: float
+    directional_accuracy: float
+    calibration_coverage: float
+
+    @property
+    def skill_vs_baseline(self) -> float:
+        """Relative MAE improvement over the persistence baseline, at this step."""
+        if self.baseline_mae == 0:
+            return 0.0
+        return (self.baseline_mae - self.model_mae) / self.baseline_mae
+
+
+@dataclass
 class EvaluationMetrics:
     """Model quality vs. a naive baseline, direction, and quantile calibration.
 
@@ -220,6 +249,11 @@ class EvaluationMetrics:
     # the Rich tables (it is a distribution, not a number) but carried here so
     # `pyquant calibration` and --format json can both reach it.
     pit: list[float] = field(default_factory=list)
+    # The per-horizon-step profile the fields above collapse into a mean over
+    # (PYQ-267). Empty for metrics built without it (e.g. hand-constructed in
+    # older tests/scripts) rather than raising -- this is additive detail, not
+    # a required input.
+    per_horizon: list[PerHorizonMetrics] = field(default_factory=list)
 
     @property
     def skill_vs_baseline(self) -> float:
@@ -266,6 +300,24 @@ def evaluate_predictions(
     # The persistence baseline for log returns is zero return. In close space
     # it remains the final observed close, preserving legacy bundle semantics.
     baseline = np.zeros(n_samples) if target == "log_return" else last_observed
+    # Isolate each decoder step before the horizon axis gets averaged away
+    # below (PYQ-267). `[:, h : h + 1]` rather than `[:, h]` keeps the 2D shape
+    # persistence_baseline_mae/directional_hit_rate broadcast `baseline`
+    # against.
+    per_horizon = [
+        PerHorizonMetrics(
+            step=h + 1,
+            model_mae=model_mae(actuals[:, h : h + 1], median[:, h : h + 1]),
+            baseline_mae=persistence_baseline_mae(actuals[:, h : h + 1], baseline),
+            directional_accuracy=directional_hit_rate(
+                actuals[:, h : h + 1], median[:, h : h + 1], baseline
+            ),
+            calibration_coverage=calibration_coverage(
+                actuals[:, h : h + 1], lower[:, h : h + 1], upper[:, h : h + 1]
+            ),
+        )
+        for h in range(horizon)
+    ]
     return EvaluationMetrics(
         model_mae=model_mae(actuals, median),
         baseline_mae=persistence_baseline_mae(actuals, baseline),
@@ -282,6 +334,7 @@ def evaluate_predictions(
             actuals, lower, upper, alpha=max(1e-9, quantiles[0] + (1.0 - quantiles[-1]))
         ),
         pit=pit_values(actuals, predictions, quantiles).tolist(),
+        per_horizon=per_horizon,
     )
 
 
@@ -336,4 +389,43 @@ def aggregate_metrics(results: list[EvaluationMetrics]) -> EvaluationMetrics:
         # PIT values are per-point, so they concatenate rather than average --
         # the pooled histogram is the whole point of collecting them.
         pit=[value for r in results for value in r.pit],
+        per_horizon=_pool_per_horizon(results),
     )
+
+
+def _pool_per_horizon(results: list[EvaluationMetrics]) -> list[PerHorizonMetrics]:
+    """Position-wise pool of `per_horizon` across windows (PYQ-267).
+
+    Weighted by each window's `n_samples`, not `n_points` like the top-level
+    `pooled()` above: a `PerHorizonMetrics` entry already isolates one step, so
+    the count backing it is that window's sample count at that step, not
+    samples-times-horizon. Windows missing the breakdown (or shorter than the
+    longest one) are skipped position-wise rather than raising -- additive
+    detail degrading gracefully, same as an empty `per_horizon` does above.
+    """
+    with_profile = [r for r in results if r.per_horizon]
+    if not with_profile:
+        return []
+    horizon = max(len(r.per_horizon) for r in with_profile)
+    pooled_steps = []
+    for h in range(horizon):
+        cells = [(r.per_horizon[h], r.n_samples) for r in with_profile if len(r.per_horizon) > h]
+        if not cells:
+            continue
+        weights = np.array([n for _, n in cells], dtype=float)
+        if weights.sum() == 0:
+            weights = np.ones(len(cells), dtype=float)
+
+        def pooled_attr(attr: str, cells=cells, weights=weights) -> float:
+            return float(np.average([getattr(c, attr) for c, _ in cells], weights=weights))
+
+        pooled_steps.append(
+            PerHorizonMetrics(
+                step=h + 1,
+                model_mae=pooled_attr("model_mae"),
+                baseline_mae=pooled_attr("baseline_mae"),
+                directional_accuracy=pooled_attr("directional_accuracy"),
+                calibration_coverage=pooled_attr("calibration_coverage"),
+            )
+        )
+    return pooled_steps

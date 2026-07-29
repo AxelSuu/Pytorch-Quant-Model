@@ -71,7 +71,7 @@ Next free ID: **PYQ-281**.
 | [PYQ-264](#pyq-264) | Medium | Resolved | Fold PYQ-247/248/250 into the docs; deploy to GitHub Pages; nightly docs-drift check |
 | [PYQ-265](#pyq-265) | High | Open | Report skill across seeds, not from a single seed |
 | [PYQ-266](#pyq-266) | High | Open | Paired significance test for comparing two configurations |
-| [PYQ-267](#pyq-267) | High | Open | Break every metric down by horizon step |
+| [PYQ-267](#pyq-267) | High | Resolved | Break every metric down by horizon step |
 | [PYQ-268](#pyq-268) | High | Open | A reusable multi-symbol sweep harness, replacing the one-off scripts |
 | [PYQ-269](#pyq-269) | Medium | Open | Split `models/tft.py` (1075 lines) without breaking Lightning containment |
 | [PYQ-270](#pyq-270) | Medium | Open | Put a confidence interval on the headline skill number |
@@ -3299,7 +3299,7 @@ an interval attached, or says plainly that the sample is too small to place one.
 
 ## [PYQ-267]
 Break every metric down by horizon step
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/analysis/metrics.py`, `pyquant/analysis/serialize.py`, `pyquant/cli/app.py`
 
@@ -3335,6 +3335,61 @@ Acceptance criteria: `evaluate_predictions` exposes per-step MAE, skill, coverag
 a test asserts that a synthetic case with skill deliberately varying by step recovers the
 profile rather than its mean. `docs/methodology.md` shows the per-horizon profile for at
 least the default and log-return configurations.
+
+Resolution: added `PerHorizonMetrics` (step, model_mae, baseline_mae, directional_accuracy,
+calibration_coverage, plus a `skill_vs_baseline` property using the same formula as
+`EvaluationMetrics`'s) -- the "compact per-step record" option the ticket offered, over a
+full `list[EvaluationMetrics]`, since quantile_exceedance/pinball_losses/CRPS/Winkler/PIT
+are already per-quantile or per-point aggregates that don't obviously have a single
+per-horizon-step reading, and the four fields that clearly do (MAE, baseline MAE, direction,
+coverage) are exactly what the ticket's own examples (skill profile, coverage fanning) need.
+`evaluate_predictions` now isolates each decoder step with `[:, h:h+1]` slices (preserving
+the 2D shape `persistence_baseline_mae`/`directional_hit_rate` broadcast `last_observed`
+against) before computing the top-level, still-averaged metrics -- the same underlying
+per-point arrays, sliced differently, not a second computation. `aggregate_metrics` gained
+`_pool_per_horizon()`, position-wise-averaging step `h` across every window that has one,
+weighted by each window's `n_samples` at that step (not `n_points`, since a `PerHorizonMetrics`
+entry already isolates one step and weighting by `n_points` would double-count the horizon
+factor already removed by isolating it). Windows without a `per_horizon` (hand-built
+`EvaluationMetrics`, e.g. in older tests) degrade to an empty list rather than raising.
+
+`serialize.evaluation_to_dict` adds a `per_horizon` list (step, the four raw fields, and the
+derived `skill_vs_baseline`) so `--format json` carries it end to end. `meta.json`'s own
+"evaluation" dict (built via `vars(evaluation)` in `tft.py`, not through `serialize.py` --
+`serialize.py` imports `TrainResult`/`BacktestResult` *from* `tft.py`, so the reverse import
+would be circular) needed one line fixed: `vars()` doesn't recurse into the nested
+`PerHorizonMetrics` dataclasses, so `json.dumps(meta, ...)` raised
+`TypeError: Object of type PerHorizonMetrics is not JSON serializable` until each step was
+flattened to a plain dict the same way the top level already drops computed properties like
+`skill_vs_baseline` (caught by the pre-existing end-to-end CLI test
+`test_full_cli_journey_across_every_command_and_both_output_formats`, which trains a real
+tiny bundle rather than mocking `TrainResult` -- exactly the class of write/read contract
+break PYQ-241 built it to catch, and it did).
+
+The CLI gained `_per_horizon_table()` (mirrors the existing `_per_window_table` styling),
+printed by both `train` and `backtest` whenever `len(evaluation.per_horizon) > 1` -- no new
+flag, matching how `_per_window_table` is already unconditional-but-guarded rather than
+opt-in.
+
+Verified with the acceptance criterion's own scenario:
+`test_evaluate_predictions_recovers_a_skill_profile_that_varies_by_horizon_step` builds a
+3-step synthetic case with per-step skill exactly +1.0/0.0/-1.0 and confirms all three are
+recovered while the mean-over-horizon headline (`-0.5625`) is none of them.
+`test_evaluate_predictions_per_horizon_mae_and_coverage_match_manual_per_step_calculation`,
+`test_aggregate_metrics_pools_per_horizon_position_wise_weighted_by_n_samples`, and
+`test_aggregate_metrics_per_horizon_is_empty_when_no_window_has_it` cover the pooling and
+degrade-gracefully paths. `test_train_json_output_includes_per_horizon_breakdown` and
+`test_train_table_shows_a_per_horizon_breakdown_when_horizon_exceeds_one` cover the CLI
+surface. 30 tests in `tests/test_metrics.py` (up from 26) and 81 across
+`tests/test_metrics.py`+`tests/test_cli.py` combined, all passing; full suite green
+afterward including the real-bundle end-to-end test that caught the `vars()` bug.
+
+**`docs/methodology.md`'s per-horizon profile for the default/log-return configurations is
+not filled in** -- the acceptance criterion asks for measured numbers and this pass had no
+live vendor-data access to produce them (same limitation recorded on PYQ-143, which landed in
+the same pass and changes what those numbers would be anyway). Added a `## Per-horizon
+breakdown` section explaining the feature and stating this explicitly, rather than leaving
+the gap silent or inventing numbers.
 
 ---
 

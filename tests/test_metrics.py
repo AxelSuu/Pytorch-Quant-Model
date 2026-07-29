@@ -120,6 +120,105 @@ def test_aggregate_metrics_averages_across_windows():
     assert abs(agg.calibration_coverage - 0.8) < 1e-9
 
 
+# --- PYQ-267: per-horizon-step breakdown --------------------------------------
+
+
+def test_evaluate_predictions_recovers_a_skill_profile_that_varies_by_horizon_step():
+    """Every top-level metric averages over h=1..horizon, discarding a profile
+    like 'skill improves with horizon' entirely. A synthetic case with skill
+    deliberately +1.0/0.0/-1.0 across three steps must not collapse to a mean
+    -- the per-step values must be individually recoverable."""
+    # step 1: model predicts perfectly (mae 0) while baseline mae is 1 -> skill +1.0.
+    # step 2: model predicts "no change", identical to baseline -> skill 0.0.
+    # step 3: model overshoots the move baseline (naively) gets half right -> skill -1.0.
+    median = np.array([[101.0, 100.0, 130.0], [99.0, 100.0, 70.0]])
+    lower, upper = median - 5.0, median + 5.0
+    predictions = np.stack([lower, median, upper], axis=-1)
+    actuals = np.array([[101.0, 105.0, 110.0], [99.0, 95.0, 90.0]])
+    last_observed = np.array([100.0, 100.0])
+
+    result = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+
+    assert [p.step for p in result.per_horizon] == [1, 2, 3]
+    skills = [p.skill_vs_baseline for p in result.per_horizon]
+    assert skills[0] == pytest.approx(1.0)
+    assert skills[1] == pytest.approx(0.0)
+    assert skills[2] == pytest.approx(-1.0)
+    # The mean-over-horizon headline number hides the profile: it is neither
+    # the best nor the worst step, and not obviously any of the three.
+    assert result.skill_vs_baseline == pytest.approx(-0.5625)
+
+
+def test_evaluate_predictions_per_horizon_mae_and_coverage_match_manual_per_step_calculation():
+    predictions = np.array(
+        [
+            [[95.0, 101.0, 106.0], [96.0, 103.0, 109.0]],
+            [[90.0, 98.0, 104.0], [88.0, 96.0, 102.0]],
+        ]
+    )
+    actuals = np.array([[102.0, 104.0], [97.0, 95.0]])
+    last_observed = np.array([100.0, 100.0])
+
+    result = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
+
+    assert len(result.per_horizon) == 2
+    for h, step in enumerate(result.per_horizon):
+        assert step.model_mae == pytest.approx(
+            np.mean(np.abs(actuals[:, h] - predictions[:, h, 1]))
+        )
+        assert step.baseline_mae == pytest.approx(
+            metrics.persistence_baseline_mae(actuals[:, h : h + 1], last_observed)
+        )
+        assert 0.0 <= step.calibration_coverage <= 1.0
+
+
+def test_aggregate_metrics_pools_per_horizon_position_wise_weighted_by_n_samples():
+    a = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=2.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.7,
+        n_samples=4,
+        n_points=8,
+        per_horizon=[
+            metrics.PerHorizonMetrics(1, model_mae=0.0, baseline_mae=1.0, directional_accuracy=1.0, calibration_coverage=1.0),
+            metrics.PerHorizonMetrics(2, model_mae=10.0, baseline_mae=10.0, directional_accuracy=0.0, calibration_coverage=0.0),
+        ],
+    )
+    b = metrics.EvaluationMetrics(
+        model_mae=3.0,
+        baseline_mae=4.0,
+        directional_accuracy=0.9,
+        calibration_coverage=0.9,
+        n_samples=1,
+        n_points=2,
+        per_horizon=[
+            metrics.PerHorizonMetrics(1, model_mae=4.0, baseline_mae=1.0, directional_accuracy=0.0, calibration_coverage=0.0),
+            metrics.PerHorizonMetrics(2, model_mae=20.0, baseline_mae=10.0, directional_accuracy=1.0, calibration_coverage=1.0),
+        ],
+    )
+
+    agg = metrics.aggregate_metrics([a, b])
+
+    assert [p.step for p in agg.per_horizon] == [1, 2]
+    # step 1, weighted by n_samples (4 vs 1): (4*0.0 + 1*4.0) / 5 = 0.8
+    assert agg.per_horizon[0].model_mae == pytest.approx(0.8)
+    assert agg.per_horizon[0].directional_accuracy == pytest.approx((4 * 1.0 + 1 * 0.0) / 5)
+    # step 2: (4*10.0 + 1*20.0) / 5 = 12.0
+    assert agg.per_horizon[1].model_mae == pytest.approx(12.0)
+    assert agg.per_horizon[1].calibration_coverage == pytest.approx((4 * 0.0 + 1 * 1.0) / 5)
+
+
+def test_aggregate_metrics_per_horizon_is_empty_when_no_window_has_it():
+    """Windows built without PYQ-267's breakdown (e.g. hand-constructed
+    EvaluationMetrics in older tests/scripts) must not crash aggregation."""
+    a = metrics.EvaluationMetrics(
+        model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.7
+    )
+    agg = metrics.aggregate_metrics([a])
+    assert agg.per_horizon == []
+
+
 def test_evaluate_predictions_requires_0_5_quantile():
     predictions = np.zeros((1, 2, 2))
     actuals = np.zeros((1, 2))

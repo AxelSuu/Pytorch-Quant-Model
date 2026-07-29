@@ -500,7 +500,11 @@ def train(
             "tft": settings.tft.model_dump(mode="json"),
         },
         "provenance": _provenance(pin),
-        "evaluation": vars(evaluation),
+        # vars() doesn't recurse into the nested PerHorizonMetrics dataclasses
+        # (PYQ-267); flatten those to plain dicts so json.dumps below doesn't
+        # choke, consistent with vars() itself already omitting computed
+        # properties like skill_vs_baseline (derivable from model_mae/baseline_mae).
+        "evaluation": {**vars(evaluation), "per_horizon": [vars(step) for step in evaluation.per_horizon]},
         # Persisted so `forecast` applies the same band correction the metrics
         # above were computed under, without refitting it (PYQ-248).
         "conformal": conformal.to_dict() if conformal else None,

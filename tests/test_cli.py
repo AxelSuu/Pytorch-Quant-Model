@@ -7,10 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 from typer.testing import CliRunner
 
 from pyquant.analysis.forecast import Forecast
-from pyquant.analysis.metrics import EvaluationMetrics
+from pyquant.analysis.metrics import EvaluationMetrics, PerHorizonMetrics
 from pyquant.cli import app as app_mod
 from pyquant.data import dataset as ds_mod
 from pyquant.data import options as options_mod
@@ -491,6 +492,53 @@ def test_train_json_output_includes_the_metric_sample_size(monkeypatch):
     ev = json.loads(result.stdout)["evaluation"]
     assert ev["n_samples"] == 56
     assert ev["n_points"] == 280
+
+
+# --- PYQ-267: per-horizon-step breakdown --------------------------------------
+
+
+def test_train_json_output_includes_per_horizon_breakdown(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            per_horizon=[
+                PerHorizonMetrics(
+                    1, model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+                ),
+                PerHorizonMetrics(
+                    2, model_mae=1.5, baseline_mae=1.5, directional_accuracy=0.5, calibration_coverage=0.7
+                ),
+            ]
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["--format", "json", "train", "AAPL"])
+    assert result.exit_code == 0
+    per_horizon = json.loads(result.stdout)["evaluation"]["per_horizon"]
+    assert [step["step"] for step in per_horizon] == [1, 2]
+    assert per_horizon[0]["skill_vs_baseline"] == pytest.approx(0.5)
+    assert per_horizon[1]["skill_vs_baseline"] == pytest.approx(0.0)
+
+
+def test_train_table_shows_a_per_horizon_breakdown_when_horizon_exceeds_one(monkeypatch):
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: _train_result_with(
+            per_horizon=[
+                PerHorizonMetrics(
+                    1, model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+                ),
+                PerHorizonMetrics(
+                    2, model_mae=1.5, baseline_mae=1.5, directional_accuracy=0.5, calibration_coverage=0.7
+                ),
+            ]
+        ),
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "Per-horizon" in result.stdout
+    assert "+50.0%" in result.stdout  # step 1's skill
 
 
 def test_train_table_still_shows_crps_and_winkler_rows_at_exactly_zero(monkeypatch):
