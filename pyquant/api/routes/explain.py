@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Path as PathParam
 
 from pyquant.analysis import serialize
 from pyquant.analysis.interpret import explain_forecast
@@ -13,7 +14,7 @@ from pyquant.api.deps import (
     get_settings,
     require_api_key,
 )
-from pyquant.api.schemas import InterpretationResponse
+from pyquant.api.schemas import SYMBOL_PATTERN, InterpretationResponse
 from pyquant.config import Settings
 from pyquant.models import tft
 
@@ -22,7 +23,7 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 
 @router.get("/explain/{symbol}", response_model=InterpretationResponse)
 def get_explanation(
-    symbol: str,
+    symbol: str = PathParam(..., pattern=SYMBOL_PATTERN),
     settings: Settings = Depends(get_settings),
     bundle_cache: BundleCache = Depends(get_bundle_cache),
 ) -> InterpretationResponse:

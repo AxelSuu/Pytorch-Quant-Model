@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -54,6 +54,12 @@ def _anchor(path: Path) -> Path:
 class TFTConfig(BaseModel):
     """Temporal Fusion Transformer architecture hyperparameters."""
 
+    # extra="forbid" so a misspelled nested env key (e.g. TFT__QUANTILE, missing
+    # the trailing "S") fails at Settings() construction instead of silently
+    # keeping the default with no error -- the same failure shape PYQ-128 fixed
+    # for a missing --config *file*, one level down at the *key* (PYQ-157).
+    model_config = ConfigDict(extra="forbid")
+
     hidden_size: int = 32
     attention_head_size: int = 4
     dropout: float = 0.1
@@ -77,9 +83,32 @@ class TFTConfig(BaseModel):
             )
         return v
 
+    @field_validator("quantiles")
+    @classmethod
+    def _quantiles_valid_and_include_median(cls, v: list[float]) -> list[float]:
+        """Reject a bandless config before it reaches an unguarded call site.
+
+        `_window_signal`/`permutation_importance` (models/tft.py) both do
+        `quantiles.index(0.5)` with no guard of their own, so a config missing
+        0.5 previously surfaced as a bare `ValueError: 0.5 is not in list` from
+        deep in the stack, naming neither the setting nor the cause (PYQ-157) --
+        `evaluate_predictions` already raised a clear error for the same case,
+        so this makes that the *only* behavior, everywhere, by construction.
+        """
+        if not all(0.0 < q < 1.0 for q in v):
+            raise ValueError(f"quantiles must all satisfy 0 < q < 1, got {v}")
+        if 0.5 not in v:
+            raise ValueError(
+                f"quantiles must include 0.5 (the median), got {v}; "
+                "used as the median prediction throughout the pipeline."
+            )
+        return v
+
 
 class TrainingConfig(BaseModel):
     """Training and windowing settings."""
+
+    model_config = ConfigDict(extra="forbid")
 
     max_encoder_length: int = 60  # lookback window (days)
     max_prediction_length: int = 5  # forecast horizon (days)
@@ -134,6 +163,8 @@ class DataConfig(BaseModel):
     enabled here and has the credentials/data it needs; otherwise it degrades
     gracefully (the features are simply dropped with a logged notice).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     period: str = "5y"  # history pulled from yfinance
     use_macro: bool = True
@@ -221,16 +252,45 @@ class Settings(BaseSettings):
         # The YAML source sits *below* env vars (PYQ-209), so a checked-in
         # experiment config is overridable by the environment, and explicit CLI
         # flags -- applied after load_settings() -- still win over everything.
-        sources: list[PydanticBaseSettingsSource] = [init_settings, env_settings, dotenv_settings]
-        if _active_yaml_file is not None:
-            sources.append(YamlConfigSettingsSource(settings_cls, yaml_file=_active_yaml_file))
-        sources.append(file_secret_settings)
-        return tuple(sources)
+        #
+        # No YAML layer by default -- load_settings() builds a per-call subclass
+        # with its own override of this method when a config path is given
+        # (PYQ-146), rather than this base class reading a module-global path.
+        return (init_settings, env_settings, dotenv_settings, file_secret_settings)
 
 
-# Set transiently by load_settings() so the classmethod above can see the chosen
-# YAML path without it becoming part of the frozen model_config.
-_active_yaml_file: Path | None = None
+def _settings_class_for_yaml(yaml_file: Path) -> type[Settings]:
+    """A ``Settings`` subclass whose YAML source is fixed at class-creation time.
+
+    Building one of these per ``load_settings()`` call (rather than stashing the
+    path in a module global that ``Settings.settings_customise_sources`` reads
+    back) means the YAML path lives in a closure private to this call, so two
+    concurrent ``load_settings()`` calls -- e.g. two API requests on Starlette's
+    threadpool, since routes under ``pyquant/api/routes/`` are sync `def`s --
+    can never observe each other's config path (PYQ-146: the previous global
+    could be reset by one thread's `finally` before another thread reached
+    `Settings()`, silently building settings without the YAML layer it asked for).
+    """
+
+    class _SettingsWithYaml(Settings):
+        @classmethod
+        def settings_customise_sources(
+            cls,
+            settings_cls: type[BaseSettings],
+            init_settings: PydanticBaseSettingsSource,
+            env_settings: PydanticBaseSettingsSource,
+            dotenv_settings: PydanticBaseSettingsSource,
+            file_secret_settings: PydanticBaseSettingsSource,
+        ) -> tuple[PydanticBaseSettingsSource, ...]:
+            return (
+                init_settings,
+                env_settings,
+                dotenv_settings,
+                YamlConfigSettingsSource(settings_cls, yaml_file=yaml_file),
+                file_secret_settings,
+            )
+
+    return _SettingsWithYaml
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:
@@ -241,7 +301,6 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     full experiment (hidden_size, quantiles, epochs, data toggles, ...) can be
     checked into version control as one file.
     """
-    global _active_yaml_file
     chosen = config_path or os.environ.get("PYQUANT_CONFIG")
     # An explicitly requested config that isn't there is an error, not a silent
     # fallback to defaults: YamlConfigSettingsSource treats a missing file as
@@ -253,8 +312,6 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
             f"Config file not found: {chosen}. Remove the --config/PYQUANT_CONFIG "
             "setting to run with the built-in defaults."
         )
-    _active_yaml_file = Path(chosen) if chosen else None
-    try:
+    if chosen is None:
         return Settings()
-    finally:
-        _active_yaml_file = None
+    return _settings_class_for_yaml(Path(chosen))()

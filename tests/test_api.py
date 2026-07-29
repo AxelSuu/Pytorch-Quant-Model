@@ -249,6 +249,60 @@ def test_train_rejects_an_empty_symbol_list():
     assert r.status_code == 422
 
 
+# --- PYQ-145: request-body symbol/bundle_name fields cannot become path traversal
+
+
+def test_train_rejects_a_path_traversal_bundle_name():
+    """A JSON body field isn't subject to Starlette's `/`-rejecting path-parameter
+    matching the way GET /forecast/{symbol} is -- unvalidated, it reaches
+    _bundle_dir -> mkdir/torch.save directly."""
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
+    app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+    r = client.post("/train", json={"symbols": ["AAPL"], "bundle_name": "../../etc"})
+    assert r.status_code == 422
+
+
+def test_train_rejects_a_path_traversal_symbol():
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
+    app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+    r = client.post("/train", json={"symbols": ["../x"]})
+    assert r.status_code == 422
+
+
+def test_scan_rejects_a_path_traversal_symbol():
+    _override_settings_and_cache()
+    r = client.post("/scan", json={"symbols": ["../x"]})
+    assert r.status_code == 422
+
+
+def test_bundle_dir_never_resolves_outside_checkpoint_dir(tmp_path):
+    from pyquant.config import Settings
+    from pyquant.models import tft as tft_mod
+
+    settings = Settings(checkpoint_dir=tmp_path / "checkpoints")
+    for bad_name in ("..", "../../etc", "foo/../../bar"):
+        with pytest.raises(ValueError, match="checkpoint_dir"):
+            tft_mod._bundle_dir(settings, bad_name)
+
+
+def test_require_api_key_rejects_a_non_ascii_key_with_401_not_500(monkeypatch):
+    """PYQ-145: Starlette decodes headers as latin-1, so a byte >127 in
+    X-API-Key produces a non-ASCII str -- hmac.compare_digest used to raise
+    TypeError on that, which FastAPI's default handler turned into a 500."""
+    app.dependency_overrides.pop(deps.require_api_key, None)
+    monkeypatch.setenv("PYQUANT_API_KEYS", "a-real-key")
+    _override_settings_and_cache()
+
+    # httpx's header-value normalization ASCII-encodes str values by default, so
+    # a raw non-ASCII byte must be passed as bytes to reach the server at all --
+    # matching what Starlette's own latin-1 header decoding accepts on the wire.
+    r = client.get("/forecast/AAPL", headers={"X-API-Key": "café".encode("latin-1")})
+
+    assert r.status_code == 401
+
+
 # --- auth (deliberately does NOT use the _bypass_auth fixture's override) --------
 
 

@@ -39,19 +39,36 @@ _NON_FEATURE = {"Date", "time_idx", "symbol"}
 KNOWN_REALS = ["time_idx", "dow", "month_num"]
 
 
+# Data-config fields that determine the panel's feature schema. Paths, cache
+# settings and secrets are deliberately excluded -- those are properties of the
+# machine you are on now, not of the trained model. Shared with
+# models.tft.settings_for_bundle (which restores exactly these fields from a
+# bundle's recorded config) so the set is defined once, not per-consumer
+# (PYQ-148: use_options was added to tft.py's copy without this one, so a
+# cached panel could silently be reused across the opposite setting).
+SCHEMA_DATA_FIELDS = (
+    "period",
+    "use_macro",
+    "use_sectors",
+    "use_sentiment",
+    "use_options",
+    "use_indicators",
+    "sector_etfs",
+)
+
+
 def _cache_fingerprint(symbol: str, settings: Settings, start: str | None, end: str | None) -> dict:
     """What a cached panel's validity depends on -- change any of these, different dataset."""
     data = settings.data
+    fields = {}
+    for name in SCHEMA_DATA_FIELDS:
+        value = getattr(data, name)
+        fields[name] = sorted(value) if isinstance(value, list) else value
     return {
         "symbol": symbol.upper(),
         "start": start,
         "end": end,
-        "period": data.period,
-        "use_macro": data.use_macro,
-        "use_sectors": data.use_sectors,
-        "use_sentiment": data.use_sentiment,
-        "use_indicators": data.use_indicators,
-        "sector_etfs": sorted(data.sector_etfs),
+        **fields,
         # Feature definitions can change between releases. Include the source
         # version (and git sha when available) so a TTL entry is never reused
         # across an incompatible implementation (PYQ-133).

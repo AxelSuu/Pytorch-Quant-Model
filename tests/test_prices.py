@@ -236,6 +236,13 @@ def test_compute_rsi_is_0_when_price_only_falls():
     np.testing.assert_allclose(rsi.dropna().to_numpy(), 0.0)
 
 
+def test_compute_rsi_is_50_on_a_flat_series():
+    """PYQ-152: avg_gain == avg_loss == 0 is neutral, not maximally overbought."""
+    flat = pd.Series([100.0] * 30)
+    rsi = prices.compute_rsi(flat, 14)
+    np.testing.assert_allclose(rsi.dropna().to_numpy(), 50.0)
+
+
 # --- PYQ-135: no inf may reach the panel -------------------------------------
 
 

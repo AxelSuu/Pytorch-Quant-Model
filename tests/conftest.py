@@ -47,6 +47,13 @@ def settings(tmp_path):
     s.data.use_macro = False
     s.data.use_sectors = False
     s.data.use_sentiment = False
+    # PYQ-158: use_options defaulted to True and options_history_dir defaulted to
+    # the real repo's data/options_history/ -- build_panel() would read whatever
+    # snapshot history a developer had locally (via `pyquant snapshot`), so tests
+    # ran differently locally than in CI, which never has any. Read-only (only
+    # the `snapshot` CLI command appends), but still an untracked influence.
+    s.data.use_options = False
+    s.options_history_dir = tmp_path / "options"
     # Small windows so tests stay fast.
     s.training.max_encoder_length = 20
     s.training.max_prediction_length = 5

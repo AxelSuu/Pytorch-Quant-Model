@@ -2,9 +2,10 @@
 
 from pathlib import Path
 
+import pydantic
 import pytest
 
-from pyquant.config import TFTConfig, TrainingConfig, load_settings
+from pyquant.config import DataConfig, Settings, TFTConfig, TrainingConfig, load_settings
 
 
 def test_tft_quantiles_reject_unsorted():
@@ -17,6 +18,54 @@ def test_tft_quantiles_reject_unsorted():
 def test_tft_quantiles_accept_sorted():
     cfg = TFTConfig(quantiles=[0.1, 0.5, 0.9])
     assert cfg.quantiles == [0.1, 0.5, 0.9]
+
+
+# --- PYQ-157: a bandless quantiles config and a misspelled env key must not be
+# --- silently accepted -------------------------------------------------------
+
+
+def test_tft_quantiles_reject_missing_median():
+    """`_window_signal`/`permutation_importance` both do `quantiles.index(0.5)`
+    with no guard of their own -- a config missing 0.5 used to surface as a bare
+    `ValueError: 0.5 is not in list` from deep in the stack."""
+    with pytest.raises(ValueError, match="0.5"):
+        TFTConfig(quantiles=[0.1, 0.9])
+
+
+@pytest.mark.parametrize("bad_quantiles", [[0.0, 0.5, 0.9], [0.1, 0.5, 1.0], [-0.1, 0.5, 0.9]])
+def test_tft_quantiles_reject_out_of_range_values(bad_quantiles):
+    with pytest.raises(ValueError, match="0 < q < 1"):
+        TFTConfig(quantiles=bad_quantiles)
+
+
+def test_tft_config_rejects_an_unknown_field():
+    """extra='forbid' on the nested models: a misspelled kwarg fails immediately
+    rather than the same shape of silent divergence PYQ-128 fixed for --config."""
+    with pytest.raises(pydantic.ValidationError):
+        TFTConfig(hiden_size=64)
+
+
+def test_training_config_rejects_an_unknown_field():
+    with pytest.raises(pydantic.ValidationError):
+        TrainingConfig(max_epoch=999)
+
+
+def test_data_config_rejects_an_unknown_field():
+    with pytest.raises(pydantic.ValidationError):
+        DataConfig(use_option=False)
+
+
+def test_misspelled_nested_env_key_raises_instead_of_silently_defaulting(monkeypatch):
+    """PYQ-157: TRAINING__MAX_EPOCH (missing the trailing 'S') used to leave
+    max_epochs at its default with no error or warning."""
+    monkeypatch.setenv("TRAINING__MAX_EPOCH", "999")
+    with pytest.raises(pydantic.ValidationError):
+        Settings()
+
+
+def test_correctly_spelled_nested_env_key_still_works(monkeypatch):
+    monkeypatch.setenv("TRAINING__MAX_EPOCHS", "999")
+    assert Settings().training.max_epochs == 999
 
 
 def test_training_config_reproducibility_and_perf_defaults():
@@ -49,6 +98,46 @@ def test_no_config_uses_defaults(monkeypatch):
     s = load_settings()
     assert s.tft.hidden_size == 32
     assert s.training.max_epochs == 30
+
+
+def test_load_settings_from_two_threads_never_observes_the_others_config(tmp_path):
+    """PYQ-146: the YAML path used to travel through a module global
+    (`_active_yaml_file`), set then reset to None in a `finally`. Two concurrent
+    `load_settings()` calls on Starlette's threadpool (routes are sync `def`s)
+    could interleave: thread B's `finally` resets the global to None before
+    thread A reaches `Settings()`, so thread A silently builds settings without
+    the YAML layer it asked for -- no error, no log. The fix threads the path
+    through a per-call subclass closure instead of a global, so this can no
+    longer happen regardless of scheduling."""
+    import threading
+
+    cfg = tmp_path / "with_config.yaml"
+    cfg.write_text("training:\n  max_epochs: 7\n")
+
+    results: dict[str, list[int]] = {"with_config": [], "without_config": []}
+    barrier = threading.Barrier(2)
+    iterations = 200
+
+    def _with_config():
+        barrier.wait()
+        for _ in range(iterations):
+            results["with_config"].append(load_settings(cfg).training.max_epochs)
+
+    def _without_config():
+        barrier.wait()
+        for _ in range(iterations):
+            results["without_config"].append(load_settings(None).training.max_epochs)
+
+    t1 = threading.Thread(target=_with_config)
+    t2 = threading.Thread(target=_without_config)
+    t1.start()
+    t2.start()
+    t1.join()
+    t2.join()
+
+    # Thread A must always see the YAML override; thread B must never see it.
+    assert all(v == 7 for v in results["with_config"])
+    assert all(v == 30 for v in results["without_config"])
 
 
 def test_cli_flag_overrides_yaml_config(tmp_path):

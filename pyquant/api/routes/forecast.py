@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi import Path as PathParam
 
 from pyquant.analysis import serialize
 from pyquant.analysis.forecast import generate_forecast
@@ -13,7 +14,7 @@ from pyquant.api.deps import (
     get_settings,
     require_api_key,
 )
-from pyquant.api.schemas import ForecastResponse, ScanRequest, ScanRow
+from pyquant.api.schemas import SYMBOL_PATTERN, ForecastResponse, ScanRequest, ScanRow
 from pyquant.config import Settings
 from pyquant.models import tft
 
@@ -38,7 +39,7 @@ def _get_forecast(symbol: str, settings: Settings, bundle_cache: BundleCache):
 
 @router.get("/forecast/{symbol}", response_model=ForecastResponse)
 def get_forecast(
-    symbol: str,
+    symbol: str = PathParam(..., pattern=SYMBOL_PATTERN),
     settings: Settings = Depends(get_settings),
     bundle_cache: BundleCache = Depends(get_bundle_cache),
 ) -> ForecastResponse:

@@ -37,6 +37,7 @@ from pyquant.analysis.calibrate import (
 from pyquant.analysis.metrics import EvaluationMetrics, aggregate_metrics, evaluate_predictions
 from pyquant.config import Settings
 from pyquant.data.dataset import (
+    SCHEMA_DATA_FIELDS,
     align_time_index,
     build_panel,
     extend_for_prediction,
@@ -146,7 +147,22 @@ def build_model(training_dataset: TimeSeriesDataSet, settings: Settings) -> Temp
 
 
 def _bundle_dir(settings: Settings, name: str) -> Path:
-    return settings.checkpoint_dir / name.upper()
+    """The on-disk directory for bundle ``name``, guaranteed inside ``checkpoint_dir``.
+
+    Belt and braces beneath the API layer's request-schema validation
+    (PYQ-145): a ``name`` like ``"../../etc"`` reaches this function directly
+    from a POST body (unlike a GET route's ``{symbol}``, a JSON body field
+    isn't subject to Starlette's `/`-rejecting path-parameter matching), and
+    from here flows straight into ``mkdir``/``torch.save``. Checked here too so
+    every caller is covered, not only the ones that remembered to validate
+    first.
+    """
+    bundle_dir = settings.checkpoint_dir / name.upper()
+    checkpoint_root = settings.checkpoint_dir.resolve()
+    resolved = bundle_dir.resolve()
+    if resolved != checkpoint_root and checkpoint_root not in resolved.parents:
+        raise ValueError(f"Invalid bundle name {name!r}: resolves outside checkpoint_dir")
+    return bundle_dir
 
 
 def _build_pooled_long_df(
@@ -950,7 +966,7 @@ def interpret(bundle: ModelBundle, df) -> dict:
 
     enc_names = bundle.model.encoder_variables
     enc_weights = interpretation["encoder_variables"].detach().cpu().numpy().reshape(-1)
-    importance = dict(zip(enc_names, enc_weights.tolist(), strict=False))
+    importance = dict(zip(enc_names, enc_weights.tolist(), strict=True))
     # Normalise to fractions for readability.
     total = sum(importance.values()) or 1.0
     importance = {k: v / total for k, v in importance.items()}
@@ -1020,20 +1036,6 @@ def permutation_importance(
     return {k: max(0.0, v) / total for k, v in degradation.items()}
 
 
-# Data-config fields that determine the panel's feature schema. Paths, cache
-# settings and secrets are deliberately excluded -- those are properties of the
-# machine you are on now, not of the trained model.
-_SCHEMA_DATA_FIELDS = (
-    "period",
-    "use_macro",
-    "use_sectors",
-    "use_sentiment",
-    "use_options",
-    "use_indicators",
-    "sector_etfs",
-)
-
-
 def settings_for_bundle(bundle: ModelBundle, settings: Settings) -> Settings:
     """Return a copy of ``settings`` using the data toggles ``bundle`` was trained with.
 
@@ -1049,7 +1051,7 @@ def settings_for_bundle(bundle: ModelBundle, settings: Settings) -> Settings:
     if not recorded:
         return settings
     restored = settings.model_copy(deep=True)
-    for field_name in _SCHEMA_DATA_FIELDS:
+    for field_name in SCHEMA_DATA_FIELDS:
         if field_name in recorded:
             setattr(restored.data, field_name, recorded[field_name])
     return restored

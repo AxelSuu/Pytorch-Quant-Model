@@ -129,5 +129,13 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> None:
                 "PYQUANT_API_ALLOW_UNAUTHENTICATED=1 for local development only."
             ),
         )
-    if x_api_key is None or not any(hmac.compare_digest(x_api_key, k) for k in configured):
+    # Compare as bytes, not str: Starlette decodes headers as latin-1, so a byte
+    # >127 in X-API-Key produces a non-ASCII str, and hmac.compare_digest raises
+    # TypeError on non-ASCII str input (verified) -- turning a bad key into an
+    # unhandled 500 instead of a clean 401 (PYQ-145). Bytes comparison has no
+    # such restriction, and utf-8-encoding a latin-1-decoded str is always
+    # lossless (every latin-1 codepoint is valid utf-8).
+    if x_api_key is None or not any(
+        hmac.compare_digest(x_api_key.encode("utf-8"), k.encode("utf-8")) for k in configured
+    ):
         raise HTTPException(status_code=401, detail="Missing or invalid API key")

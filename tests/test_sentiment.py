@@ -113,6 +113,31 @@ def test_fetch_news_recovers_from_transient_failure(monkeypatch):
     assert out == [{"headline": "x", "datetime": 1}]
 
 
+def test_fetch_news_sends_the_api_key_as_a_header_not_a_query_param(monkeypatch):
+    """PYQ-150: a query-string token reaches HTTPError.__str__() (the full request
+    URL) and therefore with_retry's WARNING log on every retryable failure."""
+    seen = {}
+
+    class FakeResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return []
+
+    def fake_get(url, params=None, headers=None, **kwargs):
+        seen["params"] = params
+        seen["headers"] = headers
+        return FakeResp()
+
+    monkeypatch.setattr(sentiment.requests, "get", fake_get)
+    sentiment.fetch_news("super-secret-key", "AAPL", "2024-01-01", "2024-02-01")
+
+    assert seen["headers"] == {"X-Finnhub-Token": "super-secret-key"}
+    assert "token" not in seen["params"]
+    assert "super-secret-key" not in str(seen["params"])
+
+
 def test_fetch_sentiment_aggregates_daily(monkeypatch):
     # Pretend FinBERT + Finnhub are available and return deterministic data.
     monkeypatch.setattr(sentiment, "_finbert", lambda: object())

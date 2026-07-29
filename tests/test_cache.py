@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from pyquant import provenance
 from pyquant.data import cache
@@ -59,6 +60,48 @@ def test_write_then_read_pin_round_trips(tmp_path):
 
 def test_read_pin_returns_none_when_missing(tmp_path):
     assert cache.read_pin(tmp_path, "nope") is None
+
+
+# --- PYQ-155: writes must be atomic; reads must survive corruption -----------
+
+
+def test_write_cache_leaves_no_tmp_file_behind(tmp_path):
+    cache.write_cache(tmp_path, "key1", _df(), now=1000.0)
+    leftovers = list(tmp_path.glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_write_pin_leaves_no_tmp_file_behind(tmp_path):
+    cache.write_pin(tmp_path, "experiment-1", _df())
+    leftovers = list((tmp_path / "pins").glob("*.tmp"))
+    assert leftovers == []
+
+
+def test_read_cache_treats_a_truncated_pickle_as_a_miss_not_a_crash(tmp_path):
+    cache.write_cache(tmp_path, "key1", _df(), now=1000.0)
+    entry = cache._entry_path(tmp_path, "key1")
+    entry.write_bytes(entry.read_bytes()[:5])  # simulate a crash mid-write
+
+    assert cache.read_cache(tmp_path, "key1", ttl_seconds=3600, now=1000.0) is None
+
+
+def test_read_cache_treats_corrupt_meta_json_as_a_miss_not_a_crash(tmp_path):
+    cache.write_cache(tmp_path, "key1", _df(), now=1000.0)
+    cache._meta_path(cache._entry_path(tmp_path, "key1")).write_text("{not valid json")
+
+    assert cache.read_cache(tmp_path, "key1", ttl_seconds=3600, now=1000.0) is None
+
+
+def test_read_pin_raises_a_clear_error_on_a_truncated_pickle(tmp_path):
+    """Unlike the TTL cache, a pin promises exact reproducibility -- a corrupt pin
+    must fail loudly rather than silently falling back to a live refetch of
+    (possibly different) data."""
+    cache.write_pin(tmp_path, "experiment-1", _df())
+    entry = cache._entry_path(tmp_path / "pins", "experiment-1")
+    entry.write_bytes(entry.read_bytes()[:5])
+
+    with pytest.raises(ValueError, match="experiment-1"):
+        cache.read_pin(tmp_path, "experiment-1")
 
 
 def test_prune_expired_removes_only_stale_entries_and_keeps_pins(tmp_path):

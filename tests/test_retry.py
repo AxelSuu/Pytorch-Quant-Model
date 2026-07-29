@@ -38,3 +38,30 @@ def test_with_retry_reraises_after_exhausting_attempts():
 
 def test_with_retry_returns_immediately_on_success():
     assert retry.with_retry(lambda: 42) == 42
+
+
+def test_with_retry_redacts_query_string_secrets_from_the_warning_log(caplog):
+    """PYQ-150: a retryable failure's exception message can embed the full request
+    URL (e.g. requests.HTTPError.__str__()); a query-string token/api_key must not
+    reach the WARNING log, per CLAUDE.md's secrets non-negotiable."""
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(
+                "404 Client Error: Not Found for url: "
+                "https://example.com/news?symbol=AAPL&token=super-secret-value"
+            )
+        return "ok"
+
+    with caplog.at_level("WARNING"):
+        retry.with_retry(flaky, description="test")
+
+    assert "super-secret-value" not in caplog.text
+    assert "token=***REDACTED***" in caplog.text
+
+
+def test_redact_handles_api_key_and_is_case_insensitive():
+    assert "my-secret" not in retry._redact("...&API_KEY=my-secret&other=1")
+    assert "my-secret" not in retry._redact("...&Token=my-secret")

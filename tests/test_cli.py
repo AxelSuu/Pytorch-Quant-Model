@@ -493,6 +493,18 @@ def test_train_json_output_includes_the_metric_sample_size(monkeypatch):
     assert ev["n_points"] == 280
 
 
+def test_train_table_still_shows_crps_and_winkler_rows_at_exactly_zero(monkeypatch):
+    """PYQ-156: `if ev.crps:`/`if ev.winkler_score:` were bare truthy checks, so a
+    legitimate 0.0 (e.g. a degenerate/perfect band) silently dropped the row."""
+    monkeypatch.setattr(
+        app_mod.tft, "train", lambda *a, **k: _train_result_with(crps=0.0, winkler_score=0.0)
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL"])
+    assert result.exit_code == 0
+    assert "CRPS" in result.stdout
+    assert "Winkler" in result.stdout
+
+
 # --- PYQ-122: the calibration band label must follow the configured quantiles -
 
 
@@ -722,6 +734,24 @@ def test_train_on_insufficient_history_reports_cleanly(monkeypatch, tmp_path):
     assert result.exit_code == 1
     assert isinstance(result.exception, SystemExit), f"leaked {result.exception!r}"
     assert "Not enough history" in result.output
+    assert "Traceback" not in result.output
+
+
+def test_backtest_with_zero_windows_reports_cleanly(monkeypatch):
+    """PYQ-156: `--windows 0` reaches `aggregate_metrics([])`, which used to raise a
+    bare ZeroDivisionError -- not in EXPECTED_FAILURES, so it leaked a traceback.
+    aggregate_metrics() now raises ValueError itself on an empty list; simulate
+    what walk_forward_backtest(n_windows=0) drives it to raise."""
+
+    def raise_empty_aggregate(*a, **k):
+        from pyquant.analysis.metrics import aggregate_metrics
+
+        aggregate_metrics([])
+
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", raise_empty_aggregate)
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL", "--windows", "0"])
+    assert result.exit_code == 1
+    assert isinstance(result.exception, SystemExit), f"leaked {result.exception!r}"
     assert "Traceback" not in result.output
 
 

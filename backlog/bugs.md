@@ -49,20 +49,20 @@ Next free ID: **PYQ-160**.
 | [PYQ-142](#pyq-142) | High | Open | The displayed log-return forecast band compounds marginal per-step quantiles, ~√h too wide |
 | [PYQ-143](#pyq-143) | High | Open | `train()`/`walk_forward_backtest()` select checkpoints and report metrics from the same window |
 | [PYQ-144](#pyq-144) | High | Open | Conformal offset is pooled across horizon steps and fit on an inflated sample size |
-| [PYQ-145](#pyq-145) | High | Open | API accepts unvalidated `symbol`/`bundle_name`; auth header comparison throws on non-ASCII input |
-| [PYQ-146](#pyq-146) | High | Open | `load_settings()` mutates a module global; concurrent API requests can read the wrong config |
-| [PYQ-147](#pyq-147) | Medium | Open | `interpret()` zips variable names to weights with `strict=False` |
-| [PYQ-148](#pyq-148) | Medium | Open | `use_options` is missing from the panel cache fingerprint |
+| [PYQ-145](#pyq-145) | High | Resolved | API accepts unvalidated `symbol`/`bundle_name`; auth header comparison throws on non-ASCII input |
+| [PYQ-146](#pyq-146) | High | Resolved | `load_settings()` mutates a module global; concurrent API requests can read the wrong config |
+| [PYQ-147](#pyq-147) | Medium | Resolved | `interpret()` zips variable names to weights with `strict=False` |
+| [PYQ-148](#pyq-148) | Medium | Resolved | `use_options` is missing from the panel cache fingerprint |
 | [PYQ-149](#pyq-149) | Medium | Open | `backtest --signals` scores an uncalibrated rule while `scan` ships a calibrated one |
-| [PYQ-150](#pyq-150) | High | Open | Finnhub API key travels in the query string and can reach WARNING logs on retry failure |
+| [PYQ-150](#pyq-150) | High | Resolved | Finnhub API key travels in the query string and can reach WARNING logs on retry failure |
 | [PYQ-151](#pyq-151) | Low | Open | `with_retry` retries non-retryable errors (401/404) by default |
-| [PYQ-152](#pyq-152) | Medium | Open | `compute_rsi` returns 100, not 50, on a flat/halted series |
+| [PYQ-152](#pyq-152) | Medium | Resolved | `compute_rsi` returns 100, not 50, on a flat/halted series |
 | [PYQ-153](#pyq-153) | Low | Open | PIT values saturate at the outer quantile edges instead of extending into the tails |
 | [PYQ-154](#pyq-154) | Low | Open | `next_sessions` is not total for very large `max_prediction_length` |
-| [PYQ-155](#pyq-155) | Medium | Open | Cache writes (pickle + meta) are two separate, non-atomic operations |
-| [PYQ-156](#pyq-156) | Low | Open | `cli/app.py` hides a metric row at exactly 0.0; `aggregate_metrics([])` raises `ZeroDivisionError` |
-| [PYQ-157](#pyq-157) | Medium | Open | `Settings` swallows misspelled nested env keys; `TFTConfig.quantiles` allows a bandless config |
-| [PYQ-158](#pyq-158) | Medium | Open | `tests/conftest.py`'s `settings` fixture leaves `use_options` pointed at the real repo |
+| [PYQ-155](#pyq-155) | Medium | Resolved | Cache writes (pickle + meta) are two separate, non-atomic operations |
+| [PYQ-156](#pyq-156) | Low | Resolved | `cli/app.py` hides a metric row at exactly 0.0; `aggregate_metrics([])` raises `ZeroDivisionError` |
+| [PYQ-157](#pyq-157) | Medium | Resolved | `Settings` swallows misspelled nested env keys; `TFTConfig.quantiles` allows a bandless config |
+| [PYQ-158](#pyq-158) | Medium | Resolved | `tests/conftest.py`'s `settings` fixture leaves `use_options` pointed at the real repo |
 | [PYQ-159](#pyq-159) | Low | Open | `TrainRequest.period` is dead; `JobRegistry` never evicts and indexes `_jobs` unguarded |
 
 ---
@@ -2252,7 +2252,7 @@ offset's.
 
 ## [PYQ-145]
 API accepts unvalidated `symbol`/`bundle_name`; auth header comparison throws on non-ASCII input
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/models/tft.py` (`_bundle_dir`), `pyquant/api/schemas.py`, `pyquant/api/deps.py`
 
@@ -2293,11 +2293,38 @@ Acceptance criteria: `POST /train {"bundle_name": "../../etc"}` and `POST /scan
 `bundle_dir` can never resolve outside `checkpoint_dir`; a non-ASCII `X-API-Key` returns 401
 rather than 500, with a regression test.
 
+Resolution: three layers, matching the "belt and braces" ask.
+
+1. `api/schemas.py` gained a shared `SYMBOL_PATTERN` (`^[A-Za-z0-9][A-Za-z0-9.\-]{0,15}$`) and
+   a `_validate_symbol()` helper wired as a `field_validator` on `TrainRequest.symbols`,
+   `TrainRequest.bundle_name` and `ScanRequest.symbols` -- a path-traversal string is now
+   rejected with 422 before any route body runs.
+2. The GET routes' `{symbol}` path params (`/forecast/{symbol}`, `/explain/{symbol}`) now
+   also declare `Path(..., pattern=SYMBOL_PATTERN)` -- belt-and-braces, since Starlette's
+   default path matching already rejects `/` in a single segment but not a bare `".."`
+   segment, which `Path("..")` alone can still walk up one level.
+3. `_bundle_dir()` itself now resolves the candidate directory and asserts it is
+   `checkpoint_dir` or one of its descendants, raising `ValueError` otherwise -- this covers
+   every caller, including any future one that forgets to validate first, not only the API
+   request path.
+
+`require_api_key` now encodes both sides to UTF-8 bytes before `hmac.compare_digest` --
+bytes comparison has no ASCII restriction, and UTF-8-encoding a latin-1-decoded string
+(what Starlette produces from a raw header byte) is always lossless. A non-ASCII key now
+falls through to the ordinary "no match" 401 instead of raising.
+
+Confirmed test-first: `test_require_api_key_rejects_a_non_ascii_key_with_401_not_500`
+reproduces the exact `TypeError: comparing strings with non-ASCII characters is not
+supported` from the ticket against the pre-fix code (verified by stashing the fix) and
+passes after. Covered overall by `test_train_rejects_a_path_traversal_bundle_name`,
+`test_train_rejects_a_path_traversal_symbol`, `test_scan_rejects_a_path_traversal_symbol`,
+`test_bundle_dir_never_resolves_outside_checkpoint_dir`, and the non-ASCII auth test above.
+
 ---
 
 ## [PYQ-146]
 `load_settings()` mutates a module global; concurrent API requests can read the wrong config
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/config.py` (`load_settings`, `_active_yaml_file`), `pyquant/api/deps.py` (`get_settings`)
 
@@ -2338,11 +2365,30 @@ Acceptance criteria: a test that calls `load_settings()` from two threads concur
 with a config path and one without, and asserts neither observes the other's setting; no
 module-global mutation remains in the `Settings()`-construction path.
 
+Resolution: `_active_yaml_file` and the `global` statement are gone. `load_settings()` now
+calls a new `_settings_class_for_yaml(yaml_file)`, which builds and returns a one-off
+`Settings` subclass whose `settings_customise_sources` closes over `yaml_file` as a local
+variable rather than reading a module global -- so the chosen path lives entirely inside
+that call's stack, and two concurrent `load_settings()` calls (e.g. two API requests on
+Starlette's threadpool) can no longer see or clobber each other's path regardless of thread
+scheduling. The base `Settings.settings_customise_sources` no longer references any YAML
+source at all (a plain `Settings()` call, the common case, never touches the global).
+
+Confirmed test-first: `test_load_settings_from_two_threads_never_observes_the_others_config`
+fails reliably against the pre-fix code (one thread reading defaults it shouldn't) and
+passes after -- verified by stashing the fix and re-running.
+
+Deliberately not done: the `functools.lru_cache` on `get_settings()` the ticket mentions as
+an independent, separate concern (re-reading `.env` per request) rather than part of the
+race itself -- adding a cache-invalidation hook with no current caller needing it is the
+kind of unjustified complexity non-negotiable #5 argues against; left as a future
+performance ticket if request volume ever makes it worth it, not bundled into this fix.
+
 ---
 
 ## [PYQ-147]
 `interpret()` zips variable names to weights with `strict=False`
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Medium
 Files: `pyquant/models/tft.py` (`interpret`)
 
@@ -2364,11 +2410,19 @@ Acceptance criteria: `strict=True` at `tft.py:953`; a regression test constructs
 length `enc_names`/`enc_weights` and asserts `interpret()` raises rather than silently
 truncating.
 
+Resolution: flipped to `strict=True`, matching `_build_pooled_long_df` and
+`metrics.pit_values`'s existing convention for the same names-to-values pattern.
+Regression test `test_interpret_raises_on_encoder_name_weight_length_mismatch` trains a
+real tiny bundle (so `encoder_variables` names stay genuine and the forward pass still
+runs), then monkeypatches `bundle.model.interpret_output` to return one fewer weight than
+there are names -- confirmed to fail against the pre-fix `strict=False` code (silently
+truncated instead of raising) and pass after.
+
 ---
 
 ## [PYQ-148]
 `use_options` is missing from the panel cache fingerprint
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Medium
 Files: `pyquant/data/dataset.py` (`_cache_fingerprint`)
 
@@ -2394,6 +2448,18 @@ Acceptance criteria: a test that toggles only `use_options` and asserts the fing
 (and therefore the cache key) changes; ideally a parametrized test over every
 `DataConfig` field `build_panel` reads, so a future field is covered by construction rather
 than by remembering to add it here.
+
+Resolution: rather than adding a fourth hand-written copy, `SCHEMA_DATA_FIELDS` (the tuple
+of schema-relevant `DataConfig` fields) now lives once in `dataset.py` and `tft.py`'s
+former private `_SCHEMA_DATA_FIELDS` was deleted in favor of importing it --
+`settings_for_bundle()` and `_cache_fingerprint()` now read the identical set, so a future
+toggle added to one is automatically covered by the other. `_cache_fingerprint` builds its
+`use_*`/`period`/`sector_etfs` entries by iterating `SCHEMA_DATA_FIELDS` instead of naming
+each field inline. Covered by
+`test_cache_fingerprint_changes_when_any_schema_field_toggles`, parametrized directly over
+`SCHEMA_DATA_FIELDS` (7 cases, `use_options` included) so a field added to that tuple later
+is exercised by construction rather than by remembering to extend this test -- the
+acceptance criteria's "ideally" clause.
 
 ---
 
@@ -2429,7 +2495,7 @@ explicitly.
 
 ## [PYQ-150]
 Finnhub API key travels in the query string and can reach WARNING logs on retry failure
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/data/sentiment.py`, `pyquant/data/retry.py`
 
@@ -2455,6 +2521,20 @@ Acceptance criteria: the key is not present in `params`/the request URL; a test 
 a failing request and asserts the logged output (at any level) never contains the
 configured key; if header-auth isn't viable for some reason, `with_retry`'s log line is
 proven to redact `token=`/`api_key=`-shaped query fragments.
+
+Resolution: did both, as the ticket suggested. `fetch_news` now sends `headers=
+{"X-Finnhub-Token": api_key}` and no longer puts `token` in `params` at all. As defense in
+depth for any other query-string secret (present or future), `with_retry`'s WARNING log now
+passes `_redact(str(exc))` instead of the raw exception -- a case-insensitive regex
+replacing `token=...`/`api_key=...`-shaped fragments (up to the next `&` or whitespace) with
+a redacted placeholder.
+
+Covered by `test_fetch_news_sends_the_api_key_as_a_header_not_a_query_param` (asserts the
+key is in `headers`, not `params`, and never appears in `str(params)`),
+`test_with_retry_redacts_query_string_secrets_from_the_warning_log` (a retryable failure
+whose message embeds a token-bearing URL; asserts the secret is absent and the redacted
+placeholder is present in the captured log), and
+`test_redact_handles_api_key_and_is_case_insensitive`.
 
 ---
 
@@ -2483,7 +2563,7 @@ retries per the existing backoff schedule.
 
 ## [PYQ-152]
 `compute_rsi` returns 100, not 50, on a flat/halted series
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Medium
 Files: `pyquant/data/prices.py` (`compute_rsi`)
 
@@ -2508,6 +2588,12 @@ genuine "all gains, no losses" run, and emit `50.0` (neutral) for the degenerate
 
 Acceptance criteria: `compute_rsi` on a constant-price series returns 50.0 (not 100.0), with
 a regression test alongside the existing Wilder's-smoothing tests from PYQ-121.
+
+Resolution: split the mask into two — `(avg_loss == 0) & (avg_gain > 0)` still overrides to
+`100.0` for a genuine all-gains run, and a new `(avg_loss == 0) & (avg_gain == 0) &
+avg_gain.notna()` mask overrides the resulting `NaN` to `50.0` (neutral) for the flat/halted
+case. Covered by `test_compute_rsi_is_50_on_a_flat_series`, alongside the existing
+all-rises/all-falls tests from PYQ-121.
 
 ---
 
@@ -2564,7 +2650,7 @@ dates; a test pins this at a horizon past the current ~377 threshold.
 
 ## [PYQ-155]
 Cache writes (pickle + meta) are two separate, non-atomic operations
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Medium
 Files: `pyquant/data/cache.py` (`write_cache`, `write_pin`)
 
@@ -2585,11 +2671,32 @@ Acceptance criteria: a test that kills a simulated write mid-way (or directly wr
 truncated file at the target path) and asserts a subsequent read either succeeds against the
 last good state or triggers a clean refetch, never a raw exception from `build_panel`.
 
+Resolution: `_atomic_write_text`/`_atomic_write_pickle` write to a uniquely-named sibling
+`.tmp` file (`uuid4`-suffixed, so concurrent writers of the same key never collide on the
+temp name itself) then `os.replace()` into place; `write_cache` and `write_pin` both use them
+for the pickle and its meta sidecar. `read_cache` now wraps the meta-JSON parse and the
+pickle read in `try/except`, logging a warning and returning `None` (a clean cache miss,
+triggering `build_panel`'s existing refetch path) on either kind of corruption, rather than
+propagating a raw exception.
+
+One deliberate asymmetry: `read_pin` does **not** fall back silently the same way. A pin's
+entire purpose is exact reproducibility, so silently refetching live (and possibly
+different) data on a corrupt pin would defeat the guarantee it exists to make -- it now
+raises a `ValueError` naming the pin instead, which is still a clean, expected error
+(`ValueError` is in `cli/app.py`'s `EXPECTED_FAILURES`) rather than a bare unpickling
+traceback.
+
+Covered by `test_write_cache_leaves_no_tmp_file_behind`,
+`test_write_pin_leaves_no_tmp_file_behind`,
+`test_read_cache_treats_a_truncated_pickle_as_a_miss_not_a_crash`,
+`test_read_cache_treats_corrupt_meta_json_as_a_miss_not_a_crash`, and
+`test_read_pin_raises_a_clear_error_on_a_truncated_pickle`.
+
 ---
 
 ## [PYQ-156]
 `cli/app.py` hides a metric row at exactly 0.0; `aggregate_metrics([])` raises `ZeroDivisionError`
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Low
 Files: `pyquant/cli/app.py`, `pyquant/analysis/metrics.py` (`aggregate_metrics`)
 
@@ -2618,11 +2725,19 @@ Acceptance criteria: a metrics row with `crps == 0.0` or `winkler_score == 0.0` 
 prints; `pyquant backtest SYMBOL --windows 0` produces a clean, expected error rather than a
 traceback, with a regression test.
 
+Resolution: both truthy checks are now `is not None`. `aggregate_metrics()` raises a clear
+`ValueError` on an empty list instead of letting `np.average` raise `ZeroDivisionError` --
+`ValueError` is already in `cli/app.py`'s `EXPECTED_FAILURES`, so `--windows 0` now renders
+as a clean CLI error rather than a traceback, with no separate `--windows` minimum needed.
+Covered by `test_train_table_still_shows_crps_and_winkler_rows_at_exactly_zero`,
+`test_aggregate_metrics_raises_a_clear_error_on_an_empty_list`, and
+`test_backtest_with_zero_windows_reports_cleanly`.
+
 ---
 
 ## [PYQ-157]
 `Settings` swallows misspelled nested env keys; `TFTConfig.quantiles` allows a bandless config
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Medium
 Files: `pyquant/config.py` (`Settings`, `TFTConfig`), `pyquant/models/tft.py` (`_window_signal`, `permutation_importance`)
 
@@ -2654,11 +2769,34 @@ than silently defaulting; `TFTConfig(quantiles=[0.1, 0.9])` (no 0.5) raises a va
 error naming `quantiles`, with a test; `_window_signal`/`permutation_importance` no longer
 need their own guard because the invalid state is unreachable by construction.
 
+Resolution: `TFTConfig`, `TrainingConfig` and `DataConfig` all gained
+`model_config = ConfigDict(extra="forbid")` -- a misspelled nested env key (or an unknown
+kwarg passed directly) now raises `pydantic.ValidationError` at construction instead of
+silently keeping the default. `TFTConfig.quantiles` gained a second validator (alongside
+the existing ascending-order one) requiring every entry satisfy `0 < q < 1` and that `0.5`
+is present, naming `quantiles` in the error either way. `_window_signal`/
+`permutation_importance` needed no code change -- their bare `quantiles.index(0.5)` calls
+are now unreachable with an invalid config by construction, exactly as the acceptance
+criteria describes.
+
+Confirmed test-first: `test_tft_config_rejects_an_unknown_field`,
+`test_training_config_rejects_an_unknown_field`, `test_data_config_rejects_an_unknown_field`
+and `test_misspelled_nested_env_key_raises_instead_of_silently_defaulting` all fail against
+the pre-fix code (verified by stashing the fix) and pass after. Also covered by
+`test_tft_quantiles_reject_missing_median`,
+`test_tft_quantiles_reject_out_of_range_values`, and
+`test_correctly_spelled_nested_env_key_still_works` (the positive case, so `extra="forbid"`
+isn't rejecting valid input). Both shipped example configs
+(`configs/aapl_baseline.yaml`, `configs/wide_quantile_aggressive.yaml`) verified to still
+load cleanly; full suite (including `test_tft.py`/`test_invariants.py`/
+`test_learnability.py`) re-run to confirm `extra="forbid"` breaks no existing construction
+site.
+
 ---
 
 ## [PYQ-158]
 `tests/conftest.py`'s `settings` fixture leaves `use_options` pointed at the real repo
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: Medium
 Files: `tests/conftest.py`
 
@@ -2682,6 +2820,14 @@ Acceptance criteria: the `settings` fixture disables `use_options` and redirects
 `options_history_dir` into `tmp_path`; a test (or an assertion added to an existing one)
 confirms panel-building under the fixture never touches the real `data/options_history/`
 directory.
+
+Resolution: added `s.data.use_options = False` and `s.options_history_dir = tmp_path /
+"options"` to the fixture, matching the existing macro/sectors/sentiment/cache treatment.
+Covered by `test_settings_fixture_isolates_options_history_from_the_real_repo` (asserts the
+fixture's own defaults) and
+`test_panel_building_with_use_options_reenabled_still_reads_from_tmp_path` (a test that
+deliberately opts back into `use_options=True`, as `test_dataset.py`'s existing option tests
+already do, still resolves under `tmp_path` rather than the real directory).
 
 ---
 

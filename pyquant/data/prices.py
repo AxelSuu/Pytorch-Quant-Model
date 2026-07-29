@@ -88,9 +88,13 @@ def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
     avg_loss = _wilder_average(loss, period)
 
     rsi = 100.0 - (100.0 / (1.0 + avg_gain / avg_loss))
-    # An all-gains window has avg_loss == 0; state RSI = 100 explicitly rather
-    # than leaning on float division by zero.
-    return rsi.mask((avg_loss == 0) & avg_gain.notna(), 100.0)
+    # An all-gains window has avg_loss == 0 and avg_gain > 0; state RSI = 100
+    # explicitly rather than leaning on float division by zero. A flat/halted
+    # window has avg_gain == avg_loss == 0 too (0/0 = NaN), which is neutral,
+    # not overbought -- PYQ-152 (the `avg_gain > 0` guard is what tells the two
+    # apart; without it a flat series was misread as maximally overbought).
+    rsi = rsi.mask((avg_loss == 0) & (avg_gain > 0), 100.0)
+    return rsi.mask((avg_loss == 0) & (avg_gain == 0) & avg_gain.notna(), 50.0)
 
 
 # How many spans of warm-up an EMA must accumulate before a value is emitted.

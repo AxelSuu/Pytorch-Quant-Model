@@ -9,6 +9,7 @@ than pulling in tenacity.
 from __future__ import annotations
 
 import logging
+import re
 import time
 from collections.abc import Callable
 from typing import TypeVar
@@ -20,6 +21,17 @@ T = TypeVar("T")
 # Module-level indirection so tests can patch out the wait without touching the
 # global time module.
 _sleep = time.sleep
+
+# Query-string secrets (token=..., api_key=...) that might otherwise reach a
+# WARNING log via a raised HTTPError's __str__(), which embeds the full request
+# URL (PYQ-150). Defense in depth: the known offender (Finnhub) was moved to
+# header auth, but this catches any other query-string secret the same way.
+_SECRET_QUERY_PARAM = re.compile(r"(?i)\b(token|api[_-]?key)=[^&\s]+")
+
+
+def _redact(text: str) -> str:
+    """Redact ``token=``/``api_key=``-shaped query fragments from a log message."""
+    return _SECRET_QUERY_PARAM.sub(r"\1=***REDACTED***", text)
 
 
 def with_retry(
@@ -50,7 +62,7 @@ def with_retry(
                 description,
                 attempt,
                 attempts,
-                exc,
+                _redact(str(exc)),
                 delay,
             )
             _sleep(delay)

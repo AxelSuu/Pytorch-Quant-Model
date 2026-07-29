@@ -232,6 +232,14 @@ def test_aggregate_metrics_falls_back_to_unweighted_mean_without_point_counts():
     assert agg.model_mae == pytest.approx(2.0)
 
 
+def test_aggregate_metrics_raises_a_clear_error_on_an_empty_list():
+    """PYQ-156: np.average([], weights=[]) used to raise a bare ZeroDivisionError,
+    reachable via `pyquant backtest SYMBOL --windows 0` and not in cli/app.py's
+    EXPECTED_FAILURES -- so it surfaced as a raw traceback, not a clean message."""
+    with pytest.raises(ValueError):
+        metrics.aggregate_metrics([])
+
+
 # --- PYQ-252: CRPS, Winkler and PIT -------------------------------------------
 
 

@@ -553,6 +553,36 @@ def test_prediction_rejects_a_multi_symbol_frame_instead_of_returning_group_zero
         tft.predict_quantiles(bundle, multi_symbol)
 
 
+def test_interpret_raises_on_encoder_name_weight_length_mismatch(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """PYQ-147: interpret() used to zip names to weights with strict=False, which
+    would silently truncate and misattribute weights to the wrong feature names
+    on any length mismatch instead of failing loudly."""
+    from pyquant.data.dataset import panel_to_long
+
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    tft.train("TEST", fast_settings, max_epochs=1, progress=False)
+    bundle = tft.load("TEST", fast_settings)
+
+    # Leave encoder_variables (names) alone -- the forward pass needs it to line
+    # up with the model's real inputs. Instead shorten what interpret_output
+    # (weights) reports, the same shape of drift a pytorch-forecasting version
+    # bump could introduce.
+    real_interpret_output = bundle.model.interpret_output
+
+    def _one_weight_short(output, reduction="sum"):
+        result = dict(real_interpret_output(output, reduction=reduction))
+        result["encoder_variables"] = result["encoder_variables"][:-1]
+        return result
+
+    monkeypatch.setattr(bundle.model, "interpret_output", _one_weight_short)
+
+    with pytest.raises(ValueError):
+        tft.interpret(bundle, panel_to_long(panel, "TEST"))
+
+
 def test_train_records_the_resolved_data_config(monkeypatch, sample_ohlcv_df, fast_settings):
     """PYQ-119: the feature schema is a function of the data toggles, so the bundle
     must record them -- nothing else can recover them later."""

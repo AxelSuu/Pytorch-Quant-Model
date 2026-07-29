@@ -168,9 +168,11 @@ def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "")
     # CRPS scores the whole predictive distribution; Winkler charges for band
     # width as well as coverage, which is the pathology coverage alone hides --
     # a band can hit nominal by being enormous (PYQ-252). Both: lower is better.
-    if ev.crps:
+    # `is not None` rather than a bare truthy check (PYQ-156): both fields are
+    # plain floats, always populated, and a legitimate 0.0 must still print.
+    if ev.crps is not None:
         table.add_row(f"CRPS{suffix} (lower better)", f"{ev.crps:.4f}")
-    if ev.winkler_score:
+    if ev.winkler_score is not None:
         table.add_row(f"Winkler interval score{suffix} (lower better)", f"{ev.winkler_score:.4f}")
     table.add_row(
         "Evaluated on",

@@ -20,7 +20,9 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import os
 import time
+import uuid
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +30,31 @@ import pandas as pd
 from pyquant import provenance
 
 logger = logging.getLogger(__name__)
+
+
+def _tmp_sibling(path: Path) -> Path:
+    return path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
+
+
+def _atomic_write_text(path: Path, text: str) -> None:
+    """Write ``text`` to ``path`` so a reader never observes a partial file.
+
+    Writes to a uniquely-named sibling temp file, then ``os.replace()``s it
+    into place -- a rename is atomic on the same filesystem, unlike writing
+    directly to ``path`` (PYQ-155: a crash mid-write, or two threads racing
+    the same fingerprint, could otherwise leave a truncated file that a
+    stale-but-present sibling would still present as valid).
+    """
+    tmp_path = _tmp_sibling(path)
+    tmp_path.write_text(text)
+    os.replace(tmp_path, path)
+
+
+def _atomic_write_pickle(path: Path, panel: pd.DataFrame) -> None:
+    """Same atomicity guarantee as ``_atomic_write_text``, for a pickled DataFrame."""
+    tmp_path = _tmp_sibling(path)
+    panel.to_pickle(tmp_path)
+    os.replace(tmp_path, path)
 
 
 def fingerprint_key(fingerprint: dict) -> str:
@@ -47,42 +74,73 @@ def _meta_path(entry_path: Path) -> Path:
 
 
 def read_pin_metadata(cache_dir: Path, name: str) -> dict | None:
-    """Return a pin's provenance metadata, if it was recorded."""
+    """Return a pin's provenance metadata, if it was recorded (and readable)."""
     path = _meta_path(_entry_path(cache_dir / "pins", name))
-    return json.loads(path.read_text()) if path.exists() else None
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except json.JSONDecodeError:
+        logger.warning("Pin %s metadata is corrupt; treating as unrecorded.", name)
+        return None
 
 
 def read_cache(
     cache_dir: Path, key: str, ttl_seconds: float | None, now: float | None = None
 ) -> pd.DataFrame | None:
-    """Return the cached panel for ``key`` if present and not past its TTL."""
+    """Return the cached panel for ``key`` if present, valid, and not past its TTL.
+
+    A corrupt/truncated entry (PYQ-155: possible before writes were made atomic,
+    and still possible from e.g. a disk-full write) is treated as a cache miss --
+    the caller refetches -- rather than propagating a raw unpickling error out of
+    ``build_panel``.
+    """
     path = _entry_path(cache_dir, key)
     if not path.exists():
         return None
     if ttl_seconds is not None:
         meta_path = _meta_path(path)
-        cached_at = json.loads(meta_path.read_text())["cached_at"] if meta_path.exists() else 0.0
+        try:
+            cached_at = json.loads(meta_path.read_text())["cached_at"] if meta_path.exists() else 0.0
+        except (json.JSONDecodeError, KeyError):
+            logger.warning("Cache metadata for %s is corrupt; treating as a miss.", key)
+            return None
         clock = now if now is not None else time.time()
         if clock - cached_at > ttl_seconds:
             return None
-    return pd.read_pickle(path)
+    try:
+        return pd.read_pickle(path)
+    except Exception:
+        logger.warning("Cache entry for %s is corrupt; treating as a miss.", key)
+        return None
 
 
 def write_cache(cache_dir: Path, key: str, panel: pd.DataFrame, now: float | None = None) -> None:
     """Persist ``panel`` under ``key``, timestamped for TTL expiry."""
     cache_dir.mkdir(parents=True, exist_ok=True)
     path = _entry_path(cache_dir, key)
-    panel.to_pickle(path)
-    _meta_path(path).write_text(json.dumps({"cached_at": now if now is not None else time.time()}))
+    _atomic_write_pickle(path, panel)
+    _atomic_write_text(
+        _meta_path(path), json.dumps({"cached_at": now if now is not None else time.time()})
+    )
 
 
 def read_pin(cache_dir: Path, name: str) -> pd.DataFrame | None:
-    """Return a pinned dataset snapshot, ignoring any TTL -- exact reproducibility."""
+    """Return a pinned dataset snapshot, ignoring any TTL -- exact reproducibility.
+
+    A pin is meant to be exactly reproducible, so a corrupt entry cannot
+    silently fall back to a refetch the way a TTL cache miss can (PYQ-155) --
+    that would defeat the point of pinning. It raises, with a message naming
+    the pin, rather than a bare unpickling error from deep in pandas.
+    """
     path = _entry_path(cache_dir / "pins", name)
     if not path.exists():
         return None
 
-    panel = pd.read_pickle(path)
+    try:
+        panel = pd.read_pickle(path)
+    except Exception as exc:
+        raise ValueError(f"Pin '{name}' at {path} is corrupt and cannot be read: {exc}") from exc
     meta = read_pin_metadata(cache_dir, name)
     if meta is None:
         logger.warning("Pin %s has no recorded metadata; it may predate the current code.", name)
@@ -116,8 +174,9 @@ def write_pin(cache_dir: Path, name: str, panel: pd.DataFrame) -> None:
     pin_dir = cache_dir / "pins"
     pin_dir.mkdir(parents=True, exist_ok=True)
     path = _entry_path(pin_dir, name)
-    panel.to_pickle(path)
-    _meta_path(path).write_text(
+    _atomic_write_pickle(path, panel)
+    _atomic_write_text(
+        _meta_path(path),
         json.dumps(
             {
                 "pyquant_version": provenance.package_version(),
@@ -127,7 +186,7 @@ def write_pin(cache_dir: Path, name: str, panel: pd.DataFrame) -> None:
                 "n_rows": len(panel),
             },
             indent=2,
-        )
+        ),
     )
 
 

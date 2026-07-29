@@ -87,11 +87,17 @@ def _finbert():
 
 def fetch_news(api_key: str, symbol: str, start: str, end: str) -> list[dict]:
     """Fetch company news headlines from Finnhub between ``start`` and ``end``."""
-    params = {"symbol": symbol, "from": start, "to": end, "token": api_key}
+    params = {"symbol": symbol, "from": start, "to": end}
+    # The key travels in a header, not the query string (PYQ-150): a query-string
+    # token reaches request.HTTPError.__str__() (which embeds the full request
+    # URL) and therefore with_retry's WARNING log on every retryable failure --
+    # a direct violation of CLAUDE.md's "secrets never enter ... logs" rule.
+    # Finnhub supports header auth for exactly this reason.
+    headers = {"X-Finnhub-Token": api_key}
 
     def _get() -> list:
         """One Finnhub request; non-list payloads become an empty result."""
-        resp = requests.get(_FINNHUB_NEWS_URL, params=params, timeout=20)
+        resp = requests.get(_FINNHUB_NEWS_URL, params=params, headers=headers, timeout=20)
         resp.raise_for_status()
         data = resp.json()
         return data if isinstance(data, list) else []

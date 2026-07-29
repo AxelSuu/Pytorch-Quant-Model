@@ -326,6 +326,48 @@ def test_cache_fingerprint_records_no_secret_values(settings):
     assert "super-secret-finnhub" not in str(fingerprint)
 
 
+@pytest.mark.parametrize("field_name", dataset.SCHEMA_DATA_FIELDS)
+def test_cache_fingerprint_changes_when_any_schema_field_toggles(settings, field_name):
+    """PYQ-148: use_options was added to tft.py's schema-field list without being
+    added here, so a cached panel could be served across the opposite setting.
+    Parametrized over SCHEMA_DATA_FIELDS itself so a future field added to that
+    tuple is covered by construction, not by remembering to extend this test."""
+    before = dataset._cache_fingerprint("AAPL", settings, None, None)
+
+    current = getattr(settings.data, field_name)
+    if isinstance(current, bool):
+        setattr(settings.data, field_name, not current)
+    elif isinstance(current, list):
+        setattr(settings.data, field_name, [*current, "ZZZZ"])
+    else:
+        setattr(settings.data, field_name, f"{current}-changed")
+
+    after = dataset._cache_fingerprint("AAPL", settings, None, None)
+    assert cache.fingerprint_key(before) != cache.fingerprint_key(after)
+
+
+# --- PYQ-158: the settings fixture must never read the real repo's options dir
+
+
+def test_settings_fixture_isolates_options_history_from_the_real_repo(settings, tmp_path):
+    from pyquant.config import project_root
+
+    assert settings.data.use_options is False
+    real_options_dir = project_root() / "data" / "options_history"
+    assert settings.options_history_dir != real_options_dir
+    assert str(tmp_path) in str(settings.options_history_dir)
+
+
+def test_panel_building_with_use_options_reenabled_still_reads_from_tmp_path(settings, tmp_path):
+    """Re-enabling use_options under the fixture must still land in the
+    redirected tmp_path, not the real data/options_history/ -- proves the
+    isolation holds even for a test that opts back in, not just the default."""
+    settings.data.use_options = True
+    history = options.load_snapshot_history("AAPL", settings)
+    assert str(tmp_path) in str(settings.options_history_dir)
+    assert history.empty  # nothing accumulated under a fresh tmp_path
+
+
 # --- PYQ-115: prediction rows must cover the future, not observed days -------
 
 

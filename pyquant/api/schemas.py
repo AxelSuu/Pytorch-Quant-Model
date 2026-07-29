@@ -10,7 +10,28 @@ the two front-ends cannot drift because they share the conversion code, not just
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+import re
+
+from pydantic import BaseModel, field_validator
+
+# A ticker symbol or bundle name becomes a filesystem path segment
+# (`_bundle_dir`: `settings.checkpoint_dir / name.upper()`). Unlike a GET
+# route's `{symbol}` path parameter, a request-body field isn't subject to
+# Starlette's `/`-rejecting path matching, so `"../../etc"` would otherwise
+# reach `mkdir`/`torch.save` unfiltered (PYQ-145). Real tickers/bundle names
+# are short, uppercase alphanumerics with an occasional `.`/`-`
+# (e.g. "BRK.B", "AAPL_MSFT").
+SYMBOL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9.\-]{0,15}$"
+_SYMBOL_RE = re.compile(SYMBOL_PATTERN)
+
+
+def _validate_symbol(value: str) -> str:
+    normalized = value.strip().upper()
+    if not _SYMBOL_RE.match(normalized):
+        raise ValueError(
+            f"Invalid symbol/bundle name {value!r}: must match {SYMBOL_PATTERN}"
+        )
+    return normalized
 
 
 class EvaluationResponse(BaseModel):
@@ -80,6 +101,11 @@ class ScanRequest(BaseModel):
 
     symbols: list[str]
 
+    @field_validator("symbols")
+    @classmethod
+    def _validate_symbols(cls, values: list[str]) -> list[str]:
+        return [_validate_symbol(v) for v in values]
+
 
 class TrainResultResponse(BaseModel):
     """Mirrors analysis.serialize.train_result_to_dict()."""
@@ -99,6 +125,16 @@ class TrainRequest(BaseModel):
     bundle_name: str | None = None
     epochs: int | None = None
     period: str | None = None
+
+    @field_validator("symbols")
+    @classmethod
+    def _validate_symbols(cls, values: list[str]) -> list[str]:
+        return [_validate_symbol(v) for v in values]
+
+    @field_validator("bundle_name")
+    @classmethod
+    def _validate_bundle_name(cls, value: str | None) -> str | None:
+        return _validate_symbol(value) if value is not None else None
 
 
 class TrainJobResponse(BaseModel):

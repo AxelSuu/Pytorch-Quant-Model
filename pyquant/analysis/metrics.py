@@ -304,6 +304,13 @@ def aggregate_metrics(results: list[EvaluationMetrics]) -> EvaluationMetrics:
     Windows carrying no point count at all (metrics built without PYQ-117's
     counts) cannot be weighted, so they fall back to an unweighted mean.
     """
+    if not results:
+        # np.average([], weights=[]) raises ZeroDivisionError, not something a
+        # caller would expect from an aggregation function (PYQ-156) -- reachable
+        # via `pyquant backtest SYMBOL --windows 0`, which produces an empty
+        # `cutoffs` list. ValueError is in cli/app.py's EXPECTED_FAILURES, so this
+        # renders as a clean CLI error instead of a raw traceback.
+        raise ValueError("aggregate_metrics() requires at least one window's results")
     weights = np.array([r.n_points for r in results], dtype=float)
     if weights.sum() == 0:
         weights = np.ones(len(results), dtype=float)
