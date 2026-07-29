@@ -332,6 +332,85 @@ def test_tune_command_reports_a_missing_extra_clearly(monkeypatch):
     assert "tuning" in result.output
 
 
+# --- PYQ-268: multi-symbol sweep harness ---------------------------------------
+
+
+def _fake_sweep_result():
+    from pyquant.experiments.sweep import SweepCell, SweepResult
+    from pyquant.models.tft import BacktestResult
+
+    def _ev(mae):
+        return EvaluationMetrics(
+            model_mae=mae, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+        )
+
+    def _result(symbol, mae):
+        ev = _ev(mae)
+        return BacktestResult(symbol=symbol, n_windows=1, per_window=[ev], aggregated=ev, origins=[100])
+
+    cells = [
+        SweepCell("AAA", "close", result=_result("AAA", 1.0)),  # skill 0.5
+        SweepCell("AAA", "log_return", result=_result("AAA", 0.0)),  # skill 1.0
+        SweepCell("BBB", "close", result=_result("BBB", 1.5)),  # skill 0.25
+        SweepCell("BBB", "log_return", error="not enough history"),
+    ]
+    return SweepResult(symbols=["AAA", "BBB"], arm_names=["close", "log_return"], cells=cells)
+
+
+def test_sweep_command_reports_the_cell_matrix_and_pooled_skill(monkeypatch):
+    captured = {}
+
+    def fake_run_sweep(symbols, arms, settings, **kwargs):
+        captured["symbols"] = symbols
+        captured["arm_specs"] = [(a.name, a.overrides) for a in arms]
+        return _fake_sweep_result()
+
+    monkeypatch.setattr(app_mod, "run_sweep", fake_run_sweep)
+
+    result = runner.invoke(
+        app_mod.app,
+        ["sweep", "--symbols", "aaa,bbb", "--arm", "target=close", "--arm", "target=log_return"],
+    )
+
+    assert result.exit_code == 0
+    assert captured["symbols"] == ["AAA", "BBB"]
+    assert captured["arm_specs"] == [
+        ("target=close", {"target": "close"}),
+        ("target=log_return", {"target": "log_return"}),
+    ]
+    assert "failed" in result.stdout  # BBB/log_return's recorded gap
+    assert "scored higher" in result.stdout  # helped-summary line
+
+
+def test_sweep_command_json_output_includes_the_full_cell_matrix(monkeypatch):
+    monkeypatch.setattr(app_mod, "run_sweep", lambda *a, **k: _fake_sweep_result())
+
+    result = runner.invoke(
+        app_mod.app,
+        ["--format", "json", "sweep", "--symbols", "AAA,BBB", "--arm", "target=close", "--arm", "target=log_return"],
+    )
+
+    assert result.exit_code == 0
+    data = json.loads(result.stdout)
+    assert data["symbols"] == ["AAA", "BBB"]
+    assert data["arms"] == ["close", "log_return"]
+    assert len(data["cells"]) == 4
+    failed_cell = next(c for c in data["cells"] if c["symbol"] == "BBB" and c["arm"] == "log_return")
+    assert failed_cell["result"] is None
+    assert failed_cell["error"] == "not enough history"
+    assert data["pooled_skill"]["close"] == pytest.approx((0.5 + 0.25) / 2)
+    assert data["pooled_skill"]["log_return"] == pytest.approx(1.0)  # BBB failed, only AAA counts
+
+
+def test_sweep_command_rejects_a_malformed_arm_spec(monkeypatch):
+    monkeypatch.setattr(app_mod, "run_sweep", lambda *a, **k: _fake_sweep_result())
+
+    result = runner.invoke(app_mod.app, ["sweep", "--symbols", "AAA", "--arm", "not-key-equals-value"])
+
+    assert result.exit_code == 1
+    assert "key=value" in result.output
+
+
 def test_default_logging_level_is_warning(monkeypatch):
     monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: _fake_forecast())
     runner.invoke(app_mod.app, ["forecast", "AAPL", "--no-chart"])

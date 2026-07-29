@@ -22,6 +22,7 @@ from pyquant.cli import charts
 from pyquant.config import Settings, load_settings
 from pyquant.data import cache as data_cache
 from pyquant.data.options import OptionsSnapshot, append_snapshot, fetch_options_snapshot
+from pyquant.experiments.sweep import Arm, run_sweep
 from pyquant.models import tft
 
 app = typer.Typer(
@@ -571,6 +572,102 @@ def tune(
         "[dim]Note: the in-search value above is a selection-event score, not this "
         "model's real performance -- the held-out numbers are the ones to trust.[/dim]"
     )
+
+
+@app.command()
+def sweep(
+    symbols: str = typer.Option(..., "--symbols", help="Comma-separated symbols, e.g. AAPL,MSFT,NVDA"),
+    arm: list[str] = typer.Option(
+        ...,
+        "--arm",
+        help="key=value config override defining one arm, e.g. 'target=log_return'; repeat for more arms",
+    ),
+    windows: int = typer.Option(5, help="Number of rolling walk-forward windows per cell"),
+    config: Path = typer.Option(
+        None, "--config", help="YAML experiment config (see configs/); CLI flags still win"
+    ),
+    epochs: int = typer.Option(None, help="Override max training epochs per window"),
+    period: str = typer.Option(None, help="History to pull, e.g. 5y, 10y"),
+    no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
+    no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
+    no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+):
+    """Walk-forward backtest every symbol against every arm (PYQ-268).
+
+    A multi-symbol repeat of a configuration comparison -- e.g. `--arm
+    target=close --arm target=log_return` -- that used to mean editing
+    scripts/ablate_features.py or scripts/compare_pooling.py by hand and
+    reconciling the output yourself. Reports per-symbol and pooled skill for
+    every arm, plus a paired comparison (PYQ-266) between the first two arms
+    on every symbol where both succeeded; a symbol that fails for one arm is
+    recorded as a gap rather than taking the whole sweep down.
+    """
+    try:
+        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+    except EXPECTED_FAILURES as exc:
+        _fail(exc)
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    arms = []
+    for spec in arm:
+        if "=" not in spec:
+            _fail(ValueError(f"--arm must be key=value, got {spec!r}"))
+        key, value = spec.split("=", 1)
+        arms.append(Arm(name=spec, overrides={key: value}))
+
+    def _run():
+        try:
+            return run_sweep(
+                symbol_list, arms, settings, n_windows=windows, max_epochs=epochs, progress=False
+            )
+        except ValueError as exc:  # an --arm override that doesn't resolve to a real field
+            _fail(exc)
+
+    if _output.quiet:
+        result = _run()
+    else:
+        console.print(f"[bold cyan]Sweeping {len(symbol_list)} symbol(s) x {len(arms)} arm(s)[/bold cyan]")
+        with console.status(f"Running {len(symbol_list) * len(arms)} cell(s)..."):
+            result = _run()
+
+    if _output.json:
+        _emit_json(serialize.sweep_result_to_dict(result))
+        return
+
+    table = Table(title="Sweep — skill vs. baseline")
+    table.add_column("Symbol")
+    for name in result.arm_names:
+        table.add_column(name, justify="right")
+    for symbol in result.symbols:
+        row = [symbol]
+        for name in result.arm_names:
+            cell = result.cell(symbol, name)
+            row.append(f"{cell.result.aggregated.skill_vs_baseline:+.1%}" if cell.ok else "[red]failed[/red]")
+        table.add_row(*row)
+    console.print(table)
+
+    pooled_table = Table(title="Pooled (unweighted mean across symbols)", show_header=False)
+    for name in result.arm_names:
+        pooled = result.pooled_skill(name)
+        pooled_table.add_row(name, f"{pooled:+.1%}" if pooled is not None else "n/a (every symbol failed)")
+    console.print(pooled_table)
+
+    # "Helped 11 of 15 symbols" and "mean skill +0.3%" answer different
+    # questions; the pooled table above is the second, this is the first.
+    if len(result.arm_names) >= 2:
+        base, other = result.arm_names[0], result.arm_names[1]
+        helped, total = result.helped_summary(base, other)
+        console.print(f"[dim]{other!r} scored higher than {base!r} on {helped} of {total} symbol(s)[/dim]")
+        for symbol in result.symbols:
+            comparison = result.paired_comparison(symbol, base, other)
+            if comparison is None:
+                continue
+            verdict = "excludes zero" if comparison.excludes_zero else "does not exclude zero"
+            console.print(
+                f"[dim]  {symbol}: {base!r} - {other!r} mean diff "
+                f"{comparison.mean_diff:+.1%} [{comparison.ci_low:+.1%}, {comparison.ci_high:+.1%}] "
+                f"({verdict})[/dim]"
+            )
 
 
 def _forecast_table(fc: Forecast) -> Table:

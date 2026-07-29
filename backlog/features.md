@@ -72,7 +72,7 @@ Next free ID: **PYQ-281**.
 | [PYQ-265](#pyq-265) | High | Resolved | Report skill across seeds, not from a single seed |
 | [PYQ-266](#pyq-266) | High | Resolved | Paired significance test for comparing two configurations |
 | [PYQ-267](#pyq-267) | High | Resolved | Break every metric down by horizon step |
-| [PYQ-268](#pyq-268) | High | Open | A reusable multi-symbol sweep harness, replacing the one-off scripts |
+| [PYQ-268](#pyq-268) | High | Resolved | A reusable multi-symbol sweep harness, replacing the one-off scripts |
 | [PYQ-269](#pyq-269) | Medium | Open | Split `models/tft.py` (1075 lines) without breaking Lightning containment |
 | [PYQ-270](#pyq-270) | Medium | Open | Put a confidence interval on the headline skill number |
 | [PYQ-271](#pyq-271) | Medium | Open | `/backtest` endpoint: close the CLI/API front-end gap |
@@ -3507,7 +3507,7 @@ the gap silent or inventing numbers.
 
 ## [PYQ-268]
 A reusable multi-symbol sweep harness, replacing the one-off scripts
-Status: Open
+Status: Resolved — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `pyquant/experiments/` (new), `pyquant/cli/app.py`, `scripts/ablate_features.py`, `scripts/compare_pooling.py`
 
@@ -3549,6 +3549,65 @@ and writes a machine-readable result set. Tests cover the cell matrix (arms x sy
 the "helped N of M" summary, and that a failing symbol degrades to a recorded gap rather
 than taking the sweep down. `scripts/ablate_features.py` and `scripts/compare_pooling.py`
 are either rewritten over the harness or removed with their reasoning preserved.
+
+Resolution: `pyquant/experiments/sweep.py` -- `Arm(name, overrides)`, `apply_overrides()`
+(dotted-or-bare-key resolution across `training`/`data`/`tft`, raising on an unknown or
+ambiguous key rather than guessing; CLI string values coerced against the current field's
+type), `SweepCell` (a result or a recorded `error`, never both), `SweepResult` (the full
+matrix plus `skill_by_symbol`/`pooled_skill`/`helped_summary`/`paired_comparison`), and
+`run_sweep()` itself. None of it imports torch/Lightning/pytorch-forecasting directly --
+only `models.tft.walk_forward_backtest`, the same shape `cli/app.py` already calls into.
+
+Reuses PYQ-266 exactly as asked: `SweepResult.paired_comparison(symbol, arm_a, arm_b)`
+builds two `ScoredWindows` from the two cells' `per_window`/`origins` and calls
+`compare_backtests`, returning `None` (rather than raising) when a cell failed or when the
+two arms' windows don't verifiably align -- e.g. an override that changes `n_windows`/`step`
+between arms -- the same degrade-gracefully shape `SweepCell.error` already applies to a
+failing cell, extended to a failing *comparison*.
+
+**PYQ-265's seed handling (the within-cell repeat) is not wired in.** Each cell runs
+`walk_forward_backtest` once, at `settings.training.seed`, not
+`walk_forward_backtest_multi_seed`. Recorded as a deliberate scope cut rather than an
+oversight: combining two multiplicative axes (arms x symbols x seeds) correctly -- deciding
+what a "cell" even means when it is itself a seed-distribution rather than a point, and what
+`paired_comparison` would compare in that case -- is a real design question, and answering it
+under this pass's time budget alongside four other tickets risked a rushed answer. The
+`SweepCell`/`SweepResult` shapes do not preclude adding it later (a `seeds` parameter on
+`run_sweep` that swaps which `tft` function each cell calls is a contained follow-up), but it
+is not attempted here.
+
+**Neither existing script was rewritten over the harness or removed** -- the third option the
+acceptance criteria didn't explicitly list, but the one the ticket's own "whichever way that
+goes should be recorded" line invites when the other two are each a worse fit than they look.
+`ablate_features.py`'s correlation-matrix analysis has no sweep-harness equivalent (it isn't
+a backtest). `compare_pooling.py`'s "pooled" is one bundle trained once across every symbol
+and sliced per symbol at evaluation time -- not `N` independent per-symbol
+`walk_forward_backtest` calls, which is what a `pooled` arm in the harness would actually
+run and would silently answer a different question (does training a separate pooled-in-name-
+only model per symbol subset help that symbol, not does the one deployed pooled model help
+it). Forcing either script's shape into the harness would have cost correctness for the sake
+of satisfying the letter of the acceptance criteria; instead both scripts gained a short note
+pointing future multi-symbol repeats at `pyquant sweep` where it genuinely applies (which is
+most of `ablate_features.py`'s feature-toggle half), and `docs/development.md` gained a
+`### pyquant sweep` section making the same case in one place. This is the "recorded" the
+ticket asked for, applied to a "neither" the acceptance criteria's two options didn't quite
+name.
+
+Verified: 14 tests in `tests/test_sweep.py` cover `apply_overrides` (dotted paths, type
+coercion, unknown-key and ambiguous-key errors -- the latter constructed against a synthetic
+`SimpleNamespace` since no real config field collides today, verified by inspection), the
+full symbol x arm cell matrix (`test_run_sweep_covers_the_full_symbol_by_arm_cell_matrix`),
+a failing cell degrading to a recorded gap without stopping the sweep
+(`test_run_sweep_degrades_a_failing_cell_to_a_recorded_gap`), `pooled_skill`/
+`helped_summary` excluding failed cells, and `paired_comparison`'s three cases (aligned,
+one side failed, windows misaligned). 3 new CLI tests cover the Rich table output, `--format
+json`'s full cell matrix (a failed cell serializes as `{"result": null, "error": "..."}`,
+distinguishable from a real zero-skill result), and a malformed `--arm` spec's error message.
+All pass; ruff clean; `scripts/backlog.py check` clean.
+
+Per the ticket's own explicit scope: **no sweep was run.** This delivers the instrument the
+three pending repeats need; running them against live data is separate, later work, gated on
+the same vendor-data access every other ticket in this pass noted as unavailable.
 
 ---
 

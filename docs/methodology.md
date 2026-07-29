@@ -404,3 +404,67 @@ All three share the same caveat as the headline log-return result: one run, smal
 directional rather than definitive. The pattern across all four is itself worth noting —
 every one of them moved in the direction of "the rationale was optimistic," which is why
 this project's non-negotiable #1 exists.
+
+(decision-rule)=
+## What it takes to flip a default
+
+Three findings above each recommend a default change and each declines to make it, for the
+same stated reason: one symbol, tens of points, one run. Each names "a multi-symbol repeat"
+as the prerequisite and none says how many symbols, how many windows, or how large a
+difference (investigations.md#pyq-322). `backlog/README.md`'s `## Now` list carried the
+resulting item at #1 across two review passes without it being started — an unspecified
+threshold is not a conservative decision rule, it is a deferred one: it can never be met, so
+the finding sits forever, or it gets met retrospectively by whichever run happens to look
+convincing, which is the exact move non-negotiable #1 exists to prevent. This section settles
+it once, using the instruments PYQ-265/266/268 built in the same pass that asked the
+question.
+
+**To flip any of `TrainingConfig.target`, `DataConfig.use_sentiment`, or whether pooling
+defaults on:**
+
+1. **Coverage.** N ≥ 10 symbols, spanning at least 3 distinct sectors — not ten names from
+   one industry, which would be one bet dressed as ten.
+2. **Per-symbol evidence.** Enough walk-forward windows that
+   `EvaluationMetrics.effective_n_samples` (PYQ-251) is ≥ 10 for *each* symbol/arm cell — the
+   project's existing 60-day-validation default already clears this (~12 effective windows),
+   so this is "don't shrink below today's own bar," not a new number invented for this rule.
+3. **Seed floor.** K ≥ 5 seeds per (symbol, arm) cell, run via
+   `models.tft.walk_forward_backtest_multi_seed` (PYQ-265). This is a floor, not necessarily
+   sufficient — investigations.md#pyq-321 measures the actual seed-to-seed standard
+   deviation, and if that turns out to be large relative to the effect sizes below, K must
+   rise until it isn't; that finding supersedes the "5" here when it lands, per the
+   supersession discipline this backlog already uses for corrected numbers.
+4. **The statistical bar.** `analysis.metrics.compare_backtests`'s paired interval (PYQ-266)
+   on the arm-vs-arm skill difference, computed *per symbol* on that symbol's own walk-forward
+   windows, must exclude zero. Two overlapping marginal intervals do not qualify — that is
+   exactly the weaker, wrong instrument PYQ-266 replaced.
+5. **The mixed case — the one most likely to actually happen.** An arm that helps 11 symbols
+   and hurts 4 is not "helped, on net." A default flips only if **both** (a) the pooled paired
+   comparison across all N symbols excludes zero, **and** (b) the arm's per-symbol paired
+   interval excludes zero in the favourable direction for at least 60% of symbols with a
+   per-symbol-significant result, **and** (c) no covered sector hurts on every one of its
+   symbols (a clean per-sector failure is evidence of a real interaction a pooled number
+   would hide, and blocks the flip even if (a) and (b) clear). Failing this test is not
+   "inconclusive, gather more data" — it is a **named result**: the effect is real but
+   symbol-dependent, gets written up as such, and the config becomes a documented **non-default
+   option**, not a new default.
+6. **The bar scales with blast radius, not just the arm.** Equal evidence bars for unequal
+   consequences is the wrong answer:
+   - **Low blast radius** (`use_sentiment` off — removes a feature, changes nothing about
+     what an existing bundle means, fully reversible): the rule above applies as stated.
+   - **High blast radius** (`target` → `log_return` — redefines what every bundle predicts,
+     making older ones non-comparable the way PYQ-121 did for a single feature): the same
+     statistical bar, **plus** N ≥ 15 rather than 10, **plus** an explicit supersession plan
+     naming which existing tickets and docs get marked `Superseded by PYQ-XXX` before the
+     flip lands — decided in advance, not improvised after.
+   - **Pooling on by default:** investigations.md#pyq-315 already measured pooling *worse*.
+     Turning it on by default would be a first-time change against standing negative
+     evidence, so it takes the high-blast-radius bar; leaving it off takes nothing further,
+     since the status quo already matches the evidence.
+
+This is deliberately conservative in the "no free upgrades" direction: it is written to be
+hard to satisfy by accident, and easy to point to when a run *does* satisfy it. If it turns
+out to be miscalibrated once real multi-symbol data exists — too strict to ever pass, or
+loose enough that a marginal result clears it — say so and revise the rule explicitly, the
+same way a wrong headline number gets corrected loudly rather than quietly (non-negotiable
+#1), rather than working around it informally.

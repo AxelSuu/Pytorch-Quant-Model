@@ -95,7 +95,13 @@ leverage and every one of them changes what a later result *means*.
 
 5. **features.md#pyq-268 + investigations.md#pyq-322** — the sweep harness, and the
    pre-registered rule for what result flips a default, written *before* the run. An
-   unspecified threshold is a deferred decision, not a conservative one.
+   unspecified threshold is a deferred decision, not a conservative one. Both landed
+   2026-07-29: `pyquant sweep` (`pyquant/experiments/sweep.py`) is the harness, and
+   `docs/methodology.md`'s "What it takes to flip a default" section is the rule —
+   N≥10 symbols/3 sectors, per-symbol `effective_n_samples`≥10, K≥5 seeds (raised if
+   investigations.md#pyq-321 finds seed variance requires it), a per-symbol paired
+   interval excluding zero, an explicit "helped 11/hurt 4" resolution, and a higher bar
+   for `target` (blast radius) than for `use_sentiment`.
 6. **Run the sweep.** The three pending repeats — PYQ-247's target comparison,
    investigations.md#pyq-315's pooling result, #pyq-316's feature ablation — at the sample
    size non-negotiable #1 requires. This is the step that unblocks everything PYQ-312 was

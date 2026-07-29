@@ -15,6 +15,7 @@ from pyquant.analysis.forecast import Forecast
 from pyquant.analysis.interpret import Interpretation
 from pyquant.analysis.metrics import EvaluationMetrics
 from pyquant.analysis.signals import SignalEvaluation, classify_signal
+from pyquant.experiments.sweep import SweepResult
 from pyquant.models.tft import BacktestResult, SeedSweepResult, TrainResult
 
 
@@ -163,6 +164,31 @@ def seed_sweep_to_dict(sweep: SeedSweepResult) -> dict[str, Any]:
         "skill_sd": sweep.skill_sd,
         "skill_min": sweep.skill_min,
         "skill_max": sweep.skill_max,
+    }
+
+
+def sweep_result_to_dict(result: SweepResult) -> dict[str, Any]:
+    """Serialize a multi-symbol, multi-arm sweep (PYQ-268), full cell matrix included.
+
+    A failing cell serializes as ``{"error": "..."}`` rather than a null or a
+    zeroed-out result, so a consumer can tell "the model scored zero skill"
+    apart from "this cell never produced a score" -- the same distinction
+    ``SweepResult``'s own aggregates (``pooled_skill``, ``helped_summary``)
+    make by excluding failed cells rather than treating them as zero.
+    """
+    return {
+        "symbols": list(result.symbols),
+        "arms": list(result.arm_names),
+        "cells": [
+            {
+                "symbol": c.symbol,
+                "arm": c.arm,
+                "result": backtest_to_dict(c.result) if c.ok else None,
+                "error": c.error,
+            }
+            for c in result.cells
+        ],
+        "pooled_skill": {arm: result.pooled_skill(arm) for arm in result.arm_names},
     }
 
 

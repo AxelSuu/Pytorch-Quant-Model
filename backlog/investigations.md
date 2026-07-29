@@ -28,7 +28,7 @@ Next free ID: **PYQ-325**.
 | [PYQ-319](#pyq-319) | Medium | Answered — 2026-07-27 | What is the latency and cost budget of one `forecast` call? |
 | [PYQ-320](#pyq-320) | Low | Answered | Data-source licensing and ToS review before anything public-facing |
 | [PYQ-321](#pyq-321) | Critical | Open | How much of every reported number is seed variance? |
-| [PYQ-322](#pyq-322) | High | Open | A pre-registered rule for what evidence flips a default |
+| [PYQ-322](#pyq-322) | High | Answered | A pre-registered rule for what evidence flips a default |
 | [PYQ-323](#pyq-323) | Medium | Open | Is passing `Settings` everywhere costing more than it saves? |
 | [PYQ-324](#pyq-324) | Medium | Open | Does the forecast band actually fan, or does it translate? |
 
@@ -1012,7 +1012,7 @@ README's pooling claim — in which case say so loudly, per the precedent PYQ-30
 
 ## [PYQ-322]
 A pre-registered rule for what evidence flips a default
-Status: Open
+Status: Answered — 2026-07-29 (same session, uncommitted — see git status)
 Priority: High
 Files: `backlog/README.md`, `docs/methodology.md`, `CLAUDE.md`
 
@@ -1051,6 +1051,49 @@ the wrong answer.
 Expected outcome: a written rule in `docs/methodology.md`, cross-referenced from
 `CLAUDE.md`'s non-negotiable #1, that a future pass can mechanically check a sweep result
 against. Answered when the rule exists, not when the sweep is run.
+
+Answer: written to `docs/methodology.md`'s new "What it takes to flip a default" section
+(the `decision-rule` anchor), cross-referenced from `backlog/README.md`'s `## Now` list item
+5. In full:
+
+1. **Coverage** — N ≥ 10 symbols spanning ≥ 3 sectors, not ten names from one industry.
+2. **Per-symbol evidence** — `effective_n_samples` (PYQ-251) ≥ 10 per symbol/arm cell; the
+   project's existing 60-day-validation default already clears this, so this is "don't
+   shrink below today's own bar," not a newly invented number.
+3. **Seed floor** — K ≥ 5 seeds per cell via `walk_forward_backtest_multi_seed` (PYQ-265),
+   explicitly a floor: investigations.md#pyq-321 measures the real seed-to-seed sd, and
+   supersedes "5" if that turns out too low relative to the effect sizes being tested.
+4. **The statistical bar** — `compare_backtests`'s (PYQ-266) per-symbol paired interval on
+   the arm-vs-arm skill difference must exclude zero. Two eyeballed marginal intervals do
+   not qualify.
+5. **The mixed case, resolved rather than left implicit** — "helped 11, hurt 4" is not
+   "helped on net." A flip needs the *pooled* paired comparison across all N symbols to
+   exclude zero, the per-symbol interval to favour the change on ≥ 60% of
+   per-symbol-significant results, and no covered sector failing on every one of its
+   symbols. Failing this is a **named result** (a real but symbol-dependent effect,
+   written up and shipped as a non-default option), not "inconclusive."
+6. **The bar scales with blast radius** — `use_sentiment` (reversible, doesn't touch bundle
+   comparability) takes the rule as stated; `target` (redefines every bundle's prediction,
+   the way PYQ-121 did for one feature) takes N ≥ 15 plus an explicit, decided-in-advance
+   supersession plan; pooling-on-by-default takes the high bar too, since
+   investigations.md#pyq-315 already measured it worse and turning it on would be a
+   first-time change against standing negative evidence.
+
+**Not written to `CLAUDE.md`.** That file is listed in `.gitignore` (`.gitignore:52`) and is
+not tracked by this repository — it exists only as a local, personal file outside the git
+history this pass's isolated worktree was created from, so there was nothing in the checkout
+to cross-reference from and no way for an edit to it to reach the PR this pass ships as. The
+substance the ticket asked `CLAUDE.md` to carry (a pointer to the canonical rule, for a
+future agent reading the operating manual) is instead in `docs/methodology.md` directly and
+cross-referenced from `backlog/README.md`, both of which are tracked and land in this PR;
+whoever maintains the local `CLAUDE.md` can add the same pointer by hand if they want it
+there too. Recorded as a constraint of the environment this was answered in, not a skipped
+step.
+
+Explicitly declined to run a sweep against this rule in the same pass: the ticket's own
+expected outcome is "answered when the rule exists, not when the sweep is run," and no live
+vendor-data access was available this pass regardless (the same limitation recorded on every
+other ticket landed in it).
 
 ---
 
