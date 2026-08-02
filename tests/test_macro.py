@@ -119,6 +119,15 @@ def test_fetch_macro_uses_the_first_published_cpi_vintage(monkeypatch, sample_oh
 
 
 # --- PYQ-139: the vintage fetch has to survive the real API -------------------
+#
+# PYQ-273 asked for these three as named regression tests against hand-built
+# fixtures, on the (corrected, see that ticket's resolution note) premise that
+# none existed yet. They already did, as of this same pass -- and as inline
+# hand-built frames rather than a file under tests/fixtures/, which is the
+# right shape for this specific boundary: `fredapi.Fred` hands back a
+# `pandas.DataFrame` already parsed from FRED's XML, not raw bytes, so a
+# `RecordingFred`/`FakeFred` class returning a DataFrame *is* the fixture --
+# see scripts/record_fixtures.py's module docstring for the fuller reasoning.
 
 
 def test_missing_observations_do_not_abort_a_whole_series(monkeypatch, sample_ohlcv_df):

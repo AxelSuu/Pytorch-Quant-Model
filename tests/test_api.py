@@ -9,6 +9,7 @@ default CI on an optional extra).
 import json
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -104,6 +105,26 @@ def _fake_train_result(symbols=("AAPL",)):
         epochs_run=5,
         evaluation=ev,
     )
+
+
+def _wait_for_job(path: str, timeout: float = 2.0) -> dict:
+    """Poll a job status endpoint until it leaves queued/running.
+
+    /train and /backtest now schedule their work on a real dedicated
+    ThreadPoolExecutor rather than FastAPI's BackgroundTasks (bugs.md#pyq-163)
+    -- unlike BackgroundTasks, which TestClient happened to run synchronously
+    before returning the response, an executor job is genuinely concurrent
+    with the request that queued it, so a status check right after POST is no
+    longer guaranteed to see a finished job. Poll instead of assuming.
+    """
+    deadline = time.monotonic() + timeout
+    body = {}
+    while time.monotonic() < deadline:
+        body = client.get(path).json()
+        if body.get("status") not in ("queued", "running"):
+            return body
+        time.sleep(0.01)
+    raise AssertionError(f"job at {path!r} did not finish within {timeout}s: {body}")
 
 
 def _fake_backtest_result(symbol="AAPL"):
@@ -365,6 +386,133 @@ def test_bundle_cache_still_loads_different_names_in_parallel(monkeypatch):
     assert second_start < first_end, f"different-name loads serialized: {call_spans}"
 
 
+# --- PYQ-163: /train, /backtest run on a dedicated executor, not the shared pool --
+
+
+def test_start_train_and_start_backtest_are_async_and_no_longer_take_background_tasks():
+    """Regression guard, same shape as test_healthz_handler_is_async: an
+    `async def` route that submits to jobs.get_job_executor() directly never
+    touches starlette.concurrency.run_in_threadpool -- unlike a sync route or
+    a FastAPI BackgroundTasks callback, both of which dispatch through it and
+    share anyio's single 40-slot default thread limiter (bugs.md#pyq-163)."""
+    import inspect
+
+    from pyquant.api.routes.backtest import start_backtest
+    from pyquant.api.routes.train import start_train
+
+    assert inspect.iscoroutinefunction(start_train)
+    assert inspect.iscoroutinefunction(start_backtest)
+    assert "background_tasks" not in inspect.signature(start_train).parameters
+    assert "background_tasks" not in inspect.signature(start_backtest).parameters
+
+
+def test_train_job_is_dispatched_via_the_dedicated_job_executor(monkeypatch):
+    """The acceptance criterion itself: /train's background work must run on
+    jobs.get_job_executor()'s pool, not FastAPI's BackgroundTasks. Override
+    the executor dependency with a spy wrapping a real ThreadPoolExecutor and
+    confirm the job is actually submitted through it."""
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+    app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+
+    submissions = []
+    real_executor = ThreadPoolExecutor(max_workers=2)
+
+    class _SpyExecutor:
+        def submit(self, fn, *a, **k):
+            submissions.append(fn)
+            return real_executor.submit(fn, *a, **k)
+
+    app.dependency_overrides[jobs_mod.get_job_executor] = lambda: _SpyExecutor()
+    monkeypatch.setattr(
+        "pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result()
+    )
+
+    try:
+        r = client.post("/train", json={"symbols": ["AAPL"]})
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+        body = _wait_for_job(f"/train/{job_id}")
+    finally:
+        real_executor.shutdown(wait=True)
+
+    assert body["status"] == "succeeded"
+    assert len(submissions) == 1, "training job was not dispatched via the dedicated executor"
+
+
+def test_backtest_job_is_dispatched_via_the_dedicated_job_executor(monkeypatch):
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    submissions = []
+    real_executor = ThreadPoolExecutor(max_workers=2)
+
+    class _SpyExecutor:
+        def submit(self, fn, *a, **k):
+            submissions.append(fn)
+            return real_executor.submit(fn, *a, **k)
+
+    app.dependency_overrides[jobs_mod.get_job_executor] = lambda: _SpyExecutor()
+    monkeypatch.setattr(
+        "pyquant.api.routes.backtest.tft.walk_forward_backtest",
+        lambda *a, **k: _fake_backtest_result(),
+    )
+
+    try:
+        r = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+        body = _wait_for_job(f"/backtest/{job_id}")
+    finally:
+        real_executor.shutdown(wait=True)
+
+    assert body["status"] == "succeeded"
+    assert len(submissions) == 1, "backtest job was not dispatched via the dedicated executor"
+
+
+def test_a_slow_training_job_does_not_delay_a_concurrent_sync_read_endpoint(monkeypatch):
+    """The ticket's own acceptance test, against a route that actually shares
+    the pool: GET /forecast/{symbol} is a sync `def` route, dispatched via
+    FastAPI's run_in_threadpool (unlike /healthz, which is async and was
+    already isolated by bugs.md#pyq-165 -- it would pass this test even on
+    the pre-fix code, so it is not a meaningful regression guard for this
+    ticket). Block the training job on an Event and confirm a concurrent
+    forecast call still returns promptly rather than queuing behind it."""
+    _override_settings_and_cache()
+    registry = JobRegistry()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    release = threading.Event()
+
+    def blocking_train(*a, **k):
+        assert release.wait(timeout=5), "test setup: job was never released"
+        return _fake_train_result()
+
+    monkeypatch.setattr("pyquant.api.routes.train.tft.train", blocking_train)
+    monkeypatch.setattr(
+        "pyquant.api.routes.forecast.generate_forecast", lambda *a, **k: _fake_forecast()
+    )
+
+    try:
+        r = client.post("/train", json={"symbols": ["AAPL"]})
+        assert r.status_code == 202
+        job_id = r.json()["job_id"]
+
+        start = time.monotonic()
+        forecast_resp = client.get("/forecast/AAPL")
+        elapsed = time.monotonic() - start
+
+        assert forecast_resp.status_code == 200
+        assert elapsed < 2.0, f"a concurrent sync route took {elapsed:.2f}s -- queued behind the job?"
+    finally:
+        release.set()
+
+    body = _wait_for_job(f"/train/{job_id}")
+    assert body["status"] == "succeeded"
+
+
 def test_train_returns_202_and_a_pollable_job_id(monkeypatch):
     registry = JobRegistry()
     app.dependency_overrides[deps.get_settings] = lambda: object()
@@ -380,11 +528,9 @@ def test_train_returns_202_and_a_pollable_job_id(monkeypatch):
     job_id = r.json()["job_id"]
     assert r.json()["status"] == "queued"
 
-    # TestClient runs BackgroundTasks synchronously before the response returns
-    # in-process, so the job should already be resolved by the time we poll it.
-    status = client.get(f"/train/{job_id}")
-    assert status.status_code == 200
-    body = status.json()
+    # Runs on the dedicated job executor now (bugs.md#pyq-163), genuinely
+    # concurrent with this request -- poll rather than assume it's done.
+    body = _wait_for_job(f"/train/{job_id}")
     assert body["status"] == "succeeded"
     assert body["result"]["symbols"] == ["AAPL"]
 
@@ -414,9 +560,7 @@ def test_train_job_reports_failed_status_and_error(monkeypatch):
     assert r.status_code == 202
     job_id = r.json()["job_id"]
 
-    status = client.get(f"/train/{job_id}")
-    assert status.status_code == 200
-    body = status.json()
+    body = _wait_for_job(f"/train/{job_id}")
     assert body["status"] == "failed"
     assert body["result"] is None
     assert "not enough history for AAPL" in body["error"]
@@ -657,9 +801,7 @@ def test_backtest_returns_202_and_a_pollable_job_id(monkeypatch):
     job_id = r.json()["job_id"]
     assert r.json()["status"] == "queued"
 
-    status = client.get(f"/backtest/{job_id}")
-    assert status.status_code == 200
-    body = status.json()
+    body = _wait_for_job(f"/backtest/{job_id}")
     assert body["status"] == "succeeded"
     assert body["result"]["symbol"] == "AAPL"
     assert body["result"]["n_windows"] == 2
@@ -688,9 +830,7 @@ def test_backtest_job_reports_failed_status_and_error(monkeypatch):
     assert r.status_code == 202
     job_id = r.json()["job_id"]
 
-    status = client.get(f"/backtest/{job_id}")
-    assert status.status_code == 200
-    body = status.json()
+    body = _wait_for_job(f"/backtest/{job_id}")
     assert body["status"] == "failed"
     assert body["result"] is None
     assert "not enough history for AAPL" in body["error"]

@@ -7,13 +7,16 @@ request thread.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from pyquant.analysis import serialize
 from pyquant.api.deps import BundleCache, get_bundle_cache, get_settings, require_api_key
-from pyquant.api.jobs import JobRegistry, get_job_registry
+from pyquant.api.jobs import JobRegistry, get_job_executor, get_job_registry
 from pyquant.api.schemas import TrainJobResponse, TrainJobStatusResponse, TrainRequest
 from pyquant.config import Settings
 from pyquant.models import tft
@@ -49,12 +52,12 @@ def _run_train_job(
 
 
 @router.post("/train", response_model=TrainJobResponse, status_code=202)
-def start_train(
+async def start_train(
     request: TrainRequest,
-    background_tasks: BackgroundTasks,
     settings: Settings = Depends(get_settings),
     registry: JobRegistry = Depends(get_job_registry),
     bundle_cache: BundleCache = Depends(get_bundle_cache),
+    executor: ThreadPoolExecutor = Depends(get_job_executor),
 ) -> TrainJobResponse:
     """Queue a training run; poll GET /train/{job_id} for its status/result."""
     if not request.symbols:
@@ -71,7 +74,15 @@ def start_train(
             status_code=409,
             detail=f"A training job for bundle {bundle_name!r} is already queued or running",
         )
-    background_tasks.add_task(_run_train_job, job_id, request, settings, registry, bundle_cache)
+    # A dedicated executor, not BackgroundTasks.add_task (bugs.md#pyq-163): the
+    # latter would dispatch this full Lightning fit onto the same 40-slot
+    # threadpool /forecast and friends need. `async def` this route so
+    # scheduling never itself blocks on that shared pool either.
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        executor,
+        functools.partial(_run_train_job, job_id, request, settings, registry, bundle_cache),
+    )
     return TrainJobResponse(job_id=job_id, status="queued")
 
 

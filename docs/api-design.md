@@ -97,7 +97,16 @@ class ForecastResponse(BaseModel):
 `tft.train()` blocks for a full Lightning fit (seconds on synthetic data,
 minutes-to-longer on real 5y panels). A request thread must not block on it.
 
-**v1 (single node):** FastAPI `BackgroundTasks` + an in-process job registry.
+**v1 (single node):** an in-process job registry, run on a dedicated
+`concurrent.futures.ThreadPoolExecutor` (`jobs.get_job_executor`, 4 workers) —
+**not** FastAPI `BackgroundTasks`. `BackgroundTasks` dispatches a sync
+function through `starlette.concurrency.run_in_threadpool`, which draws from
+anyio's single process-wide default thread limiter (40 slots) — the same pool
+every other sync route handler needs. A training job holding a slot for
+minutes would queue a concurrent `GET /forecast` behind it (bugs.md#pyq-163).
+`/train` and `/backtest` are `async def` routes that submit the job to the
+dedicated executor via `loop.run_in_executor(executor, ...)` instead, so
+scheduling the job never itself touches the shared pool.
 
 ```
 POST /train {"symbols": ["AAPL"], ...}  -> 202 {"job_id": "...", "status": "queued"}
@@ -106,7 +115,7 @@ GET  /train/{job_id}                    -> {"status": "running|succeeded|failed"
                                             "error": str | null}
 ```
 
-`jobs.py` holds a `dict[str, JobRecord]` guarded by a lock; the background task
+`jobs.py` holds a `dict[str, JobRecord]` guarded by a lock; the executor task
 updates the record on completion. Good enough for one instance and a low
 training concurrency.
 
@@ -114,11 +123,13 @@ training concurrency.
 (arq/RQ/Celery + Redis):**
 - Job state is in process memory → **lost on restart/redeploy**, and invisible
   to any second instance.
-- No concurrency control → two large fits can oversubscribe CPU/GPU and OOM.
-- No retries, no backpressure, no scheduling, no cancellation.
-- `BackgroundTasks` runs in the same process/event loop context → a CPU-bound
-  fit needs a worker/process pool anyway (`run_in_executor` at minimum) so it
-  doesn't starve request handling.
+- The dedicated executor bounds *this process's* concurrency (4 workers) but
+  not CPU/GPU oversubscription across a multi-instance deployment, and every
+  worker still runs in-process — torch's own CPU usage is not isolated from
+  the request-serving process the way a separate worker/process pool would
+  isolate it.
+- No retries, no backpressure beyond the executor's own queue, no scheduling,
+  no cancellation.
 
 Move to arq or Celery + Redis the moment you need durable jobs, more than one
 instance, or bounded training concurrency.

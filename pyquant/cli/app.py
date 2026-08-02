@@ -17,7 +17,10 @@ from rich.table import Table
 from pyquant.analysis import serialize
 from pyquant.analysis.forecast import Forecast, generate_forecast
 from pyquant.analysis.interpret import attention_to_series, explain_forecast
-from pyquant.analysis.metrics import moving_block_bootstrap_interval
+from pyquant.analysis.metrics import (
+    directional_accuracy_confidence_interval,
+    skill_confidence_interval,
+)
 from pyquant.analysis.signals import evaluate_signals
 from pyquant.cli import charts
 from pyquant.config import Settings, load_settings
@@ -167,7 +170,12 @@ def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "")
     """
     table.add_row(f"Model MAE{suffix}", f"{ev.model_mae:.4f}")
     table.add_row(f"Baseline MAE{suffix} (persistence)", f"{ev.baseline_mae:.4f}")
-    table.add_row("Skill vs. baseline", f"{ev.skill_vs_baseline:+.1%}")
+    # "(pooled MAE ratio)" names the estimator explicitly (PYQ-141): this is
+    # computed from pooled model/baseline MAE, a *ratio of means*, which is a
+    # different statistic from the mean of the per-window skill column
+    # `_per_window_table` prints below it and can disagree with it without
+    # limit -- see that table's caption in `backtest()`.
+    table.add_row("Skill vs. baseline (pooled MAE ratio)", f"{ev.skill_vs_baseline:+.1%}")
     # Baselines beyond persistence (PYQ-275): persistence is uniquely
     # favourable to the null on a near-random-walk level series, so headline
     # skill against it alone is weak evidence. Name the *strongest* one
@@ -179,7 +187,7 @@ def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "")
             table.add_row(f"Baseline MAE{suffix} ({name})", f"{mae:.4f}")
         strongest_name, strongest_mae = ev.strongest_baseline
         table.add_row(
-            f"Skill vs. strongest baseline ({strongest_name})",
+            f"Skill vs. strongest baseline ({strongest_name}, pooled MAE ratio)",
             f"{ev.skill_vs_strongest_baseline:+.1%}",
         )
     table.add_row(f"Directional accuracy{suffix}", f"{ev.directional_accuracy:.1%}")
@@ -222,7 +230,11 @@ def _per_window_table(result, quantiles: list[float]) -> Table:
     table.add_column("Window", justify="right")
     table.add_column("Model MAE", justify="right")
     table.add_column("Baseline MAE", justify="right")
-    table.add_column("Skill", justify="right")
+    # "(per-window)" is deliberate (PYQ-141): this column is a mean-of-ratios
+    # once read down, a different estimator from the pooled-MAE-ratio headline
+    # above it, and the two can disagree without limit -- see the caption
+    # printed after this table in `backtest()`.
+    table.add_column("Skill (per-window)", justify="right")
     table.add_column("Directional", justify="right")
     table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
     for i, ev in enumerate(result.per_window, start=1):
@@ -262,13 +274,6 @@ def _per_horizon_table(evaluation, quantiles: list[float], title: str = "Per-hor
             f"{step.calibration_coverage:.1%}",
         )
     return table
-
-
-def _directional_interval(result, horizon: int) -> tuple[float, float]:
-    """Moving-block interval for backtest window directional accuracy (PYQ-251)."""
-    return moving_block_bootstrap_interval(
-        [window.directional_accuracy for window in result.per_window], max(1, horizon)
-    )
 
 
 def _color_pct(pct: float) -> str:
@@ -491,14 +496,30 @@ def backtest(
     _add_metric_rows(table, result.aggregated, settings.tft.quantiles, suffix=" (avg)")
     # A bare "57.5% directional accuracy" invites exactly one question -- is that
     # distinguishable from 50%? -- and the answer depends entirely on how many
-    # *independent* windows are behind it. Blocks no shorter than the horizon
-    # preserve the overlap the naive bootstrap would destroy (PYQ-251).
+    # windows are behind it (PYQ-251). Bootstrapped at the window level, where
+    # each entry is already independent (PYQ-270) -- see
+    # `directional_accuracy_confidence_interval`'s docstring for why.
     if len(result.per_window) > 1:
-        low, high = _directional_interval(result, settings.training.max_prediction_length)
+        low, high = directional_accuracy_confidence_interval(result.per_window)
         table.add_row("Directional accuracy 95% CI", f"[{low:.1%}, {high:.1%}]")
+        # Skill's own interval (PYQ-270): bootstraps the per-window skill
+        # series `_per_window_table` prints below, not the pooled headline
+        # row above -- the two are different estimators (PYQ-141), so this CI
+        # describes the column, not the point estimate it sits next to.
+        skill_ci = skill_confidence_interval(result.per_window)
+        if skill_ci is not None:
+            skill_low, skill_high = skill_ci
+            table.add_row(
+                "Skill vs. baseline (per-window) 95% CI", f"[{skill_low:+.1%}, {skill_high:+.1%}]"
+            )
     console.print(table)
     if len(result.per_window) > 1:
         console.print(_per_window_table(result, settings.tft.quantiles))
+        console.print(
+            "[dim]Per-window skill is a mean-of-ratios; the pooled headline above is a "
+            "ratio-of-means. They are different estimators and do not have to agree "
+            "(PYQ-141).[/dim]"
+        )
     if len(result.aggregated.per_horizon) > 1:
         console.print(
             _per_horizon_table(result.aggregated, settings.tft.quantiles, title="Per-horizon breakdown (pooled)")
@@ -524,6 +545,18 @@ def backtest(
             "the band guard rarely fires without conformal calibration on "
             "(PYQ-248 default is off).[/dim]"
         )
+        if not result.signals_calibrated:
+            note = (
+                "[dim]Note: these signals are computed from an uncalibrated band -- "
+                "walk_forward_backtest() never fits a conformal offset, unlike scan() "
+                "against a deployed bundle (PYQ-149)."
+            )
+            if settings.training.calibration_days > 0:
+                note += (
+                    f" This settings.yaml/config has calibration_days={settings.training.calibration_days}"
+                    ", so a real scan() call would show a different, calibrated band."
+                )
+            console.print(note + "[/dim]")
 
 
 @app.command()
@@ -841,8 +874,10 @@ def explain(
     if interp.bundle_skill is not None and interp.bundle_skill <= 0:
         console.print(
             f"[yellow]Note:[/yellow] this bundle's skill vs. persistence is "
-            f"{interp.bundle_skill:+.1%} — at or below the naive baseline. The "
-            "importances above describe what the model attends to, not "
+            f"{interp.bundle_skill:+.1%} — at or below the naive baseline. This is a "
+            "point estimate from one held-out validation split, not a walk-forward "
+            "backtest (PYQ-270) — run `pyquant backtest` for a confidence interval. "
+            "The importances above describe what the model attends to, not "
             "necessarily what moves the price."
         )
 
