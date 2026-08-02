@@ -48,6 +48,41 @@ def test_forecast_command(monkeypatch):
     assert "$105.00" in result.stdout  # median day value
 
 
+def test_forecast_command_forwards_as_of_to_generate_forecast(monkeypatch):
+    """PYQ-284: --as-of must reach generate_forecast's `end` kwarg verbatim."""
+    captured = {}
+
+    def fake_generate_forecast(symbol, settings, bundle=None, pin=None, end=None):
+        captured["end"] = end
+        return _fake_forecast()
+
+    monkeypatch.setattr(app_mod, "generate_forecast", fake_generate_forecast)
+
+    class NoOptions:
+        put_call_ratio = None
+
+    monkeypatch.setattr(app_mod, "fetch_options_snapshot", lambda s: NoOptions())
+    result = runner.invoke(app_mod.app, ["forecast", "AAPL", "--no-chart", "--as-of", "2026-07-29"])
+    assert result.exit_code == 0
+    assert captured["end"] == "2026-07-29"
+
+
+def test_forecast_command_rejects_malformed_as_of(monkeypatch):
+    monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: _fake_forecast())
+    result = runner.invoke(app_mod.app, ["forecast", "AAPL", "--as-of", "not-a-date"])
+    assert result.exit_code == 1
+    assert "--as-of" in result.stdout
+
+
+def test_forecast_command_rejects_as_of_combined_with_pin(monkeypatch):
+    monkeypatch.setattr(app_mod, "generate_forecast", lambda *a, **k: _fake_forecast())
+    result = runner.invoke(
+        app_mod.app, ["forecast", "AAPL", "--as-of", "2026-07-29", "--pin", "exp-1"]
+    )
+    assert result.exit_code == 1
+    assert "--pin" in result.stdout
+
+
 def test_scan_handles_untrained(monkeypatch):
     def raise_missing(symbol, settings):
         raise FileNotFoundError("no model")
@@ -118,6 +153,39 @@ def test_train_command_pools_multiple_symbols(monkeypatch):
     assert result.exit_code == 0
     assert captured["symbols"] == ["AAPL", "MSFT"]
     assert "AAPL, MSFT" in result.stdout
+
+
+def test_train_command_forwards_as_of_to_tft_train(monkeypatch):
+    """PYQ-284: --as-of must reach tft.train's `end` kwarg verbatim, so a checkpoint
+    trained "as of" a past date sees no data after it."""
+    captured = {}
+
+    def fake_train(symbols, settings, **kwargs):
+        captured["end"] = kwargs.get("end")
+        return TrainResult(
+            symbols=symbols,
+            bundle_dir=Path("checkpoints/AAPL"),
+            val_loss=0.1,
+            n_features=5,
+            epochs_run=1,
+            evaluation=EvaluationMetrics(
+                model_mae=1.0, baseline_mae=1.0, directional_accuracy=0.5, calibration_coverage=0.8
+            ),
+        )
+
+    monkeypatch.setattr(app_mod.tft, "train", fake_train)
+    result = runner.invoke(app_mod.app, ["train", "AAPL", "--as-of", "2026-07-29"])
+    assert result.exit_code == 0
+    assert captured["end"] == "2026-07-29"
+
+
+def test_train_command_rejects_malformed_as_of(monkeypatch):
+    monkeypatch.setattr(app_mod.tft, "train", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("tft.train should not be called")
+    ))
+    result = runner.invoke(app_mod.app, ["train", "AAPL", "--as-of", "07/29/2026"])
+    assert result.exit_code == 1
+    assert "--as-of" in result.stdout
 
 
 def test_backtest_command_reports_aggregated_metrics(monkeypatch):

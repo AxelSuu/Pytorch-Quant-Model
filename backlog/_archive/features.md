@@ -1,7 +1,7 @@
 # Features (PYQ-2xx)
 
 Things to build — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-284**.
+Next free ID: **PYQ-285**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -88,6 +88,7 @@ Next free ID: **PYQ-284**.
 | [PYQ-281](#pyq-281) | High | Open | API keys authenticate but carry no identity — no quotas, revocation, audit, or per-key cost attribution |
 | [PYQ-282](#pyq-282) | Medium | Open | Precompute forecasts on a nightly schedule instead of fetching live on every `GET /forecast` |
 | [PYQ-283](#pyq-283) | Medium | Open | `GET /symbols`, `GET /metrics/{symbol}`, `GET /forecast/{symbol}/history` — no way to discover what's trained |
+| [PYQ-284](#pyq-284) | Medium | Resolved | `--as-of` — run `train`/`forecast` as of a past date |
 
 ---
 
@@ -4324,4 +4325,107 @@ Acceptance criteria: `GET /symbols` lists every trained bundle with at least `sy
 ticket says so explicitly rather than building a live-recompute version that would need
 throwing away later. All three documented in `docs/http-api.md`'s Endpoints table and
 covered in `tests/test_api.py`.
+
+---
+
+## [PYQ-284]
+`--as-of` — run `train`/`forecast` as of a past date
+Status: Resolved — 2026-08-01
+Priority: Medium
+Files: `pyquant/analysis/forecast.py`, `pyquant/cli/app.py`, `tests/test_forecast.py`,
+`tests/test_cli.py`
+
+Problem/Ask: user request (2026-08-01) — no way to ask "what would `train`/`forecast` have
+produced a few days ago, using only the data that existed then." Useful for sanity-checking
+the pipeline against a recent, already-known outcome (e.g. replay 2026-07-29 and compare the
+forecast against what AAPL actually did on 2026-07-30/31) without waiting for a fresh day to
+pass.
+
+`build_panel()` (`data/dataset.py`) already threads `start`/`end` through every vendor fetch
+and `_cache_fingerprint` already keys the TTL cache on them (PYQ-205) — so hard-truncating
+the panel at a past date is already 80% plumbed and already leak-safe by construction (the
+panel is truncated *before* `panel_to_long`/`extend_for_prediction` ever run, so the decoder
+anchors on the truncated last row with no separate "as-of" concept needed downstream).
+`tft.train()` and `tft.walk_forward_backtest()` (`models/tft.py`) already accept `start`/
+`end` kwargs too. The gap is narrower than it looks: nothing calls them.
+`generate_forecast()` (`analysis/forecast.py:146`) is the one exception — it has no `end`
+parameter at all and calls `build_panel(symbol, settings, pin=pin)` unconditionally.
+
+Deliberately out of scope (per explicit user choice): `backtest`. Its `start`/`end`/`step`
+were already deliberately left unexposed by features.md#pyq-271's own "Resolved" note for a
+different reason (CLI parity), and multi-window walk-forward is a different shape of
+question ("how did the model do over many origins") than this ticket's "what would one
+forecast have said."
+
+Ask: add `end: str | None = None` to `generate_forecast()`'s signature, threaded straight
+into its existing `build_panel(...)` call. Add a `--as-of TEXT` (ISO `YYYY-MM-DD`) option to
+the `forecast` and `train` CLI commands, threaded as `end=as_of` into `generate_forecast()`
+and `tft.train()` respectively — no new semantics invented, just wiring an existing
+parameter to a new flag.
+
+Two things worth being deliberate about rather than clever about, both decided here rather
+than left to guesswork:
+
+1. **No date-shifting.** yfinance's own `end` is exclusive (verified empirically:
+   `history(start="2026-07-27", end="2026-07-30")` returns rows through 2026-07-29, not
+   2026-07-30) while FRED's `realtime_end` (macro.py's `_vintage_windows`) is inclusive.
+   Shifting `--as-of`'s value by a day to make price data land on the exact requested date
+   would silently widen the macro realtime window by that same day — a one-day look-ahead
+   leak for exactly the reason non-negotiable #2 warns about ("correct in each individual
+   file and wrong across files"). `--as-of`'s value is passed through **verbatim** as `end`
+   everywhere it already flows, so every vendor keeps whatever inclusive/exclusive
+   convention it already has today. `forecast`'s existing `Panel` output already prints
+   "As of: {fc.last_date.date()}" — that line, not the flag's own value, is the authority on
+   which date's close the forecast actually anchors on; document this plainly rather than
+   pretend the flag guarantees an exact date.
+2. **`--as-of` + `--pin` on `forecast` is a conflict, not a silent override.** `build_panel`
+   checks `pin` before `start`/`end` are ever consulted (a pin cache hit returns before the
+   fingerprint that would include `end` is even used) — combining both today would silently
+   ignore `--as-of`. Reject the combination with a clear error instead.
+
+Acceptance criteria: `generate_forecast(..., end=...)` forwards `end` to `build_panel`
+(test mirrors the existing `test_generate_forecast_forwards_pin_to_build_panel`); `pyquant
+forecast SYMBOL --as-of 2026-07-29` and `pyquant train SYMBOL --as-of 2026-07-29` forward
+`end="2026-07-29"` to `generate_forecast`/`tft.train` respectively; a malformed `--as-of`
+value fails with a clean one-line message (not a traceback, per PYQ-120's convention) and
+exit code 1; `--as-of` combined with `--pin` on `forecast` fails the same way rather than
+silently ignoring one of them. `docs/` not required to change (no public HTTP surface
+touched — API scope, if wanted, is a separate ticket).
+
+Resolution: built exactly as scoped above — `generate_forecast(..., end=None)` forwards
+`end` to `build_panel` verbatim; `forecast`/`train` gained `--as-of TEXT`, validated via a
+new `_validate_as_of()` (cli/app.py) that raises a clean `ValueError` on a malformed date
+(caught by the existing `EXPECTED_FAILURES`/`_fail()` path, not a traceback); `forecast`
+additionally rejects `--as-of` + `--pin` together with an explicit error. No date-shifting
+was added, per the ticket's own reasoning.
+
+**Verifying it live surfaced a real, independent bug**, not a flaw in this ticket's design:
+`pyquant forecast AAPL --as-of 2026-07-30` first came back with `KeyError: 'Close'` from a
+completely empty panel. Root cause was bugs.md#pyq-171 — every yfinance-backed fetch
+(prices, VIX, sector ETFs) silently truncated to ~1 month instead of the configured `period`
+whenever `end` was given without `start`, a gap in bugs.md#pyq-112's own fix that had gone
+unexercised for a week because no CLI flag had ever passed `end` alone before this ticket.
+Fixed there (four call sites now anchor `_period_start` on `end` instead of the real clock)
+rather than worked around here, since the bug is general (any `end`-only caller hits it, not
+just `--as-of`) and pre-dated this ticket. Re-verified live after that fix: `pyquant forecast
+AAPL --as-of 2026-07-30` returns a real 5-day forecast anchored "As of: 2026-07-29" instead
+of crashing.
+
+One operational note worth recording rather than silently discovering again: `build_panel`
+caches whatever panel it computes, including an empty one, for the configured TTL — the
+first (pre-fix) empty-panel run got cached under its own fingerprint and had to be deleted
+by hand (`.cache/pyquant/<key>.pkl`/`.meta.json`) before the fix could be verified against
+fresh data. Not treated as a defect of this ticket (the cache faithfully cached what it was
+given; the given panel was wrong), and not filed as its own ticket — recording it here as the
+reason the live verification above needed an extra step.
+
+Verification: `test_generate_forecast_forwards_end_to_build_panel` (test_forecast.py);
+`test_forecast_command_forwards_as_of_to_generate_forecast`,
+`test_forecast_command_rejects_malformed_as_of`,
+`test_forecast_command_rejects_as_of_combined_with_pin`,
+`test_train_command_forwards_as_of_to_tft_train`,
+`test_train_command_rejects_malformed_as_of` (test_cli.py) — all confirmed failing against
+the unfixed code before the fix landed, per this repo's test-first convention. `ruff check .`
+clean; full `pytest -q`: 463 passed (bugs.md#pyq-171's fix landed in the same pass and added
+one more test, from a 462-test baseline). `scripts/backlog.py check` clean.
 

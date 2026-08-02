@@ -208,16 +208,20 @@ api/index
 
 development
 api-design
+autonomous-loop-plan
+routines/dev-routine-prompt
+routines/pm-report-routine-prompt
 ```
 
-## Backlog
+## Tickets
 
-Open bugs, planned features and answered investigations live in
-[`backlog/`](https://github.com/AxelSuu/Pytorch-Quant-Model/tree/main/backlog) next to the
-code, and are deliberately *not* mirrored here — their value is that a resolution note
-sits one directory from the commit that earned it. Ticket IDs are stable and never move
-between files, so a reference such as `PYQ-115` stays valid forever.
-
-- `PYQ-1xx` — bugs
-- `PYQ-2xx` — features
-- `PYQ-3xx` — investigations
+Ticket-level work lives in
+[GitHub Issues](https://github.com/AxelSuu/Pytorch-Quant-Model/issues), migrated
+2026-08-02 from the old `backlog/{bugs,features,investigations}.md`, and is deliberately
+*not* mirrored here — their value is that a resolution note sits one comment from the
+commit that earned it. Original `PYQ-NNN` IDs are preserved as a title prefix, so a
+reference such as `PYQ-115` still resolves (search Issues for the ID). Status is tracked
+with labels (`type:*`, `P0`–`P3`, `status:*`) — see `CLAUDE.md` for the full scheme. The
+pre-migration files are archived at
+[`backlog/_archive/`](https://github.com/AxelSuu/Pytorch-Quant-Model/tree/main/backlog/_archive)
+as a historical record, no longer live or enforced by CI.

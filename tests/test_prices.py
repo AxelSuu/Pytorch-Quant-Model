@@ -138,6 +138,29 @@ def test_fetch_prices_honors_start_without_end(monkeypatch, sample_ohlcv_df):
     assert received["period"] is None  # period path not taken
 
 
+def test_fetch_prices_honors_end_without_start(monkeypatch, sample_ohlcv_df):
+    """PYQ-171: passing only `end` must compute a start from the configured
+    `period` anchored on `end`, not fall through to yfinance's own undocumented
+    default (empirically ~1 month before `end`) -- which silently truncated any
+    end-only fetch (e.g. PYQ-284's --as-of) to a sliver of the requested history."""
+    received = {}
+
+    class FakeTicker:
+        def __init__(self, symbol):
+            pass
+
+        def history(self, period=None, start=None, end=None, auto_adjust=None, **kwargs):
+            received.update(period=period, start=start, end=end)
+            return sample_ohlcv_df.copy()
+
+    monkeypatch.setattr(yfinance, "Ticker", FakeTicker)
+    prices.fetch_prices("AAPL", period="5y", end="2024-06-01", use_indicators=False)
+    assert received["end"] == "2024-06-01"
+    assert received["period"] is None  # period path not taken
+    # 5 years before the anchor (end), not before today's real clock.
+    assert received["start"] == "2019-06-01"
+
+
 def test_fetch_prices_recovers_from_transient_failure(monkeypatch, sample_ohlcv_df):
     """A single transient yfinance failure must be retried, not hard-fail the
     whole panel build (PYQ-215)."""
