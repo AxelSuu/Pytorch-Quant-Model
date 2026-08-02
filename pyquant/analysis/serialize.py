@@ -165,6 +165,11 @@ def backtest_to_dict(br: BacktestResult) -> dict[str, Any]:
         "origins": list(br.origins),
         "skill_ci": list(skill_ci) if skill_ci is not None else None,
         "directional_accuracy_ci": list(directional_ci) if directional_ci is not None else None,
+        # Always False today (PYQ-149): signals/signal_returns_pct never carry a
+        # conformal offset, so with calibration_days > 0 they diverge from what
+        # a calibrated bundle's scan() would show. See BacktestResult's own
+        # field docstring.
+        "signals_calibrated": br.signals_calibrated,
     }
 
 

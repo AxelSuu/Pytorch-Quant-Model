@@ -78,6 +78,17 @@ class BacktestResult:
     # than always computed -- it costs one extra forward pass per window.
     signals: list[str] = field(default_factory=list)
     signal_returns_pct: list[float] = field(default_factory=list)
+    # Always False (PYQ-149): `_window_signal` reads straight from
+    # `_raw_validation_arrays`, with no conformal fit/offset step anywhere in
+    # `walk_forward_backtest` -- unlike `scan()`, which applies the trained
+    # bundle's calibrated offset (PYQ-248) to every band it shows. With
+    # `TrainingConfig.calibration_days > 0` this evaluation measures a
+    # different (pessimistic, uncalibrated) band than a deployed bundle's
+    # signals would show; a caller must not read `signals`/`signal_returns_pct`
+    # as reproducing `scan()`'s behaviour when that's set. Kept as an explicit
+    # field rather than only a docstring/log warning so a JSON/programmatic
+    # consumer doesn't have to know to go looking for the caveat in prose.
+    signals_calibrated: bool = False
     # This backtest's window origins (each window's `cutoff`, i.e. its decoder
     # starts at `cutoff + 1`), in the same order as `per_window` (PYQ-266). Lets
     # `analysis.metrics.compare_backtests` verify two results were scored on
@@ -610,6 +621,14 @@ def _window_signal(
     Derived from that walk-forward window's raw prediction/actual arrays
     (PYQ-255). walk_forward_backtest is single-symbol, so each window's arrays
     hold exactly one sample.
+
+    True only when ``TrainingConfig.calibration_days == 0`` (PYQ-149):
+    ``predictions`` here is never conformal-offset the way `predict_quantiles`
+    offsets a deployed bundle's band (PYQ-248) -- there is no calibration fit
+    anywhere in `walk_forward_backtest`. With calibration on, this reads a
+    systematically different (uncalibrated) band than a real `scan()` call
+    against an equivalent bundle would show; see `BacktestResult
+    .signals_calibrated`.
     """
     from pyquant.analysis.forecast import (
         log_return_quantiles_to_price_band,
@@ -657,7 +676,18 @@ def walk_forward_backtest(
     produce a deployable bundle. ``compute_signals`` additionally records, per
     window, the BUY/SELL/HOLD signal scan() would have shown and the realized
     return -- one extra forward pass per window, so it defaults off (PYQ-255).
+    See ``BacktestResult.signals_calibrated`` (PYQ-149): this never applies a
+    conformal offset, so with ``calibration_days > 0`` the signals measured
+    here diverge from what a calibrated bundle's ``scan()`` would show.
     """
+    if compute_signals and settings.training.calibration_days > 0:
+        logger.warning(
+            "walk_forward_backtest(compute_signals=True) with calibration_days=%d: "
+            "signals are computed from an uncalibrated band (PYQ-149) -- this measures "
+            "a systematically different case than scan() would show for a bundle "
+            "trained with calibration on. See BacktestResult.signals_calibrated.",
+            settings.training.calibration_days,
+        )
     symbol = symbol.upper()
     seed_everything(settings.training.seed, workers=True)
     panel = build_panel(symbol, settings, start, end)

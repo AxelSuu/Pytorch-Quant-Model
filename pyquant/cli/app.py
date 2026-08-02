@@ -545,6 +545,18 @@ def backtest(
             "the band guard rarely fires without conformal calibration on "
             "(PYQ-248 default is off).[/dim]"
         )
+        if not result.signals_calibrated:
+            note = (
+                "[dim]Note: these signals are computed from an uncalibrated band -- "
+                "walk_forward_backtest() never fits a conformal offset, unlike scan() "
+                "against a deployed bundle (PYQ-149)."
+            )
+            if settings.training.calibration_days > 0:
+                note += (
+                    f" This settings.yaml/config has calibration_days={settings.training.calibration_days}"
+                    ", so a real scan() call would show a different, calibrated band."
+                )
+            console.print(note + "[/dim]")
 
 
 @app.command()
