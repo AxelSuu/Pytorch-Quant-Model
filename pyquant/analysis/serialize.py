@@ -13,7 +13,11 @@ import numpy as np
 
 from pyquant.analysis.forecast import Forecast
 from pyquant.analysis.interpret import Interpretation
-from pyquant.analysis.metrics import EvaluationMetrics
+from pyquant.analysis.metrics import (
+    EvaluationMetrics,
+    directional_accuracy_confidence_interval,
+    skill_confidence_interval,
+)
 from pyquant.analysis.signals import SignalEvaluation, classify_signal
 from pyquant.experiments.sweep import SweepResult
 from pyquant.models.tft import BacktestResult, SeedSweepResult, TrainResult
@@ -129,6 +133,12 @@ def train_result_to_dict(tr: TrainResult) -> dict[str, Any]:
         "n_features": tr.n_features,
         "epochs_run": tr.epochs_run,
         "evaluation": evaluation_to_dict(tr.evaluation),
+        # Explicitly null, not omitted (PYQ-270): `train()` scores one held-out
+        # validation split, not a multi-window walk-forward backtest, so there
+        # is no per-window series to bootstrap a confidence interval from --
+        # `skill_vs_baseline` above is a point estimate. Run `pyquant backtest`
+        # for an interval; `backtest_to_dict`'s `skill_ci` carries it there.
+        "skill_ci": None,
     }
 
 
@@ -138,6 +148,13 @@ def backtest_to_dict(br: BacktestResult) -> dict[str, Any]:
     The per-window list is not redundant with ``aggregated``: it is what lets a
     consumer see dispersion across origins rather than only the mean.
     """
+    # Moving-block bootstrap CIs across the walk-forward windows (PYQ-270); None
+    # with fewer than two windows, rather than a fabricated zero-width interval.
+    # `skill_ci` describes the per-window skill series, a different estimator
+    # from `aggregated.skill_vs_baseline`'s pooled ratio (PYQ-141) -- the two
+    # are not expected to agree.
+    skill_ci = skill_confidence_interval(br.per_window)
+    directional_ci = directional_accuracy_confidence_interval(br.per_window)
     return {
         "symbol": br.symbol,
         "n_windows": br.n_windows,
@@ -146,6 +163,8 @@ def backtest_to_dict(br: BacktestResult) -> dict[str, Any]:
         # Window identity, in `per_window` order -- what lets `compare_backtests`
         # (PYQ-266) verify two backtests were scored on the same windows.
         "origins": list(br.origins),
+        "skill_ci": list(skill_ci) if skill_ci is not None else None,
+        "directional_accuracy_ci": list(directional_ci) if directional_ci is not None else None,
     }
 
 

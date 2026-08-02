@@ -555,6 +555,11 @@ def train(
         # choke, consistent with vars() itself already omitting computed
         # properties like skill_vs_baseline (derivable from model_mae/baseline_mae).
         "evaluation": {**vars(evaluation), "per_horizon": [vars(step) for step in evaluation.per_horizon]},
+        # Explicitly null, not omitted (PYQ-270): this evaluation is one
+        # held-out validation split, not a multi-window walk-forward backtest,
+        # so there is no per-window series to bootstrap a skill interval from.
+        # `pyquant backtest --format json`'s `skill_ci` carries a real one.
+        "skill_ci": None,
         # Persisted so `forecast` applies the same band correction the metrics
         # above were computed under, without refitting it (PYQ-248).
         "conformal": conformal.to_dict() if conformal else None,

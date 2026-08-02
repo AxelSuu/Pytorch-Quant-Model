@@ -284,6 +284,90 @@ def test_compare_backtests_excludes_zero_is_false_when_the_interval_straddles_it
     assert result.excludes_zero is False
 
 
+# --- PYQ-141: pooled headline skill vs. the per-window skill column ----------
+
+
+def test_aggregate_metrics_pooled_skill_is_not_the_mean_of_per_window_skills():
+    """The bug PYQ-141 documents: `aggregate_metrics().skill_vs_baseline` is a
+    ratio of pooled means, `_per_window_table`'s column is a mean of per-window
+    ratios once read down, and the two can disagree without limit. Construct
+    windows with unequal baseline MAEs (equal point-weight, so the divergence
+    isn't just weighting) and assert the two estimators are not equal --
+    documenting the divergence is deliberate so it cannot be silently
+    refactored into agreement."""
+    windows = [
+        metrics.EvaluationMetrics(
+            model_mae=0.5, baseline_mae=1.0, directional_accuracy=0.5, calibration_coverage=0.8,
+            n_samples=1, n_points=5,
+        ),
+        metrics.EvaluationMetrics(
+            model_mae=90.0, baseline_mae=100.0, directional_accuracy=0.5, calibration_coverage=0.8,
+            n_samples=1, n_points=5,
+        ),
+    ]
+    per_window_skills = [w.skill_vs_baseline for w in windows]  # [0.5, 0.1]
+    mean_of_ratios = sum(per_window_skills) / len(per_window_skills)
+
+    pooled = metrics.aggregate_metrics(windows)
+    ratio_of_means = pooled.skill_vs_baseline
+
+    assert mean_of_ratios == pytest.approx(0.3)
+    assert ratio_of_means != pytest.approx(mean_of_ratios)
+
+
+# --- PYQ-270: confidence interval on skill, and the block-size fix -----------
+
+
+def test_skill_confidence_interval_is_none_with_fewer_than_two_windows():
+    windows = [
+        metrics.EvaluationMetrics(
+            model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+        )
+    ]
+    assert metrics.skill_confidence_interval(windows) is None
+
+
+def test_directional_accuracy_confidence_interval_is_none_with_fewer_than_two_windows():
+    windows = [
+        metrics.EvaluationMetrics(
+            model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8
+        )
+    ]
+    assert metrics.directional_accuracy_confidence_interval(windows) is None
+
+
+def test_skill_confidence_interval_has_nonzero_width_at_the_default_window_count():
+    """Regression for PYQ-270: the interval used to be bootstrapped with
+    ``block_size = max(1, horizon)``, a point-level overlap correction applied
+    to a series whose elements are already whole windows. At the project's own
+    default (5 walk-forward windows, 5-day horizon) that made
+    ``block_size == len(values)``, collapsing the "95% CI" to the one possible
+    resample -- a zero-width interval reported as if it were informative. Five
+    windows with distinct skill is exactly that default shape; the fixed
+    (block_size=1) interval must have real width."""
+    windows = [
+        metrics.EvaluationMetrics(
+            model_mae=m, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8,
+            n_samples=1, n_points=5,
+        )
+        for m in [0.0, 0.4, 0.8, 1.2, 1.6]  # skill = [1.0, 0.8, 0.6, 0.4, 0.2]
+    ]
+    lo, hi = metrics.skill_confidence_interval(windows)
+    assert hi > lo
+
+
+def test_directional_accuracy_confidence_interval_has_nonzero_width_at_the_default_window_count():
+    windows = [
+        metrics.EvaluationMetrics(
+            model_mae=1.0, baseline_mae=2.0, directional_accuracy=d, calibration_coverage=0.8,
+            n_samples=1, n_points=5,
+        )
+        for d in [0.2, 0.4, 0.6, 0.8, 1.0]
+    ]
+    lo, hi = metrics.directional_accuracy_confidence_interval(windows)
+    assert hi > lo
+
+
 # --- PYQ-267: per-horizon-step breakdown --------------------------------------
 
 
