@@ -149,11 +149,16 @@ def generate_forecast(
     bundle: tft.ModelBundle | None = None,
     history_days: int = 90,
     pin: str | None = None,
+    end: str | None = None,
 ) -> Forecast:
     """Build a forecast for ``symbol`` using its trained bundle.
 
     ``pin`` replays a reproducible dataset snapshot instead of live data
     (see pyquant.data.cache) -- useful for re-running a past experiment.
+    ``end`` truncates the panel to simulate forecasting as of a past date
+    (PYQ-284); forwarded to ``build_panel`` verbatim, with no shifting applied
+    here -- see PYQ-284's ticket for why (vendors disagree on whether their own
+    ``end`` is inclusive).
     """
     symbol = symbol.upper()
     bundle = bundle or tft.load(symbol, settings)
@@ -161,7 +166,7 @@ def generate_forecast(
     # whatever the current defaults are -- otherwise the feature schema can differ
     # from the model's by construction (PYQ-119).
     settings = tft.settings_for_bundle(bundle, settings)
-    panel = build_panel(symbol, settings, pin=pin)
+    panel = build_panel(symbol, settings, end=end, pin=pin)
     df = panel_to_long(panel, symbol)
 
     raw_predictions = tft.predict_quantiles(bundle, df)

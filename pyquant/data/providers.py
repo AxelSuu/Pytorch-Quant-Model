@@ -115,16 +115,22 @@ class YFinanceProvider:
     ) -> pd.DataFrame:
         import yfinance as yf
 
-        from pyquant.data.prices import AUTO_ADJUST
+        from pyquant.data.prices import AUTO_ADJUST, _period_start
 
         ticker = yf.Ticker(symbol)
 
         # Honor an explicit range if *either* bound is given (yfinance accepts
         # start or end alone); only fall back to period when neither is set, so
         # passing just start (e.g. "everything since IPO") isn't silently ignored.
+        # `end` alone is *not* passed through with `start=None` -- empirically,
+        # yfinance's own default for a missing start is ~1 month before `end`,
+        # not "everything up to end" (PYQ-171), which silently truncated any
+        # end-only call (e.g. PYQ-284's --as-of) to a sliver of the configured
+        # period. Compute the period-based start explicitly instead.
         def _load() -> pd.DataFrame:
             if start or end:
-                return ticker.history(start=start, end=end, auto_adjust=AUTO_ADJUST)
+                effective_start = start or _period_start(period, anchor=end)
+                return ticker.history(start=effective_start, end=end, auto_adjust=AUTO_ADJUST)
             return ticker.history(period=period, auto_adjust=AUTO_ADJUST)
 
         # A transient hiccup here otherwise hard-fails the whole panel build;
@@ -174,7 +180,7 @@ class TiingoProvider:
         from pyquant.data.prices import _period_start
 
         session = self._session or requests
-        start_date = start or _period_start(period)
+        start_date = start or _period_start(period, anchor=end)
         params = {"startDate": start_date, "format": "json", "resampleFreq": "daily"}
         if end:
             params["endDate"] = end

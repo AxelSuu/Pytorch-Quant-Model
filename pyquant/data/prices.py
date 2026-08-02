@@ -229,13 +229,19 @@ def _normalize_index(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _period_start(period: str) -> str:
+def _period_start(period: str, anchor: str | None = None) -> str:
     """First calendar date covered by a yfinance-style period, as YYYY-MM-DD.
 
     Providers that take an explicit date range rather than a period string
     (Tiingo, Alpha Vantage) need this to honour the same ``DataConfig.period``
     the rest of the pipeline is configured with.
+
+    ``anchor`` is the reference "today" to subtract the period from. Pass the
+    caller's own ``end`` here whenever one is given -- defaulting it to the
+    real clock instead (as this always did before PYQ-284) silently truncates
+    the requested lookback to whatever gap sits between ``end`` and today.
     """
+    reference = pd.Timestamp(anchor).normalize() if anchor else pd.Timestamp.today().normalize()
     text = str(period).strip().lower()
     for suffix, unit in (("mo", "months"), ("y", "years"), ("d", "days"), ("wk", "weeks")):
         if text.endswith(suffix):
@@ -243,9 +249,9 @@ def _period_start(period: str) -> str:
                 offset = pd.DateOffset(**{unit: int(text[: -len(suffix)])})
             except ValueError:
                 break
-            return (pd.Timestamp.today().normalize() - offset).strftime("%Y-%m-%d")
+            return (reference - offset).strftime("%Y-%m-%d")
     logger.warning("Unrecognised period %r; defaulting to 5 years", period)
-    return (pd.Timestamp.today().normalize() - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
+    return (reference - pd.DateOffset(years=5)).strftime("%Y-%m-%d")
 
 
 def fetch_prices(

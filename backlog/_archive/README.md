@@ -1,3 +1,18 @@
+# PyQuant backlog — ARCHIVED 2026-08-02
+
+**Superseded by GitHub Issues + a Project (v2) board.** This file and the three ticket
+files beside it are historical record only — nothing here is live, and CI no longer runs
+`backlog.py check` against them. Every ticket below was migrated to a GitHub Issue with
+its original `PYQ-NNN` ID preserved in the issue title and a `Migrated from:` footer in
+the body, so old cross-references still resolve (search Issues for the ID). See
+`CLAUDE.md`'s "GitHub Issues + Projects are the source of truth for work" and
+`docs/autonomous-loop-plan.md` §2 for the migration this reflects.
+
+The rest of this file is preserved unedited below — it's the real history of how this
+backlog worked and evolved, not something to keep maintaining.
+
+---
+
 # PyQuant backlog
 
 Three files, one per ticket type. IDs never move between files and tickets are

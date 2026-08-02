@@ -6,6 +6,7 @@ import json
 import logging
 import warnings
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import typer
@@ -131,6 +132,20 @@ def _build_settings(
     if no_sectors:
         s.data.use_sectors = False
     return s
+
+
+def _validate_as_of(as_of: str | None) -> None:
+    """Reject a malformed ``--as-of`` early with a one-line message.
+
+    PYQ-120's convention: fail with one clean line rather than let it surface
+    as a vendor-call traceback deep inside build_panel.
+    """
+    if as_of is None:
+        return
+    try:
+        date.fromisoformat(as_of)
+    except ValueError:
+        raise ValueError(f"--as-of must be an ISO date (YYYY-MM-DD), got {as_of!r}") from None
 
 
 def _band_label(quantiles: list[float]) -> str:
@@ -282,10 +297,17 @@ def train(
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
     no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+    as_of: str = typer.Option(
+        None,
+        "--as-of",
+        help="Simulate training as of this date (YYYY-MM-DD): data after it is excluded "
+        "(PYQ-284). Pass --name too, or this overwrites the symbol's regular bundle.",
+    ),
 ):
     """Train a Temporal Fusion Transformer for SYMBOLS (pooled if more than one)."""
     try:
         settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+        _validate_as_of(as_of)
     except EXPECTED_FAILURES as exc:
         _fail(exc)
     tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
@@ -296,7 +318,13 @@ def train(
     # so let Lightning's bar be the single live indicator.
     try:
         result = tft.train(
-            tickers, settings, bundle_name=name, max_epochs=epochs, progress=not _output.quiet, pin=pin
+            tickers,
+            settings,
+            bundle_name=name,
+            max_epochs=epochs,
+            progress=not _output.quiet,
+            pin=pin,
+            end=as_of,
         )
     except EXPECTED_FAILURES as exc:
         _fail(exc)
@@ -702,12 +730,25 @@ def forecast(
     ),
     export: Path = typer.Option(None, help="Write a PNG fan chart to this path"),
     no_chart: bool = typer.Option(False, "--no-chart", help="Skip the terminal chart"),
+    as_of: str = typer.Option(
+        None,
+        "--as-of",
+        help="Simulate forecasting as of this date (YYYY-MM-DD): data after it is excluded "
+        "(PYQ-284). Check the printed 'As of' date -- vendors' own end-date conventions "
+        "decide the exact last bar, not this flag directly. Cannot combine with --pin.",
+    ),
 ):
     """Forecast SYMBOL with p10/p50/p90 uncertainty bands."""
     settings = load_settings()
     try:
+        _validate_as_of(as_of)
+        if as_of and pin:
+            raise ValueError(
+                "--as-of cannot be combined with --pin: a pin already replays a fixed "
+                "dataset snapshot, so --as-of would be silently ignored."
+            )
         loaded_bundle = tft.load(bundle, settings) if bundle else None
-        fc = generate_forecast(symbol, settings, bundle=loaded_bundle, pin=pin)
+        fc = generate_forecast(symbol, settings, bundle=loaded_bundle, pin=pin, end=as_of)
     except EXPECTED_FAILURES as exc:
         _fail(exc)
     # An options snapshot is live market context, not a model input, so it is

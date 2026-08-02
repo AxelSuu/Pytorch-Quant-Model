@@ -162,7 +162,7 @@ def test_generate_forecast_forwards_pin_to_build_panel(monkeypatch, sample_ohlcv
     panel = add_technical_indicators(sample_ohlcv_df)
     received = {}
 
-    def fake_build_panel(symbol, settings, pin=None):
+    def fake_build_panel(symbol, settings, end=None, pin=None):
         received["pin"] = pin
         return panel
 
@@ -177,6 +177,31 @@ def test_generate_forecast_forwards_pin_to_build_panel(monkeypatch, sample_ohlcv
 
     fc_mod.generate_forecast("test", object(), pin="exp-1")
     assert received["pin"] == "exp-1"
+
+
+def test_generate_forecast_forwards_end_to_build_panel(monkeypatch, sample_ohlcv_df):
+    """PYQ-284: `end` is what lets a caller simulate forecasting as of a past date --
+    it must reach build_panel verbatim, with no shifting applied here."""
+    from pyquant.data.prices import add_technical_indicators
+
+    panel = add_technical_indicators(sample_ohlcv_df)
+    received = {}
+
+    def fake_build_panel(symbol, settings, end=None, pin=None):
+        received["end"] = end
+        return panel
+
+    monkeypatch.setattr(fc_mod, "build_panel", fake_build_panel)
+    monkeypatch.setattr(fc_mod, "panel_to_long", lambda p, s: p)
+
+    class FakeBundle:
+        meta = {"quantiles": [0.1, 0.5, 0.9]}
+
+    monkeypatch.setattr(fc_mod.tft, "load", lambda *a, **k: FakeBundle())
+    monkeypatch.setattr(fc_mod.tft, "predict_quantiles", lambda b, df: np.ones((5, 3)) * 100.0)
+
+    fc_mod.generate_forecast("test", object(), end="2026-07-29")
+    assert received["end"] == "2026-07-29"
 
 
 # --- PYQ-115: the forecast must be labelled with the dates it is actually for --
@@ -213,7 +238,7 @@ def test_generate_forecast_rebuilds_the_panel_with_the_bundles_recorded_config(
     panel = add_technical_indicators(sample_ohlcv_df)
     seen = {}
 
-    def fake_build_panel(symbol, settings, pin=None):
+    def fake_build_panel(symbol, settings, end=None, pin=None):
         seen["use_sectors"] = settings.data.use_sectors
         return panel
 

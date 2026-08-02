@@ -12,7 +12,7 @@ import logging
 import pandas as pd
 import yfinance as yf
 
-from pyquant.data.prices import AUTO_ADJUST
+from pyquant.data.prices import AUTO_ADJUST, _period_start
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,10 @@ def fetch_sector_returns(
     try:
         data = yf.download(
             etfs,
-            start=start,
+            # `end` alone is not passed through with `start=None`: yfinance
+            # defaults a missing start to ~1 month before `end`, not the full
+            # period (PYQ-171).
+            start=start or (_period_start(period, anchor=end) if end else None),
             end=end,
             # Honor an explicit range if *either* bound is given; only fall back
             # to period when neither is set (PYQ-112).

@@ -1,7 +1,7 @@
 # Bugs (PYQ-1xx)
 
 Concrete, reproducible defects — see [`README.md`](README.md) for the format.
-Next free ID: **PYQ-171**.
+Next free ID: **PYQ-172**.
 
 | ID | Priority | Status | Title |
 |----|----------|--------|-------|
@@ -75,6 +75,7 @@ Next free ID: **PYQ-171**.
 | [PYQ-168](#pyq-168) | Medium | Resolved | `BundleCache.get()` re-deserializes the same checkpoint N times under concurrent cold-start requests |
 | [PYQ-169](#pyq-169) | Medium | Resolved | Untrained-bundle `404`s leaked the absolute checkpoint filesystem path to the caller |
 | [PYQ-170](#pyq-170) | Low | Resolved | `PYQUANT_API_KEYS` misconfiguration was only caught per-request (`500`), not at process startup |
+| [PYQ-171](#pyq-171) | High | Resolved | An `end`-only fetch silently truncated to ~1 month, not the configured `period` |
 
 ---
 
@@ -3557,3 +3558,63 @@ Verification: `test_app_refuses_to_start_when_api_keys_unconfigured` (asserts
 place in the file that uses `with TestClient(app) as c:` rather than the module-level
 `client`. `docs/http-api.md`'s Authentication section states the new boot-time behaviour.
 `ruff check .`, `pytest -q` and `scripts/backlog.py check` all clean.
+
+---
+
+## [PYQ-171]
+An `end`-only fetch silently truncated to ~1 month, not the configured `period`
+Status: Resolved — 2026-08-01
+Priority: High
+Files: `pyquant/data/prices.py` (`_period_start`), `pyquant/data/providers.py`
+(`YFinanceProvider.fetch_ohlcv`, `TiingoProvider.fetch_ohlcv`), `pyquant/data/macro.py`
+(`_fetch_vix`), `pyquant/data/sectors.py` (`fetch_sector_returns`), `tests/test_prices.py`
+
+Problem: found live while building features.md#pyq-284 (`--as-of`) — `pyquant forecast AAPL
+--as-of 2026-07-30` came back with a `KeyError: 'Close'` from an entirely empty panel.
+Root cause: bugs.md#pyq-112 fixed `start`-without-`end` (gate on `start or end` instead of
+`start and end`) but its own acceptance criteria only tested that one direction. The
+symmetric case — `end` given, `start` left `None` — was never exercised through the CLI
+(no date flags existed until PYQ-284), so it sat latent for a week.
+
+Once `start=None` reaches `ticker.history(start=None, end=X)`, yfinance does **not** treat
+the missing bound as "everything up to X" the way PYQ-112's problem statement assumed.
+Verified empirically: `yf.Ticker("AAPL").history(start=None, end="2026-07-30")` returned only
+21 rows spanning 2026-06-30..2026-07-29 — yfinance's own undocumented default is ~1 month
+before `end`, not the library's actual history. `_fetch_vix` (macro.py) and
+`fetch_sector_returns` (sectors.py) carry the identical pattern (same PYQ-112 fix, same gap),
+so all three yfinance-backed sources silently collapsed to ~1 month while any source with its
+own real anchor (FRED's vintage-aware `_fetch_fred`, PYQ-257) kept the full window — a
+cross-source date mismatch that then made `build_panel`'s `.ffill()` + `.dropna()` drop the
+*entire* panel (PYQ-123's leak-prevention logic, working exactly as designed, on inputs that
+should never have disagreed this badly). `TiingoProvider` has the same shape (`start = start
+or _period_start(period)`) but anchored on the real clock regardless of `end`, a smaller
+version of the same bug (only matters once `end` is far enough in the past to matter, which
+today's use of it never was).
+
+Ask: when only `end` is given, compute an explicit `start` from the configured `period`
+anchored on `end` — not the real clock, and not left `None` for the vendor's own default.
+
+Resolution: `_period_start(period, anchor=None)` (prices.py) now takes an explicit anchor
+date; `anchor=None` preserves every existing caller's behavior exactly (today's real clock),
+so this is additive. All four call sites that previously passed `start=None` straight through
+to a vendor call whenever only `end` was set now compute `start = _period_start(period,
+anchor=end)` first: `YFinanceProvider.fetch_ohlcv` (providers.py), `TiingoProvider.fetch_ohlcv`
+(same file, was already calling `_period_start` but without an anchor), `_fetch_vix`
+(macro.py), and `fetch_sector_returns` (sectors.py). FRED's `_fetch_fred`/`_vintage_windows`
+needed no change — PYQ-257 already anchors correctly on `end`. `fetch_sentiment`
+(sentiment.py) anchors its own default `start` on the real clock rather than `end` too, but
+left alone here: PYQ-140 already established Finnhub's free tier ignores the requested window
+and returns ~6 days regardless, so the discrepancy has no observable effect and fixing it
+would be untestable ceremony.
+
+Verified live end-to-end after the fix (not just via the unit test below): `build_panel`
+for AAPL with `use_macro=use_sectors=True` and `end="2026-07-30"` went from `(0, 0)` to a
+full ~5-year panel (prices 1254 rows, macro 1264 rows, sectors 1253 rows, all spanning
+2021-07/08..2026-07-29/30 rather than the ~21/1-month window from before the fix), and
+`pyquant forecast AAPL --as-of 2026-07-30` now returns a real forecast instead of crashing.
+
+Guarded by `test_fetch_prices_honors_end_without_start` (asserts the computed `start` is 5
+years before the given `end`, not before today's real date, and that the `period` path isn't
+taken) in `tests/test_prices.py`. `ruff check .` clean; `test_prices.py`, `test_macro.py`,
+`test_sectors.py`, `test_forecast.py`, `test_cli.py` (114 tests) and the full suite (463
+passed, up from 462 before this pass's new test) all pass.

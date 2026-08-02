@@ -13,7 +13,7 @@ from typing import NamedTuple
 import pandas as pd
 import yfinance as yf
 
-from pyquant.data.prices import AUTO_ADJUST
+from pyquant.data.prices import AUTO_ADJUST, _period_start
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +50,12 @@ def _fetch_vix(start: str | None, end: str | None, period: str) -> pd.Series | N
         # an index and is never split/dividend adjusted, so the value is
         # unchanged either way -- but "unchanged either way" is a fact worth
         # pinning rather than a default worth inheriting.
+        # `end` alone is not passed through with `start=None`: yfinance defaults
+        # a missing start to ~1 month before `end`, not the full period (PYQ-171).
         df = (
-            tkr.history(start=start, end=end, auto_adjust=AUTO_ADJUST)
+            tkr.history(
+                start=start or _period_start(period, anchor=end), end=end, auto_adjust=AUTO_ADJUST
+            )
             if (start or end)
             else tkr.history(period=period, auto_adjust=AUTO_ADJUST)
         )
