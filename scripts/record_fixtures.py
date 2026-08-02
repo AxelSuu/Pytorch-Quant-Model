@@ -17,6 +17,34 @@ Finnhub headline/summary/url/image text is replaced with placeholders before
 writing -- the contract tests care about the response *shape* (which fields
 exist, their types), not the copyrighted article text, so there is no reason
 to redistribute the latter in a public fixture.
+
+**Failure-mode fixtures are not recorded by this script, by design (PYQ-273).**
+A recorded payload captures the shape a vendor produces when a call succeeds;
+the four failure shapes that have actually cost this project (bugs.md#pyq-139's
+three FRED cases, bugs.md#pyq-140's Finnhub truncation) only appear under
+conditions a fresh recording won't reliably reproduce (a market-holiday NaT, an
+unbounded realtime window, a caller's clock running ahead of FRED's). Two
+different fixture strategies cover them instead of a third recording mode here:
+
+- The three FRED shapes (tests/test_macro.py, "PYQ-139" section) are hand-built
+  inline in the test itself, not as a file in tests/fixtures/. `fredapi.Fred`
+  is the boundary those tests mock (see the module docstring on
+  `test_fetch_macro_parses_real_recorded_vix_and_fred_payloads`) and it hands
+  back a `pandas.DataFrame`, not raw bytes -- a `RecordingFred`/`FakeFred`
+  class returning a hand-built frame with a `NaT` value, or an unset/oversized
+  realtime window, already *is* the natural fixture for this boundary; a
+  parallel on-disk file would just be that same frame moved somewhere less
+  readable, not a stronger test.
+- The Finnhub truncation shape needs no separate fixture at all: `record_finnhub`
+  below only ever asks for the last 7 days (see the request below), so this
+  recording does not by itself demonstrate that the vendor *ignores* `from` --
+  that evidence is PYQ-140's own live probing across several `from` values, not
+  this file. What the recording does give for free is a genuine, non-synthetic
+  instance of the *shape* PYQ-140 found: 247 real articles spanning only 6
+  distinct days. `test_fetch_sentiment_recorded_payload_reproduces_pyq_140s_truncation`
+  (tests/test_sentiment.py) feeds that real payload through `fetch_sentiment`
+  with a multi-year `start` and asserts the resulting coverage is exactly that
+  sparse, rather than reaching for a hand-built file to fake the same shape.
 """
 
 from __future__ import annotations
