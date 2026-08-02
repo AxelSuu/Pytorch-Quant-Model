@@ -289,17 +289,23 @@ actually goes: a cold call is **~98% vendor fetch and panel build (~65 s)**, and
 forward pass itself is under a second either way. Optimising the model path would have been
 optimising 2% of the wall clock.
 
-**A sync FastAPI route and a sync `BackgroundTasks` function share one thread pool.**
-Verified against the installed Starlette/anyio source: both `def` route handlers and a
-sync function passed to `BackgroundTasks.add_task` dispatch through
+**A sync FastAPI route and a sync `BackgroundTasks` function share one thread pool — which
+is why `/train` and `/backtest` no longer use `BackgroundTasks` (bugs.md#pyq-163,
+Resolved).** Verified against the installed Starlette/anyio source: both `def` route
+handlers and a sync function passed to `BackgroundTasks.add_task` dispatch through
 `starlette.concurrency.run_in_threadpool`, which uses anyio's single default worker-thread
 limiter (40 slots) with no separate pool for either. A long-running `POST /train` or
-`POST /backtest` job therefore occupies one of the same slots a concurrent `GET /forecast`
-needs — this is why `/healthz` is `async def` (it does no I/O, so it never needs a slot at
-all) and why the request limits above exist. A dedicated executor for training/backtest
-jobs — so they stop competing with request-handling threads for the same limited pool — is
-the next step if training concurrency under load becomes a real bottleneck; not built yet
-(see "What v1 deliberately does not do").
+`POST /backtest` job would therefore occupy one of the same slots a concurrent
+`GET /forecast` needs — this is why `/healthz` is `async def` (it does no I/O, so it never
+needs a slot at all) and why the request limits above exist. `/train` and `/backtest` are
+now `async def` routes that submit their background work to a **dedicated
+`ThreadPoolExecutor`** (`jobs.get_job_executor`, 4 workers) via `loop.run_in_executor`
+instead of `BackgroundTasks.add_task` — job scheduling never touches the shared 40-slot
+pool, and the job itself runs on a pool request-handling threads never draw from. The
+request limits above (the prediction lock's 30s bound) still apply to the shared pool for
+everything that hasn't moved off it; `/forecast`, `/explain` and `/scan` still dispatch as
+sync routes through `run_in_threadpool` and still compete with each other there, just no
+longer with `/train`/`/backtest`.
 
 ## What v1 deliberately does not do
 
@@ -319,12 +325,15 @@ to graduate rather than defects to file:
   subject to meter, revoke individually, or attribute vendor-quota cost to
   (features.md#pyq-281 is the design for closing this; a new dependency, deliberately not
   built inside a hardening pass).
-- **Every sync route and every background job (`POST /train`, `POST /backtest`) share one
-  40-slot thread pool.** Verified against the installed Starlette/anyio source
-  (bugs.md#pyq-163, Open): a long-running training job occupies a slot a concurrent
-  `/forecast` request also needs. `/healthz` was moved off this pool entirely
-  (bugs.md#pyq-165); the read endpoints have not been, and there is no dedicated executor
-  for background jobs yet.
+- **Every sync route still shares one 40-slot thread pool.** `/train` and `/backtest` were
+  moved onto a dedicated executor (bugs.md#pyq-163, Resolved); `/forecast`, `/explain` and
+  `/scan` have not been, and still compete with each other there the way everything did
+  before. `/healthz` was moved off entirely (bugs.md#pyq-165). Read-endpoint isolation is
+  the next step if that contention becomes a real bottleneck under load.
+- **The dedicated job executor is still in-process and CPU-shared with the request-serving
+  process.** It stops jobs from queuing behind requests (and vice versa), not from
+  competing for the same machine's CPU — a `ProcessPoolExecutor`, or the queue-based move
+  this section's title already points at, is what isolates that.
 
 Each of these is cheap to live with for a single instance and wrong to pretend away for
 more than one.
