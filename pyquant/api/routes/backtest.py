@@ -15,13 +15,16 @@ directory.
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from pyquant.analysis import serialize
 from pyquant.api.deps import get_settings, require_api_key
-from pyquant.api.jobs import JobRegistry, get_job_registry
+from pyquant.api.jobs import JobRegistry, get_job_executor, get_job_registry
 from pyquant.api.schemas import BacktestJobResponse, BacktestJobStatusResponse, BacktestRequest
 from pyquant.config import Settings
 from pyquant.models import tft
@@ -53,17 +56,22 @@ def _run_backtest_job(
 
 
 @router.post("/backtest", response_model=BacktestJobResponse, status_code=202)
-def start_backtest(
+async def start_backtest(
     request: BacktestRequest,
-    background_tasks: BackgroundTasks,
     settings: Settings = Depends(get_settings),
     registry: JobRegistry = Depends(get_job_registry),
+    executor: ThreadPoolExecutor = Depends(get_job_executor),
 ) -> BacktestJobResponse:
     """Queue a walk-forward backtest; poll GET /backtest/{job_id} for its status/result."""
     if request.period:
         settings.data.period = request.period
     job_id = registry.create(kind="backtest")
-    background_tasks.add_task(_run_backtest_job, job_id, request, settings, registry)
+    # A dedicated executor, not BackgroundTasks.add_task -- see the matching
+    # comment in routes/train.py (bugs.md#pyq-163).
+    loop = asyncio.get_running_loop()
+    loop.run_in_executor(
+        executor, functools.partial(_run_backtest_job, job_id, request, settings, registry)
+    )
     return BacktestJobResponse(job_id=job_id, status="queued")
 
 

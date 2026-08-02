@@ -241,6 +241,35 @@ def test_backtest_signals_flag_reports_pnl_and_reaches_json(monkeypatch):
     assert "strategy_pnl_pct" in payload["signal_evaluation"]
 
 
+def test_backtest_signals_flag_labels_the_uncalibrated_band(monkeypatch):
+    """PYQ-149: --signals must say explicitly that its band is uncalibrated,
+    both in the printed note and in --format json, rather than silently
+    diverging from what scan() would show once calibration is configured."""
+    from pyquant.models.tft import BacktestResult
+
+    ev = EvaluationMetrics(
+        model_mae=1.2, baseline_mae=1.6, directional_accuracy=0.55, calibration_coverage=0.75
+    )
+    fake_result = BacktestResult(
+        symbol="AAPL",
+        n_windows=1,
+        per_window=[ev],
+        aggregated=ev,
+        signals=["BUY"],
+        signal_returns_pct=[3.0],
+    )
+    monkeypatch.setattr(app_mod.tft, "walk_forward_backtest", lambda *a, **k: fake_result)
+
+    result = runner.invoke(app_mod.app, ["backtest", "AAPL", "--signals"])
+    assert result.exit_code == 0
+    assert "uncalibrated" in result.stdout
+    assert "PYQ-149" in result.stdout
+
+    json_result = runner.invoke(app_mod.app, ["--format", "json", "backtest", "AAPL", "--signals"])
+    payload = json.loads(json_result.stdout)
+    assert payload["signals_calibrated"] is False
+
+
 def test_backtest_without_signals_flag_skips_the_extra_pass(monkeypatch):
     from pyquant.models.tft import BacktestResult
 

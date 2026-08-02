@@ -195,6 +195,54 @@ def moving_block_bootstrap_interval(
     return tuple(float(x) for x in np.quantile(samples.mean(axis=1), [alpha, 1 - alpha]))
 
 
+def skill_confidence_interval(
+    per_window: list[EvaluationMetrics], **kwargs
+) -> tuple[float, float] | None:
+    """Moving-block bootstrap CI for skill across walk-forward windows (PYQ-270).
+
+    Bootstraps the per-window ``skill_vs_baseline`` values themselves -- the
+    mean-of-ratios estimator the per-window table already reports (PYQ-141),
+    not the pooled-ratio headline `aggregate_metrics` computes. The two are
+    different statistics; this is an interval on the former, reused because
+    it is the series a window-level bootstrap can actually be built from.
+
+    ``block_size=1``, deliberately: each entry in ``per_window`` is already a
+    whole walk-forward window's pooled metrics, and consecutive origins are
+    disjoint (invariant 7 / PYQ-127) -- there is no overlapping-data
+    correlation between windows for a wider block to preserve, unlike the
+    within-window overlap a point-level bootstrap corrects for. This is the
+    same "windows are the independent unit" assumption `effective_n_samples`
+    already makes elsewhere in this module.
+
+    Returns ``None`` with fewer than two windows: a bootstrap over a single
+    point has nothing to resample and would misreport a zero-width interval
+    as if it were informative.
+    """
+    if len(per_window) < 2:
+        return None
+    skills = [w.skill_vs_baseline for w in per_window]
+    return moving_block_bootstrap_interval(skills, block_size=1, **kwargs)
+
+
+def directional_accuracy_confidence_interval(
+    per_window: list[EvaluationMetrics], **kwargs
+) -> tuple[float, float] | None:
+    """Moving-block bootstrap CI for directional accuracy across walk-forward windows.
+
+    Same block-size reasoning as `skill_confidence_interval` (PYQ-270): this
+    used to be called with ``block_size = max(1, horizon)``, a point-level
+    overlap correction mistakenly applied to a series whose elements are
+    already whole windows -- at the default 5 windows / 5-day horizon that
+    made ``block_size == len(values)``, collapsing the "95% CI" to a single
+    possible resample and reporting a zero-width interval as real precision.
+    Fixed to ``block_size=1`` for the same "windows are independent" reason.
+    """
+    if len(per_window) < 2:
+        return None
+    accuracies = [w.directional_accuracy for w in per_window]
+    return moving_block_bootstrap_interval(accuracies, block_size=1, **kwargs)
+
+
 @dataclass
 class ScoredWindows:
     """The per-window results + window identity `compare_backtests` needs (PYQ-266).

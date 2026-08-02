@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import threading
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Literal
 
@@ -161,3 +162,26 @@ _REGISTRY = JobRegistry()
 def get_job_registry() -> JobRegistry:
     """FastAPI dependency: the process-wide job registry."""
     return _REGISTRY
+
+
+# bugs.md#pyq-163: a sync FastAPI route and a sync BackgroundTasks function both
+# dispatch through starlette.concurrency.run_in_threadpool, which draws from
+# anyio's single process-wide default thread limiter (40 slots) -- the exact
+# same pool /forecast, /explain and /scan need. A training job holding a slot
+# for minutes then queues a concurrent read endpoint behind it. This executor
+# is dedicated to /train and /backtest's background work, so those jobs stop
+# drawing from the pool request handling needs; bounded (not unbounded) so an
+# unlimited number of concurrent POST /train calls cannot each spin up their
+# own OS thread without limit. Smallest fix per the ticket: the real fix
+# (a process/queue boundary -- arq/Celery + Redis, or a ProcessPoolExecutor so
+# torch's own CPU usage is isolated from the request-serving process) is a new
+# dependency, out of scope here (docs/api-design.md #2, non-negotiable #5).
+_JOB_EXECUTOR_MAX_WORKERS = 4
+_JOB_EXECUTOR = ThreadPoolExecutor(
+    max_workers=_JOB_EXECUTOR_MAX_WORKERS, thread_name_prefix="pyquant-job"
+)
+
+
+def get_job_executor() -> ThreadPoolExecutor:
+    """FastAPI dependency: the dedicated executor /train and /backtest jobs run on."""
+    return _JOB_EXECUTOR

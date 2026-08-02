@@ -126,6 +126,50 @@ def test_walk_forward_backtest_computes_a_signal_per_window_when_requested(
     assert all(s in ("BUY", "SELL", "HOLD") for s in result.signals)
     assert len(result.signal_returns_pct) == 2
     assert all(isinstance(r, float) for r in result.signal_returns_pct)
+    # PYQ-149: no conformal offset is ever applied here, so this must say so
+    # explicitly rather than silently claiming parity with scan().
+    assert result.signals_calibrated is False
+
+
+# --- PYQ-149: --signals measures an uncalibrated band, and must say so -------
+
+
+def test_signals_with_calibration_configured_warns_and_reports_uncalibrated(
+    monkeypatch, sample_ohlcv_df, fast_settings, caplog
+):
+    """walk_forward_backtest() never fits a conformal offset (unlike train()),
+    so compute_signals=True with calibration_days > 0 measures a different,
+    uncalibrated case than scan() would show for an equivalent bundle. That
+    divergence must be surfaced, not silent -- a warning at call time, and a
+    machine-readable BacktestResult.signals_calibrated=False regardless of
+    calibration_days, so a JSON/programmatic consumer sees it too."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.calibration_days = 5
+
+    with caplog.at_level(logging.WARNING, logger="pyquant.models.tft"):
+        result = tft.walk_forward_backtest(
+            "TEST", fast_settings, n_windows=2, max_epochs=1, progress=False, compute_signals=True
+        )
+
+    assert result.signals_calibrated is False
+    assert "uncalibrated" in caplog.text
+    assert "PYQ-149" in caplog.text
+
+
+def test_signals_without_compute_signals_does_not_warn_about_calibration(
+    monkeypatch, sample_ohlcv_df, fast_settings, caplog
+):
+    """The warning is specifically about --signals' own uncalibrated band --
+    a plain backtest (no signals requested) has nothing to warn about."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    fast_settings.training.calibration_days = 5
+
+    with caplog.at_level(logging.WARNING, logger="pyquant.models.tft"):
+        tft.walk_forward_backtest("TEST", fast_settings, n_windows=2, max_epochs=1, progress=False)
+
+    assert "PYQ-149" not in caplog.text
 
 
 def test_train_pools_multiple_symbols_into_one_dataset(monkeypatch, sample_ohlcv_df, fast_settings):

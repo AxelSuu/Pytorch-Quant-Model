@@ -318,3 +318,58 @@ def test_fetch_sentiment_scores_a_real_recorded_finnhub_payload_end_to_end(monke
     assert list(out.columns) == sentiment.SENTIMENT_COLUMNS
     # Every real article landed on exactly one day; none silently vanished.
     assert out["HeadlineCount"].sum() == len(real_articles)
+
+
+# --- PYQ-140: the vendor honours a request nominally but truncates the reply -
+
+
+def test_fetch_sentiment_recorded_payload_reproduces_pyq_140s_truncation(monkeypatch):
+    """Finnhub's free tier was measured (live, across several `from` values --
+    see bugs.md#pyq-140) to always return roughly the same ~6-day recent slice,
+    regardless of how far back the request asks. This test does not re-probe
+    that live behaviour; `finnhub_news_aapl.json` (recorded for an ordinary
+    7-day request, PYQ-243) happens to already carry that same real shape --
+    247 articles across exactly 6 distinct days -- so it doubles as a genuine,
+    non-synthetic instance of it. Feeding it through `fetch_sentiment` with a
+    multi-year `start` reproduces what a real 5y-period panel build actually
+    sees: sparse, real coverage concentrated at the end of the window, not a
+    crash and not (if some future change broke the graceful-degradation path)
+    a fabricated full-window series.
+    """
+    real_articles = json.loads((FIXTURES / "finnhub_news_aapl.json").read_text())
+    distinct_days = {sentiment.session_date(a["datetime"]).date() for a in real_articles}
+    assert len(distinct_days) == 6, "fixture no longer has the shape this test relies on"
+
+    class RecordedResp:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return real_articles
+
+    monkeypatch.setattr(sentiment.requests, "get", lambda *a, **k: RecordedResp())
+    monkeypatch.setattr(sentiment, "_finbert", lambda: object())
+    monkeypatch.setattr(sentiment, "score_headlines", lambda hs: [0.0] * len(hs))
+
+    start, end = "2021-07-27", "2026-07-27"  # a ~5y request, PYQ-140's own scale
+    out = sentiment.fetch_sentiment("key", "AAPL", start=start, end=end)
+
+    # fetch_sentiment() itself only ever returns rows that have news -- confirm
+    # that stays true (no fabricated coverage) before checking the panel-level
+    # effect through align_to_sessions below.
+    assert len(out) == 6
+    assert out["HeadlineCount"].sum() == len(real_articles)
+
+    sessions = pd.bdate_range(start, end)
+    aligned = sentiment.align_to_sessions(out, sessions)
+    coverage = aligned["HeadlineCount"].notna().mean()
+    # PYQ-140 measured ~0.3% coverage at DataConfig's real 5y default; this
+    # smaller synthetic session count (~1300 business days vs. a real panel's
+    # already-indicator-trimmed one) should land in the same neighbourhood --
+    # loosely bounded so the test isn't pinned to the exact historical figure,
+    # but tight enough to catch "no longer structurally sparse" as a failure.
+    assert coverage < 0.01, f"coverage {coverage:.1%} is no longer ~structural-zero"
+    # Sessions with no news are NaN, not silently 0 -- PYQ-140's mechanism
+    # depends on that distinction (see align_to_sessions's own docstring).
+    assert aligned["HeadlineCount"].isna().sum() > 0
+    assert not (aligned["HeadlineCount"].fillna(0) < 0).any()

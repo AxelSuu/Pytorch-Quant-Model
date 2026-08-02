@@ -37,6 +37,13 @@ why the first number is close to what the *formulation* predicts regardless of t
 {ref}`related-open-questions` for what happened when the same discipline was applied to
 pooling and to the feature set.
 
+**Neither headline table above carries a confidence interval.** Both come from `pyquant
+train`'s single held-out validation split, not a multi-window walk-forward backtest — there
+is no per-window series to bootstrap an interval from, so `train`'s skill (Rich table,
+`--format json`, `meta.json`) is a bare point estimate by construction (PYQ-270), not a
+number this page is choosing to omit an interval for. The third protocol below, from
+`pyquant backtest`, does have one.
+
 **Both headline measurements above predate PYQ-143** (checkpoint selection was fixed to use
 a window disjoint from the one these metrics are reported on; see {ref}`split-geometry`).
 They were measured with `EarlyStopping`/`ModelCheckpoint` selecting the best of many epochs
@@ -79,6 +86,15 @@ five costumes; the honest reading is "highly variable across origins, sign not y
 not "the default configuration works." It is recorded here, not discarded, in the same
 spirit as every other number on this page: a result that complicates the headline is not a
 reason to leave it out.
+
+A moving-block bootstrap over these five per-window skill values (`block_size=1`, PYQ-270 —
+see {ref}`pooled-vs-per-window-skill`) gives a 95% interval of **[+0.8%, +49.9%]**: it
+technically excludes zero, but a 95% interval built by resampling five raw points is itself a
+rough estimate of a rough estimate, not the kind of evidence non-negotiable #1 requires before
+trusting a sign flip. Read it as demonstrating what the new interval machinery reports on this
+existing table, not as settling the "sign not yet settled" reading two sentences up — the
+pre-registered multi-symbol, multi-seed sweep (`investigations.md#pyq-322`'s decision rule) is
+still the bar for that, not five windows on one symbol.
 
 ## Why there is a baseline at all
 
@@ -175,6 +191,39 @@ obvious and was wrong for a long time — see
 A backtest reports **per-window** metrics as well as the aggregate, because the spread
 across time is the reason to run more than one window. A single mean over five origins
 hides whether the model is consistently mediocre or wildly unstable.
+
+(pooled-vs-per-window-skill)=
+### Pooled skill and the per-window column are different estimators
+
+The aggregate "Skill vs. baseline (pooled MAE ratio)" row and the per-window table's "Skill
+(per-window)" column beneath it are not the same statistic, and reading down the column and
+averaging it by hand does **not** reproduce the row above (PYQ-141). The aggregate pools
+`model_mae`/`baseline_mae` across every window first and takes the skill ratio of those pooled
+sums — a *ratio of means*. Each per-window row computes skill from that window's own MAEs
+alone — a *mean of ratios* once you read down the column. Windows where the baseline MAE
+happens to be small make that window's ratio swing wildly while barely moving the pooled
+denominator, so the column can disagree with the header without limit; the level-target
+per-window skills below (`[+0.28, +0.47, +0.35, −2.71, −3.13]`, mean **−94.8%**) sit next to a
+pooled headline of **−23.5%**, a four-fold difference, precisely because of this. Neither
+number is wrong — the pooled ratio is the defensible aggregate, and the per-window rows exist
+so a mean cannot hide its own dispersion (PYQ-117) — the two are simply answering different
+questions, and the CLI now labels each accordingly rather than presenting them as one number
+under one heading.
+
+`pyquant backtest` also prints a 95% confidence interval on both the per-window directional
+accuracy and the per-window skill series (PYQ-270), moving-block bootstrapped the same way as
+elsewhere on this page. Unlike a point-level bootstrap over individual overlapping
+predictions, each entry in a per-window series is *already* a whole walk-forward window's
+pooled metrics, and consecutive origins are disjoint by {ref}`invariant 8
+<invariant-walk-forward>` — there is no within-window overlap for a wider block to protect
+against here, so both intervals use `block_size=1`. An earlier version of the directional
+accuracy interval reused the horizon as its block size, which at this project's own default (5
+windows, 5-day horizon) made the block cover the entire series and collapsed the "95% CI" to
+the single point estimate it was supposed to bound — a zero-width interval reported as if it
+were real precision. `train`'s single held-out validation split has no per-window series to
+bootstrap from at all, so its skill (in the Rich table, `--format json`, and `meta.json`)
+stays a bare point estimate with an explicit `skill_ci: null` rather than a fabricated
+interval; only `pyquant backtest` (and the seed sweep, once wired the same way) can report one.
 
 (per-horizon)=
 ## Per-horizon breakdown
