@@ -1,8 +1,12 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # No `push: branches: [main]` trigger: main's branch protection requires a PR
+  # (required_approving_review_count: 0, so no human approval blocks it, but the
+  # PR path is mandatory) and requires this same matrix to pass on the PR's head
+  # commit before merge -- so by the time a commit lands on main it has already
+  # been tested. A second push-triggered run over the resulting merge commit
+  # would just re-verify the same tree.
   pull_request:
 
 jobs:
