@@ -1,7 +1,11 @@
 # Routine A ("dev") — paste this as the routine prompt
 
-Repo: `AxelSuu/Pytorch-Quant-Model`. Schedule: 2–3x/day, 6–7 hours apart.
-Trigger type: Schedule (not GitHub). See `docs/autonomous-loop-plan.md` §3.1 for the design this implements.
+Repo: `AxelSuu/Pytorch-Quant-Model`. Schedule: 2x/day, 6h apart, both overnight
+(e.g. 01:00 and 07:00 local) — revised 2026-08-02 from the original 2-3x/day, 6-7h-apart
+plan to avoid bleeding into Axel's own daytime interactive usage of the same subscription
+quota. See `docs/autonomous-loop-plan.md` §3.1 for the full reasoning and the escalation
+path to 3x/day once a week of `/usage` headroom is confirmed.
+Trigger type: Schedule (not GitHub).
 
 ---
 

@@ -1,6 +1,8 @@
 # Routine B ("PM + report") — paste this as the routine prompt
 
-Repo: `AxelSuu/Pytorch-Quant-Model`. Schedule: nightly.
+Repo: `AxelSuu/Pytorch-Quant-Model`. Schedule: once daily, timed after Routine A's last
+run of the night finishes (e.g. 08:30 local if A's last run is 07:00) so the report
+reflects settled state rather than a run still in progress.
 Trigger type: Schedule. Code-untouched by design. See `docs/autonomous-loop-plan.md` §3.2 for the design this implements.
 
 ---
@@ -25,12 +27,25 @@ Each run:
    coverage gap — but only within what `NORTH_STAR.md` already scopes as worth doing.
    Never invent new project direction; that document is not yours to redefine.
 
+   **Promote `status:backlog` issues to `status:ready`** when they're well-scoped and
+   safe for an unattended dev session to pick up on its own: a clear problem statement,
+   no GPU/large open-ended design commitment/live-vendor-credential dependency, nothing
+   that reads as needing a product decision first. This is the queue Routine A actually
+   draws from — if nothing is ever promoted, Routine A falls back to hand-picking by
+   priority every run instead of working the queue you've groomed. Leave anything
+   ambiguous at `status:backlog` rather than guessing.
+
 3. **Flag anything needing a human:** a new external dependency, anything resembling a
    cost or vendor decision, anything that would need a secret you don't have. Label the
    relevant Issue `needs-human` and list it prominently in today's report — not buried.
 
 4. **Write today's report** as a new comment on the pinned "Daily Reports" GitHub
-   Discussion thread (find it by title if you don't have its ID/URL cached). Include:
+   Discussion thread (find it by title if you don't have its ID/URL cached). **If no
+   Discussion titled "Daily Reports" exists yet**, create one yourself (Discussions tab,
+   "Announcements" category, title exactly "Daily Reports") and post the first report as
+   its opening body instead of a comment — don't fail silently or skip the report because
+   the thread wasn't pre-created. Note in the report itself that it created the thread, so
+   Axel knows to pin it (routines can't reliably pin Discussions via the API). Include:
    - What shipped (merged PRs) and what's open (PRs awaiting review)
    - CI health (pass/fail trend, anything flaky)
    - Backlog delta (opened/closed/reprioritized, with the *why* for anything non-obvious)

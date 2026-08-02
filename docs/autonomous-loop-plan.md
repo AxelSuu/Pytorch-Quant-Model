@@ -137,41 +137,57 @@ Two routines, two jobs, kept separate so each run's diff and reasoning stays rev
 
 ### 3.1 Routine A — "dev"
 
-**Cadence — confirmed 2026-08-02:** 2–3 runs/day, 6–7 hours apart, budget 5–10 tickets
-per run (as many as fit in one session without risking a rate-limit cutoff — not a hard
-cap, a "stop when the session's getting long" heuristic). This is more aggressive than
-the original conservative "once daily, 1–2 tickets" proposal — Axel's explicit call,
-revisit after reading two weeks of transcripts if it turns out to be too much or too
-little.
+**Cadence — revised 2026-08-02:** the original confirmed cadence (2–3 runs/day, 6–7h
+apart) turned out to structurally conflict with a second goal Axel raised the same day —
+keeping routine runs from eating into the same rolling 5-hour subscription usage window
+he wants available for his own interactive daytime use. Three runs spaced 6–7h apart
+spans 12–14h, which cannot fit inside typical overnight hours without spilling into the
+morning. Resolution: **2 runs/day, 6h apart, both overnight** (e.g. 01:00 and 07:00
+local) as the safer default, with an explicit escalation path back to 3x/day once a week
+of `/usage` / the routines page's daily-cap headroom confirms there's room. Budget
+remains 5–10 tickets per run, a ceiling not a target.
+
+**Verified working 2026-08-02:** a live run (via "Run now") produced PR #188 from
+`claude/blissful-feynman-6sdv36` — picked 5 tickets (no `status:ready` queue existed yet,
+so it fell back to hand-picking by priority, see the Routine B fix below), correctly
+declined 2 out-of-budget tickets with stated reasoning, added 5 tests (475 passing),
+relabeled addressed issues to `status:in-progress`, opened the PR without merging. Axel
+merged it himself; all 3 required CI checks passed. The mechanics work end to end.
 
 1. **Trigger fires** (schedule). Fresh cloud session, repo cloned at `main`.
-2. **PM phase (read-only):** read open Issues + Project board, `NORTH_STAR.md`, last CI
-   run. Pick up to the run's ticket budget, preferring P0/P1 and `status:ready`.
+2. **PM phase (read-only):** read open Issues, `NORTH_STAR.md`, last CI run. Pick up to
+   the run's ticket budget, preferring P0/P1 and `status:ready`.
 3. **Dev phase:** implement on a `claude/`-prefixed branch (leave the GitHub App's
    branch restriction on). Run the existing test suite locally before pushing.
-4. **Push + PR:** open a PR referencing the Issue(s), move them to `status:in-review` /
-   the board's "In review" column.
+4. **Push + PR:** open a PR referencing the Issue(s), relabel them `status:in-progress`.
 5. **CI:** existing GitHub Actions (pytest, sphinx build, nightly smoke test, vendor
    tests) run unchanged.
-6. **If CI fails:** the next dev-routine run (or a GitHub-trigger routine, once added)
-   reads the failure and either fixes it or opens a `needs-human`-labeled Issue rather
-   than guessing repeatedly.
+6. **If CI fails:** the next dev-routine run reads the failure and either fixes it or
+   opens a `needs-human`-labeled Issue rather than guessing repeatedly. (No GitHub-trigger
+   routine for this: the current GitHub-trigger event surface only covers Pull request and
+   Release events, not a direct "check failed" event, so faster reaction comes from
+   cadence, not a third routine.)
 7. **If CI passes:** PR sits ready for Axel's review. The loop never merges to `main`
    itself.
 
 ### 3.2 Routine B — "PM + report"
 
-Nightly, code-untouched.
+Once daily, code-untouched, scheduled after Routine A's last nightly run finishes (e.g.
+08:30 if A's last run is 07:00) so the report reflects settled state.
 
-1. Reads Issues opened/closed since last run, PRs merged/opened, CI history, Project
-   board state.
+1. Reads Issues opened/closed since last run, PRs merged/opened, CI history.
 2. Grooms the backlog: re-labels stale priority, closes irrelevant issues with a
    comment, opens new issues for things noticed (failing tests without a ticket, TODOs,
    coverage gaps) — always scoped by `NORTH_STAR.md`, never inventing new direction.
+   **Promotes well-scoped `status:backlog` issues to `status:ready`** — added
+   2026-08-02 after finding zero issues had ever carried `status:ready`, which meant
+   Routine A had no groomed queue to draw from and always fell back to hand-picking.
 3. Flags anything needing Axel: new external dependency, cost/vendor decision, anything
    needing a secret it doesn't have. Labels the Issue `needs-human`, surfaces it
    prominently.
-4. Writes the daily report (3.3) and posts it.
+4. Writes the daily report (3.3) and posts it — creating the "Daily Reports" Discussion
+   thread itself on first run if it doesn't exist yet (added 2026-08-02 after finding the
+   thread had never been created, and the original prompt had no fallback for that).
 5. Never pushes code, never opens PRs.
 
 ### 3.3 The report — **destination confirmed 2026-08-02: pinned GitHub Discussion**
