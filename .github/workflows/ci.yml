@@ -66,7 +66,7 @@ jobs:
         # A docs site that is not built in CI rots within two refactors, so a
         # broken :func: cross-reference, a renamed module or an autodoc import
         # failure fails the PR that caused it rather than surfacing three months
-        # later (PYQ-233). Same instinct as the backlog check below.
+        # later (PYQ-233).
         #
         # Only on 3.12: the docs group resolves the same way on every matrix leg,
         # so building it three times costs ~2 minutes to re-prove one fact.

@@ -103,6 +103,12 @@ force-include = { "pyquant/py.typed" = "pyquant/py.typed" }
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# backlog/_archive/ is a frozen historical record (old backlog.py + its data),
+# archived rather than deleted when the backlog migrated to GitHub Issues --
+# "no longer live or enforced by CI" per CLAUDE.md. Linting dead code for style
+# would mean either maintaining it again or peppering a historical snapshot
+# with ignore comments it never had; excluding it keeps the snapshot verbatim.
+exclude = ["backlog/_archive"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "D"]

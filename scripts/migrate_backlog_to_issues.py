@@ -38,7 +38,7 @@ import re
 import subprocess
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 BACKLOG_DIR = Path(__file__).resolve().parent.parent / "backlog"
