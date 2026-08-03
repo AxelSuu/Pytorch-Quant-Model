@@ -21,7 +21,7 @@ router = APIRouter(dependencies=[Depends(require_api_key)])
 
 
 def _effective_n_samples(evaluation: dict) -> int:
-    """Same derivation as `EvaluationMetrics.effective_n_samples`, from the persisted dict."""
+    """Same derivation as ``EvaluationMetrics.effective_n_samples``, from the persisted dict."""
     n_samples = evaluation.get("n_samples") or 0
     n_points = evaluation.get("n_points") or 0
     if not n_samples or not n_points:
@@ -52,7 +52,7 @@ def _evaluation_response(meta: dict) -> EvaluationResponse:
 
 @router.get("/symbols", response_model=list[BundleSummary])
 def list_symbols(settings: Settings = Depends(get_settings)) -> list[BundleSummary]:
-    """Every trained bundle under `checkpoint_dir`, most recently trained first."""
+    """Every trained bundle under ``checkpoint_dir``, most recently trained first."""
     return [
         BundleSummary(
             symbol=meta.get("symbol", ""),
@@ -73,10 +73,10 @@ def get_metrics(
 ) -> EvaluationResponse:
     """A bundle's recorded evaluation (skill, calibration, directional accuracy).
 
-    Reads straight off `meta.json` -- no forecast is generated, and nothing is
-    recomputed beyond the two derived fields (`skill_vs_baseline`,
-    `effective_n_samples`) that `meta.json` never stored because they are
-    `@property`s, not dataclass fields.
+    Reads straight off ``meta.json`` -- no forecast is generated, and nothing is
+    recomputed beyond the two derived fields (``skill_vs_baseline``,
+    ``effective_n_samples``) that ``meta.json`` never stored because both are
+    an ``@property``, not a dataclass field.
     """
     symbol = symbol.upper()
     try:
