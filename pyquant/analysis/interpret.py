@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import numpy as np
 import pandas as pd
 
+from pyquant.analysis.metrics import skill_vs_baseline_from_maes
 from pyquant.config import Settings
 from pyquant.data.dataset import build_panel, panel_to_long
 from pyquant.models import tft
@@ -48,15 +49,10 @@ def _bundle_skill(bundle: tft.ModelBundle) -> float | None:
     Not read directly off meta.json: EvaluationMetrics.skill_vs_baseline is a
     @property, not a dataclass field, so it was never serialised into
     meta["evaluation"] in the first place (only vars(evaluation)'s actual fields
-    were). Recomputed from the two fields that are recorded, the same formula the
-    property itself uses.
+    were). See `metrics.skill_vs_baseline_from_maes` for the shared formula.
     """
     ev = bundle.meta.get("evaluation") or {}
-    baseline_mae = ev.get("baseline_mae")
-    model_mae = ev.get("model_mae")
-    if not baseline_mae:
-        return None
-    return (baseline_mae - model_mae) / baseline_mae
+    return skill_vs_baseline_from_maes(ev.get("baseline_mae"), ev.get("model_mae"))
 
 
 def explain_forecast(

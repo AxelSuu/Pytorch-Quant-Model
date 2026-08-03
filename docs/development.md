@@ -123,6 +123,27 @@ over one section most readers never open.
 Colour tokens live in `docs/conf.py`'s theme options and structure lives in
 `docs/_static/custom.css`, so a value is defined once per theme rather than once per rule.
 
+## Releasing
+
+`pyproject.toml`'s `version` only asserts something about a bundle's provenance (PYQ-225,
+PYQ-133) if it actually points at a commit. To cut a release:
+
+1. Update `CHANGELOG.md` (Keep a Changelog format) and bump `version` in `pyproject.toml`
+   to match, in the same PR.
+2. Once that PR is merged to `main`, tag the merge commit and push the tag:
+   ```bash
+   git tag v0.3.0
+   git push origin v0.3.0
+   ```
+3. `.github/workflows/release.yml` runs on any `v*` tag push: it verifies the tag matches
+   `pyproject.toml`'s version (failing loudly if they disagree, PYQ-274), runs the full
+   test suite, and cuts a GitHub release with auto-generated notes.
+
+There is no PyPI publish step. This project has no external consumers, so a release channel
+with nobody downstream is exactly the unjustified addition non-negotiable #5 is about — the
+tag + GitHub release is the whole point: a reproducible pointer from a version string to a
+commit, nothing more.
+
 ## Things that will get a change rejected
 
 **Never make a metric look better without making the model better.** This project's

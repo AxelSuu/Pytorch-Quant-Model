@@ -1,0 +1,65 @@
+name: Release
+
+# Tag-triggered rather than a manual dispatch (PYQ-274): the tag itself is the
+# thing being verified (see below), so there is no meaningful "release" without
+# one already pushed. A human still decides *when* to tag -- this workflow only
+# makes the release that follows reproducible and checked, not the decision
+# itself.
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    # Only permission this job needs: creating the GitHub release object below.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Verify the tag matches pyproject.toml's version
+        # A version string that can drift from the commit it's tagged on
+        # provides none of reproducibility's third leg (CLAUDE.md's "seed +
+        # pinned data + code version"). Failing loudly here, rather than
+        # silently cutting a release the tag and the package disagree about,
+        # is the whole reason PYQ-274 asked for this workflow.
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          pkg_version="$(uv run --frozen python -c '
+          import tomllib
+          with open("pyproject.toml", "rb") as f:
+              print(tomllib.load(f)["project"]["version"])
+          ')"
+          if [ "$tag_version" != "$pkg_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match pyproject.toml's version $pkg_version" >&2
+            exit 1
+          fi
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Test
+        run: uv run pytest -q
+
+      - name: Cut a GitHub release
+        # `gh` is preinstalled on GitHub-hosted runners; GITHUB_TOKEN is the
+        # ephemeral, repo-scoped token Actions provisions for every run, not a
+        # new credential (CLAUDE.md's secrets gate is about operator-provisioned
+        # keys like PYQUANT_API_KEYS, not this).
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes

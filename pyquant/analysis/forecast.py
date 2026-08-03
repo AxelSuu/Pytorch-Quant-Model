@@ -139,7 +139,21 @@ class Forecast:
         return self.quantile_series(0.5)
 
     def expected_return_pct(self) -> float:
-        """Percent change from current price to the final-day median forecast."""
+        """Percent change from current price to the final-day median forecast.
+
+        >>> predictions = np.array([[99.0, 100.0, 101.0], [98.0, 102.0, 104.0]])
+        >>> history = pd.Series([100.0], index=[pd.Timestamp("2024-01-01")])
+        >>> forecast = Forecast(
+        ...     symbol="TEST",
+        ...     last_date=pd.Timestamp("2024-01-01"),
+        ...     current_price=100.0,
+        ...     quantiles=[0.1, 0.5, 0.9],
+        ...     predictions=predictions,
+        ...     history=history,
+        ... )
+        >>> round(forecast.expected_return_pct(), 2)
+        2.0
+        """
         return float((self.median[-1] - self.current_price) / self.current_price * 100)
 
 

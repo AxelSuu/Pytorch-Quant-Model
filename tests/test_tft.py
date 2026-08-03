@@ -80,6 +80,43 @@ def test_load_missing_model_raises(fast_settings):
         tft.load("NOPE", fast_settings)
 
 
+def test_load_meta_missing_bundle_raises(fast_settings):
+    with pytest.raises(FileNotFoundError):
+        tft.load_meta("NOPE", fast_settings)
+
+
+def test_load_meta_reads_meta_json_without_loading_the_model(fast_settings):
+    """PYQ-283: only `model.ckpt`/`dataset_params.pt` need `load()`'s heavier deserialization."""
+    bundle_dir = fast_settings.checkpoint_dir / "AAPL"
+    bundle_dir.mkdir(parents=True)
+    (bundle_dir / "meta.json").write_text(
+        json.dumps({"symbol": "AAPL", "trained_at": "2026-01-01T00:00:00"})
+    )
+    meta = tft.load_meta("AAPL", fast_settings)
+    assert meta == {"symbol": "AAPL", "trained_at": "2026-01-01T00:00:00"}
+
+
+def test_list_bundles_returns_every_meta_sorted_by_trained_at_descending(fast_settings):
+    for name, trained_at in [("AAA", "2026-01-01T00:00:00"), ("BBB", "2026-02-01T00:00:00")]:
+        bundle_dir = fast_settings.checkpoint_dir / name
+        bundle_dir.mkdir(parents=True)
+        (bundle_dir / "meta.json").write_text(
+            json.dumps({"symbol": name, "trained_at": trained_at})
+        )
+    metas = tft.list_bundles(fast_settings)
+    assert [m["symbol"] for m in metas] == ["BBB", "AAA"]
+
+
+def test_list_bundles_skips_a_directory_without_meta_json(fast_settings):
+    (fast_settings.checkpoint_dir / "BROKEN").mkdir(parents=True)
+    assert tft.list_bundles(fast_settings) == []
+
+
+def test_list_bundles_returns_empty_list_when_checkpoint_dir_does_not_exist(fast_settings):
+    assert not fast_settings.checkpoint_dir.exists()
+    assert tft.list_bundles(fast_settings) == []
+
+
 def test_train_rejects_insufficient_history(monkeypatch, sample_ohlcv_df, fast_settings):
     short = add_technical_indicators(sample_ohlcv_df).iloc[:15]
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: short)

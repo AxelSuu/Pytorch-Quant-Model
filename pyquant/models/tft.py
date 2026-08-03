@@ -1336,3 +1336,48 @@ def load(symbol: str, settings: Settings) -> ModelBundle:
     dataset_params = torch.load(bundle_dir / "dataset_params.pt", weights_only=False)
     meta = json.loads((bundle_dir / "meta.json").read_text())
     return ModelBundle(model=model, dataset_params=dataset_params, meta=meta)
+
+
+def load_meta(symbol: str, settings: Settings) -> dict:
+    """Read a bundle's ``meta.json`` without loading the model/dataset (PYQ-283).
+
+    Same not-trained convention as ``load()`` (``FileNotFoundError``, checked
+    against ``meta.json`` rather than ``model.ckpt`` since that's the only file
+    this needs), but skips ``TemporalFusionTransformer.load_from_checkpoint``
+    and ``torch.load`` -- both real costs for a caller that only wants the
+    recorded symbol/timestamp/evaluation, e.g. an API discovery endpoint asked
+    to answer for every trained bundle at once.
+    """
+    bundle_dir = _bundle_dir(settings, symbol)
+    meta_path = bundle_dir / "meta.json"
+    if not meta_path.exists():
+        raise FileNotFoundError(
+            f"No trained model for {symbol.upper()} at {meta_path}. Run `pyquant train` first."
+        )
+    return json.loads(meta_path.read_text())
+
+
+def list_bundles(settings: Settings) -> list[dict]:
+    """Every trained bundle's ``meta.json`` under ``checkpoint_dir`` (PYQ-283).
+
+    Sorted by ``trained_at`` descending (most recently trained first) so a
+    caller listing "what's trained" sees the freshest bundle first without
+    re-sorting. A bundle directory without a readable ``meta.json`` (e.g. a
+    training run that crashed before writing one) is skipped rather than
+    failing the whole listing -- one broken bundle must not hide every other
+    one, the same discipline ``POST /scan`` applies per-symbol.
+    """
+    checkpoint_dir = settings.checkpoint_dir
+    if not checkpoint_dir.is_dir():
+        return []
+    metas = []
+    for bundle_dir in checkpoint_dir.iterdir():
+        meta_path = bundle_dir / "meta.json"
+        if not meta_path.exists():
+            continue
+        try:
+            metas.append(json.loads(meta_path.read_text()))
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.warning("Skipping unreadable bundle meta.json at %s: %s", meta_path, exc)
+    metas.sort(key=lambda m: m.get("trained_at", ""), reverse=True)
+    return metas

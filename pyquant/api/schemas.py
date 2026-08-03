@@ -65,6 +65,14 @@ class EvaluationResponse(BaseModel):
     effective_n_samples: int
 
 
+class BundleSummary(BaseModel):
+    """One entry of GET /symbols: what's trained, without loading it (PYQ-283)."""
+
+    symbol: str
+    trained_at: str | None = None
+    bundle_skill: float | None = None
+
+
 class ForecastResponse(BaseModel):
     """Mirrors analysis.serialize.forecast_to_dict(); GET /forecast/{symbol}."""
 

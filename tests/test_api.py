@@ -1055,3 +1055,92 @@ def test_forecast_response_matches_the_cli_format_json_field_for_field(monkeypat
     api_payload = client.get("/forecast/AAPL").json()
 
     assert api_payload == cli_payload
+
+
+# --- PYQ-283: GET /symbols, GET /metrics/{symbol} ---------------------------------
+
+
+def _write_bundle_meta(checkpoint_dir: Path, symbol: str, **overrides) -> None:
+    bundle_dir = checkpoint_dir / symbol
+    bundle_dir.mkdir(parents=True)
+    meta = {
+        "symbol": symbol,
+        "trained_at": "2026-01-01T00:00:00",
+        "evaluation": {
+            "model_mae": 1.5,
+            "baseline_mae": 2.0,
+            "directional_accuracy": 0.6,
+            "calibration_coverage": 0.8,
+            "n_samples": 25,
+            "n_points": 125,
+            "quantile_exceedance": {},
+            "pinball_losses": {},
+            "crps": 0.5,
+            "winkler_score": 3.0,
+            "pit": [0.4, 0.6],
+        },
+    }
+    meta.update(overrides)
+    (bundle_dir / "meta.json").write_text(json.dumps(meta))
+
+
+def test_list_symbols_returns_every_trained_bundle_most_recent_first(tmp_path):
+    from pyquant.config import Settings
+
+    settings = Settings(checkpoint_dir=tmp_path / "checkpoints")
+    _write_bundle_meta(settings.checkpoint_dir, "AAA", trained_at="2026-01-01T00:00:00")
+    _write_bundle_meta(settings.checkpoint_dir, "BBB", trained_at="2026-02-01T00:00:00")
+    app.dependency_overrides[deps.get_settings] = lambda: settings
+
+    r = client.get("/symbols")
+    assert r.status_code == 200
+    body = r.json()
+    assert [row["symbol"] for row in body] == ["BBB", "AAA"]
+    assert body[0]["bundle_skill"] == pytest.approx(0.25)
+
+
+def test_list_symbols_is_empty_when_nothing_is_trained(tmp_path):
+    from pyquant.config import Settings
+
+    app.dependency_overrides[deps.get_settings] = lambda: Settings(
+        checkpoint_dir=tmp_path / "checkpoints"
+    )
+    r = client.get("/symbols")
+    assert r.status_code == 200
+    assert r.json() == []
+
+
+def test_get_metrics_returns_the_bundles_recorded_evaluation(tmp_path):
+    from pyquant.config import Settings
+
+    settings = Settings(checkpoint_dir=tmp_path / "checkpoints")
+    _write_bundle_meta(settings.checkpoint_dir, "AAPL")
+    app.dependency_overrides[deps.get_settings] = lambda: settings
+
+    r = client.get("/metrics/AAPL")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["model_mae"] == pytest.approx(1.5)
+    assert body["skill_vs_baseline"] == pytest.approx(0.25)
+    assert body["n_samples"] == 25
+    assert body["effective_n_samples"] == 5  # 25 samples / horizon 5 (125/25)
+
+
+def test_get_metrics_404_for_an_untrained_symbol(tmp_path):
+    from pyquant.config import Settings
+
+    app.dependency_overrides[deps.get_settings] = lambda: Settings(
+        checkpoint_dir=tmp_path / "checkpoints"
+    )
+    r = client.get("/metrics/NOPE")
+    assert r.status_code == 404
+
+
+def test_get_metrics_rejects_a_path_traversal_symbol(tmp_path):
+    from pyquant.config import Settings
+
+    app.dependency_overrides[deps.get_settings] = lambda: Settings(
+        checkpoint_dir=tmp_path / "checkpoints"
+    )
+    r = client.get("/metrics/..%2F..%2Fetc")
+    assert r.status_code in (404, 422)

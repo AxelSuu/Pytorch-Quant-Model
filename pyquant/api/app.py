@@ -16,7 +16,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from pyquant.api.deps import _UNCONFIGURED_KEYS_MESSAGE, api_auth_is_configured, require_api_key
-from pyquant.api.routes import backtest, explain, forecast, health, train
+from pyquant.api.routes import backtest, bundles, explain, forecast, health, train
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +57,7 @@ app = FastAPI(
 )
 
 app.include_router(health.router)
+app.include_router(bundles.router)
 app.include_router(forecast.router)
 app.include_router(explain.router)
 app.include_router(train.router)
