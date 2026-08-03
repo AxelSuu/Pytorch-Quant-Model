@@ -14,6 +14,7 @@ Deliberately free of torch, Typer and Rich: it is imported by ``data/`` and by
 from __future__ import annotations
 
 import subprocess
+from functools import cache
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 
@@ -34,12 +35,20 @@ def _git(args: list[str], cwd: Path) -> str | None:
     degrade to "unknown" rather than fail a training run.
     """
     try:
-        result = subprocess.run(
-            ["git", *args], capture_output=True, text=True, timeout=5, cwd=cwd
-        )
+        result = subprocess.run(["git", *args], capture_output=True, text=True, timeout=5, cwd=cwd)
     except (OSError, subprocess.SubprocessError):
         return None
     return result.stdout.strip() or None if result.returncode == 0 else None
+
+
+@cache
+def _resolve_git_sha(here: Path) -> str | None:
+    toplevel = _git(["rev-parse", "--show-toplevel"], cwd=here.parent)
+    if toplevel is None:
+        return None
+    if (Path(toplevel) / "pyquant" / here.name).resolve() != here:
+        return None
+    return _git(["rev-parse", "--short", "HEAD"], cwd=here.parent)
 
 
 def git_sha() -> str | None:
@@ -56,14 +65,16 @@ def git_sha() -> str | None:
 
     So the repo is verified to actually contain this file before its sha is
     trusted: ``<toplevel>/pyquant/provenance.py`` must be this very module.
+
+    The git calls are memoized by resolved ``__file__`` (PYQ-279): a working
+    tree's sha can't change mid-process, so nothing in-process ever needs it
+    re-read after the first call for a given path. Keying on the path rather
+    than caching the bare result keeps ``__file__``-monkeypatching tests (see
+    ``test_provenance.py``) correctly cache-missing on a different path
+    instead of replaying another test's cached answer.
     """
     here = Path(__file__).resolve()
-    toplevel = _git(["rev-parse", "--show-toplevel"], cwd=here.parent)
-    if toplevel is None:
-        return None
-    if (Path(toplevel) / "pyquant" / here.name).resolve() != here:
-        return None
-    return _git(["rev-parse", "--short", "HEAD"], cwd=here.parent)
+    return _resolve_git_sha(here)
 
 
 def code_version() -> str:

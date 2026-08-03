@@ -180,9 +180,11 @@ def test_train_command_forwards_as_of_to_tft_train(monkeypatch):
 
 
 def test_train_command_rejects_malformed_as_of(monkeypatch):
-    monkeypatch.setattr(app_mod.tft, "train", lambda *a, **k: (_ for _ in ()).throw(
-        AssertionError("tft.train should not be called")
-    ))
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("tft.train should not be called")),
+    )
     result = runner.invoke(app_mod.app, ["train", "AAPL", "--as-of", "07/29/2026"])
     assert result.exit_code == 1
     assert "--as-of" in result.stdout
@@ -303,8 +305,12 @@ def _seed_sweep_fixture():
         )
 
     per_seed = [
-        BacktestResult(symbol="AAPL", n_windows=2, per_window=[_ev(1.0)], aggregated=_ev(1.0)),  # skill 0.5
-        BacktestResult(symbol="AAPL", n_windows=2, per_window=[_ev(1.5)], aggregated=_ev(1.5)),  # skill 0.25
+        BacktestResult(
+            symbol="AAPL", n_windows=2, per_window=[_ev(1.0)], aggregated=_ev(1.0)
+        ),  # skill 0.5
+        BacktestResult(
+            symbol="AAPL", n_windows=2, per_window=[_ev(1.5)], aggregated=_ev(1.5)
+        ),  # skill 0.25
     ]
     return SeedSweepResult(symbol="AAPL", seeds=[0, 1], per_seed=per_seed)
 
@@ -443,7 +449,9 @@ def _fake_sweep_result():
 
     def _result(symbol, mae):
         ev = _ev(mae)
-        return BacktestResult(symbol=symbol, n_windows=1, per_window=[ev], aggregated=ev, origins=[100])
+        return BacktestResult(
+            symbol=symbol, n_windows=1, per_window=[ev], aggregated=ev, origins=[100]
+        )
 
     cells = [
         SweepCell("AAA", "close", result=_result("AAA", 1.0)),  # skill 0.5
@@ -484,7 +492,17 @@ def test_sweep_command_json_output_includes_the_full_cell_matrix(monkeypatch):
 
     result = runner.invoke(
         app_mod.app,
-        ["--format", "json", "sweep", "--symbols", "AAA,BBB", "--arm", "target=close", "--arm", "target=log_return"],
+        [
+            "--format",
+            "json",
+            "sweep",
+            "--symbols",
+            "AAA,BBB",
+            "--arm",
+            "target=close",
+            "--arm",
+            "target=log_return",
+        ],
     )
 
     assert result.exit_code == 0
@@ -492,7 +510,9 @@ def test_sweep_command_json_output_includes_the_full_cell_matrix(monkeypatch):
     assert data["symbols"] == ["AAA", "BBB"]
     assert data["arms"] == ["close", "log_return"]
     assert len(data["cells"]) == 4
-    failed_cell = next(c for c in data["cells"] if c["symbol"] == "BBB" and c["arm"] == "log_return")
+    failed_cell = next(
+        c for c in data["cells"] if c["symbol"] == "BBB" and c["arm"] == "log_return"
+    )
     assert failed_cell["result"] is None
     assert failed_cell["error"] == "not enough history"
     assert data["pooled_skill"]["close"] == pytest.approx((0.5 + 0.25) / 2)
@@ -502,7 +522,9 @@ def test_sweep_command_json_output_includes_the_full_cell_matrix(monkeypatch):
 def test_sweep_command_rejects_a_malformed_arm_spec(monkeypatch):
     monkeypatch.setattr(app_mod, "run_sweep", lambda *a, **k: _fake_sweep_result())
 
-    result = runner.invoke(app_mod.app, ["sweep", "--symbols", "AAA", "--arm", "not-key-equals-value"])
+    result = runner.invoke(
+        app_mod.app, ["sweep", "--symbols", "AAA", "--arm", "not-key-equals-value"]
+    )
 
     assert result.exit_code == 1
     assert "key=value" in result.output
@@ -652,7 +674,9 @@ def test_snapshot_command_records_to_the_configured_history_dir(monkeypatch, tmp
     monkeypatch.setattr(
         options_mod,
         "fetch_options_snapshot",
-        lambda symbol: OptionsSnapshot(put_call_ratio=1.1, atm_iv=0.3, iv_skew=0.02, expiry="2024-06-21"),
+        lambda symbol: OptionsSnapshot(
+            put_call_ratio=1.1, atm_iv=0.3, iv_skew=0.02, expiry="2024-06-21"
+        ),
     )
 
     result = runner.invoke(app_mod.app, ["snapshot", "aapl"])
@@ -674,7 +698,9 @@ def test_snapshot_command_json_output(monkeypatch, tmp_path):
 
     monkeypatch.setattr(app_mod, "load_settings", fake_load_settings)
     monkeypatch.setattr(
-        options_mod, "fetch_options_snapshot", lambda symbol: OptionsSnapshot(None, None, None, None)
+        options_mod,
+        "fetch_options_snapshot",
+        lambda symbol: OptionsSnapshot(None, None, None, None),
     )
 
     result = runner.invoke(app_mod.app, ["--format", "json", "snapshot", "AAPL"])
@@ -753,10 +779,18 @@ def test_train_json_output_includes_per_horizon_breakdown(monkeypatch):
         lambda *a, **k: _train_result_with(
             per_horizon=[
                 PerHorizonMetrics(
-                    1, model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+                    1,
+                    model_mae=1.0,
+                    baseline_mae=2.0,
+                    directional_accuracy=0.6,
+                    calibration_coverage=0.8,
                 ),
                 PerHorizonMetrics(
-                    2, model_mae=1.5, baseline_mae=1.5, directional_accuracy=0.5, calibration_coverage=0.7
+                    2,
+                    model_mae=1.5,
+                    baseline_mae=1.5,
+                    directional_accuracy=0.5,
+                    calibration_coverage=0.7,
                 ),
             ]
         ),
@@ -776,10 +810,18 @@ def test_train_table_shows_a_per_horizon_breakdown_when_horizon_exceeds_one(monk
         lambda *a, **k: _train_result_with(
             per_horizon=[
                 PerHorizonMetrics(
-                    1, model_mae=1.0, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+                    1,
+                    model_mae=1.0,
+                    baseline_mae=2.0,
+                    directional_accuracy=0.6,
+                    calibration_coverage=0.8,
                 ),
                 PerHorizonMetrics(
-                    2, model_mae=1.5, baseline_mae=1.5, directional_accuracy=0.5, calibration_coverage=0.7
+                    2,
+                    model_mae=1.5,
+                    baseline_mae=1.5,
+                    directional_accuracy=0.5,
+                    calibration_coverage=0.7,
                 ),
             ]
         ),
@@ -978,9 +1020,7 @@ def test_forecast_table_renders_a_crossed_band_monotonically(monkeypatch):
         history=pd.Series([100.0], index=pd.bdate_range("2024-03-01", periods=1)),
     )
     table = app_mod._forecast_table(crossed)
-    rendered = [
-        c._cells[0] for c in table.columns if c.header.startswith("p")
-    ]
+    rendered = [c._cells[0] for c in table.columns if c.header.startswith("p")]
     assert rendered == ["$90.00", "$100.00", "$110.00"]
 
 
@@ -1019,6 +1059,59 @@ def _simple_forecast():
         predictions=np.array([[95.0, 100.0, 105.0]]),
         history=pd.Series([100.0], index=pd.bdate_range("2024-03-01", periods=1)),
     )
+
+
+# --- PYQ-277: `--provider` actually reaches DataConfig.price_provider --------
+
+
+def test_build_settings_defaults_to_yfinance_when_provider_is_not_passed(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: _settings_in(tmp_path))
+    settings = app_mod._build_settings(None, False, False, False, provider=None)
+    assert settings.data.price_provider == "yfinance"
+
+
+def test_build_settings_applies_a_valid_provider_override(monkeypatch, tmp_path):
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: _settings_in(tmp_path))
+    settings = app_mod._build_settings(None, False, False, False, provider="tiingo")
+    assert settings.data.price_provider == "tiingo"
+
+
+def test_build_settings_rejects_an_unknown_provider_with_a_clean_message(monkeypatch, tmp_path):
+    """PriceProviderError is a RuntimeError, not one of EXPECTED_FAILURES, so an
+    unknown name must be rejected here rather than surface as an uncaught
+    traceback from inside build_panel (PYQ-120's convention)."""
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: _settings_in(tmp_path))
+    with pytest.raises(ValueError, match="tiingo"):
+        app_mod._build_settings(None, False, False, False, provider="polygon")
+
+
+def test_train_command_threads_provider_through_to_build_panel(monkeypatch, tmp_path):
+    """End-to-end through the CLI, not just `_build_settings` in isolation:
+    `pyquant train --provider tiingo` must reach the price fetch, not just
+    the resolved Settings object."""
+    seen = {}
+    settings = _settings_in(tmp_path)
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+
+    def fake_train(symbols, settings, **kwargs):
+        seen["price_provider"] = settings.data.price_provider
+        return TrainResult(
+            symbols=symbols,
+            bundle_dir=Path("checkpoints/AAPL"),
+            val_loss=0.1,
+            n_features=5,
+            epochs_run=1,
+            evaluation=EvaluationMetrics(
+                model_mae=1.0, baseline_mae=1.0, directional_accuracy=0.5, calibration_coverage=0.8
+            ),
+        )
+
+    monkeypatch.setattr(app_mod.tft, "train", fake_train)
+
+    result = runner.invoke(app_mod.app, ["train", "AAPL", "--provider", "tiingo"])
+
+    assert result.exit_code == 0
+    assert seen["price_provider"] == "tiingo"
 
 
 # --- PYQ-126: no unreachable branch in _fmt_bytes ----------------------------
@@ -1259,7 +1352,14 @@ def test_full_cli_journey_across_every_command_and_both_output_formats(
         assert result.exit_code == 0, result.output
         if fmt == "json":
             payload = json.loads(result.stdout)
-            for key in ("symbols", "bundle_dir", "val_loss", "n_features", "epochs_run", "evaluation"):
+            for key in (
+                "symbols",
+                "bundle_dir",
+                "val_loss",
+                "n_features",
+                "epochs_run",
+                "evaluation",
+            ):
                 assert key in payload, f"train JSON missing {key!r}: {payload}"
             assert payload["symbols"] == ["TEST"]
         else:

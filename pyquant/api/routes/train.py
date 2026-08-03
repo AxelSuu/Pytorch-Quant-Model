@@ -94,9 +94,7 @@ def get_train_job(
     record = registry.get(job_id)
     if record is None or record.kind != "train":
         raise HTTPException(status_code=404, detail=f"No job {job_id!r}")
-    result = (
-        serialize.train_result_to_dict(record.result) if record.result is not None else None
-    )
+    result = serialize.train_result_to_dict(record.result) if record.result is not None else None
     return TrainJobStatusResponse(
         job_id=record.job_id,
         status=record.status,

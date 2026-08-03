@@ -227,13 +227,27 @@ def test_git_sha_returns_none_when_the_package_lives_in_an_unrelated_repo(tmp_pa
     (unrelated / "site-packages" / "pyquant").mkdir(parents=True)
     subprocess.run(["git", "init", "-q", "."], cwd=unrelated, check=True)
     subprocess.run(
-        ["git", "-c", "user.email=a@b", "-c", "user.name=t", "commit", "-q",
-         "--allow-empty", "-m", "unrelated"],
-        cwd=unrelated, check=True,
+        [
+            "git",
+            "-c",
+            "user.email=a@b",
+            "-c",
+            "user.name=t",
+            "commit",
+            "-q",
+            "--allow-empty",
+            "-m",
+            "unrelated",
+        ],
+        cwd=unrelated,
+        check=True,
     )
     foreign_sha = subprocess.run(
-        ["git", "rev-parse", "--short", "HEAD"], cwd=unrelated,
-        capture_output=True, text=True, check=True,
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=unrelated,
+        capture_output=True,
+        text=True,
+        check=True,
     ).stdout.strip()
 
     monkeypatch.setattr(
@@ -252,7 +266,8 @@ def test_git_sha_still_reports_the_sha_from_a_real_source_checkout():
     expected = subprocess.run(
         ["git", "rev-parse", "--short", "HEAD"],
         cwd=Path(provenance.__file__).resolve().parent,
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if expected.returncode != 0:  # not a checkout (installed wheel) -- nothing to assert
         return

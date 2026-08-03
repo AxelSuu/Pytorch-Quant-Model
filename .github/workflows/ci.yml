@@ -55,15 +55,11 @@ jobs:
       - name: Lint
         run: uv run ruff check .
 
-      - name: Format drift (non-blocking)
-        # NOT a gate yet, deliberately (PYQ-229). At the time this landed the tree
-        # had 20-22 unformatted files (~250 lines), 4 of them under concurrent edit --
-        # so adopting `ruff format` here and now would have meant one large
-        # reformat commit tangled with unrelated in-flight work, which is the exact
-        # "large unrelated diff" the ticket wants to avoid. Reporting it every run
-        # keeps the number visible and stops it growing; once the formatting pass
-        # lands on its own, delete this line and the step becomes the gate.
-        continue-on-error: true
+      - name: Format
+        # A gate since PYQ-278 landed the one-off `ruff format .` pass PYQ-229's
+        # non-blocking step was deliberately waiting for (drift had grown from
+        # 20-22 files to 39 in the meantime -- the number it was reporting, not
+        # holding a line on).
         run: uv run ruff format --check .
 
       - name: Docs build (warnings are errors)

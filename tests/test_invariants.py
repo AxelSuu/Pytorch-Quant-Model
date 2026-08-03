@@ -109,7 +109,9 @@ def test_a_late_starting_source_drops_leading_rows_instead_of_backfilling(
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     price_index = panel.index
     late_start = price_index[100]
-    sectors = pd.DataFrame({"SEC_XLK": np.full(len(price_index) - 100, 7.0)}, index=price_index[100:])
+    sectors = pd.DataFrame(
+        {"SEC_XLK": np.full(len(price_index) - 100, 7.0)}, index=price_index[100:]
+    )
 
     monkeypatch.setattr(ds_mod, "fetch_prices", lambda *a, **k: panel)
     monkeypatch.setattr(ds_mod, "fetch_sector_returns", lambda *a, **k: sectors)
@@ -142,8 +144,12 @@ def test_a_post_close_headline_never_lands_on_a_session_it_could_not_trade_on(
     assert next_session == published_on + pd.Timedelta(days=1)
 
     tz = ZoneInfo("America/New_York")
-    pre_close = dt.datetime(published_on.year, published_on.month, published_on.day, 11, 0, tzinfo=tz)
-    post_close = dt.datetime(published_on.year, published_on.month, published_on.day, 17, 0, tzinfo=tz)
+    pre_close = dt.datetime(
+        published_on.year, published_on.month, published_on.day, 11, 0, tzinfo=tz
+    )
+    post_close = dt.datetime(
+        published_on.year, published_on.month, published_on.day, 17, 0, tzinfo=tz
+    )
     articles = [
         {"datetime": pre_close.timestamp(), "headline": "pre-close headline"},
         {"datetime": post_close.timestamp(), "headline": "post-close headline"},
@@ -159,14 +165,20 @@ def test_a_post_close_headline_never_lands_on_a_session_it_could_not_trade_on(
     invariants_settings.finnhub_api_key = "test-key"
 
     built = build_panel("TEST", invariants_settings)
-    assert built.loc[published_on, "Sentiment"] == 1.0, "pre-close headline did not land on its own session"
-    assert built.loc[next_session, "Sentiment"] == 9.0, "post-close headline leaked onto the closed session"
+    assert built.loc[published_on, "Sentiment"] == 1.0, (
+        "pre-close headline did not land on its own session"
+    )
+    assert built.loc[next_session, "Sentiment"] == 9.0, (
+        "post-close headline leaked onto the closed session"
+    )
 
 
 # --- 2. Warm-up rows never carry fabricated values -------------------------------
 
 
-def test_indicator_warmup_rows_are_dropped_not_fabricated(monkeypatch, sample_ohlcv_df, invariants_settings):
+def test_indicator_warmup_rows_are_dropped_not_fabricated(
+    monkeypatch, sample_ohlcv_df, invariants_settings
+):
     """Invariant 2, PYQ-103/132 shape: the panel's first surviving row must be
     determined by whichever indicator's window is longest -- not hardcoded to
     SMA_50 by name, since PYQ-121 and PYQ-132 both hid behind exactly that
@@ -209,13 +221,17 @@ def test_prediction_decoder_starts_after_and_encoder_ends_on_the_last_observed_b
     decoder_start = int(x["decoder_time_idx"].min())
 
     assert decoder_start > observed_max, "decoder is not strictly after the last observed bar"
-    assert decoder_start == observed_max + 1, "encoder does not end exactly on the last observed bar"
+    assert decoder_start == observed_max + 1, (
+        "encoder does not end exactly on the last observed bar"
+    )
 
 
 # --- 5/6. One calendar across pooled symbols; validation strictly after cutoff ---
 
 
-def test_pooled_symbols_share_one_calendar(monkeypatch, unequal_history_panels, invariants_settings):
+def test_pooled_symbols_share_one_calendar(
+    monkeypatch, unequal_history_panels, invariants_settings
+):
     """Invariant 5, PYQ-116: the same calendar Date must map to the same time_idx for
     every pooled symbol, or a shared market shock lands at a different position per
     group and cross-sectional learning is impossible by construction.
@@ -317,7 +333,9 @@ def test_forecast_dates_are_the_same_set_in_the_object_json_and_chart(
     from pyquant.cli.charts import export_fan_chart
 
     export_fan_chart(fc, invariants_settings.checkpoint_dir / "fan.png")
-    assert seen_x and seen_x[0] == appended_dates, "chart plotted different dates than the forecast object"
+    assert seen_x and seen_x[0] == appended_dates, (
+        "chart plotted different dates than the forecast object"
+    )
 
 
 # --- 9. The band is monotone wherever it is consumed -----------------------------

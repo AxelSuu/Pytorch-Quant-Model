@@ -79,9 +79,7 @@ def test_panel_warmup_is_decided_by_the_longest_window_not_by_sma_50(sample_ohlc
     SMA_50 must therefore still exclude the MACD warm-up (PYQ-132).
     """
     out = prices.add_technical_indicators(sample_ohlcv_df)
-    positions = {
-        c: out.index.get_loc(out[c].first_valid_index()) for c in prices.INDICATOR_COLUMNS
-    }
+    positions = {c: out.index.get_loc(out[c].first_valid_index()) for c in prices.INDICATOR_COLUMNS}
 
     first_kept = out.index.get_loc(out.dropna().index[0])
     assert first_kept == max(positions.values())

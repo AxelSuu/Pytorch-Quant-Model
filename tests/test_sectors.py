@@ -49,7 +49,10 @@ def test_fetch_sector_returns_parses_a_real_recorded_yf_download_payload(monkeyp
 
     out = sectors.fetch_sector_returns(["XLK", "SPY"])
 
-    assert list(out.columns) == ["SEC_SPY", "SEC_XLK"] or list(out.columns) == ["SEC_XLK", "SEC_SPY"]
+    assert list(out.columns) == ["SEC_SPY", "SEC_XLK"] or list(out.columns) == [
+        "SEC_XLK",
+        "SEC_SPY",
+    ]
     assert out.index.tz is None
     assert out.index.name == "Date"
     assert not out.empty

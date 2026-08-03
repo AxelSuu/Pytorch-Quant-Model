@@ -199,9 +199,7 @@ def test_fetch_prices_rejects_a_provider_that_breaks_the_contract():
 
         def fetch_ohlcv(self, symbol, *, period="5y", start=None, end=None):
             idx = pd.date_range("2024-01-01", periods=3, tz="UTC", name="Date")
-            return pd.DataFrame(
-                {c: [1.0, 2.0, 3.0] for c in OHLCV_COLUMNS}, index=idx
-            )
+            return pd.DataFrame({c: [1.0, 2.0, 3.0] for c in OHLCV_COLUMNS}, index=idx)
 
     with pytest.raises(PriceProviderError):
         prices.fetch_prices("ANY", provider=BadProvider(), use_indicators=False)

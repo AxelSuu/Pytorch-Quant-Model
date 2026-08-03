@@ -66,9 +66,7 @@ def _comments_by_line(source: str) -> dict[int, tuple[bool, str]]:
     return found
 
 
-def _block_above(
-    lineno: int, comments: dict[int, tuple[bool, str]]
-) -> tuple[int, str] | None:
+def _block_above(lineno: int, comments: dict[int, tuple[bool, str]]) -> tuple[int, str] | None:
     """The contiguous own-line comment block ending just above ``lineno``."""
     parts: list[str] = []
     cursor = lineno - 1

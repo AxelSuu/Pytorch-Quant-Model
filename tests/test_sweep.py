@@ -99,7 +99,12 @@ def test_run_sweep_covers_the_full_symbol_by_arm_cell_matrix(monkeypatch, settin
     assert result.symbols == ["AAA", "BBB"]
     assert result.arm_names == ["close", "log_return"]
     assert len(result.cells) == 4
-    assert set(calls) == {("AAA", "close"), ("AAA", "log_return"), ("BBB", "close"), ("BBB", "log_return")}
+    assert set(calls) == {
+        ("AAA", "close"),
+        ("AAA", "log_return"),
+        ("BBB", "close"),
+        ("BBB", "log_return"),
+    }
     assert all(c.ok for c in result.cells)
 
 
@@ -165,8 +170,12 @@ def test_sweep_result_helped_summary_counts_symbols_where_the_other_arm_scored_h
 
 def test_sweep_result_paired_comparison_uses_compare_backtests_on_aligned_windows():
     cells = [
-        SweepCell("AAA", "base", result=_backtest_result("AAA", 0.0, origins=[100, 105])),  # skill 1.0
-        SweepCell("AAA", "other", result=_backtest_result("AAA", 1.0, origins=[100, 105])),  # skill 0.5
+        SweepCell(
+            "AAA", "base", result=_backtest_result("AAA", 0.0, origins=[100, 105])
+        ),  # skill 1.0
+        SweepCell(
+            "AAA", "other", result=_backtest_result("AAA", 1.0, origins=[100, 105])
+        ),  # skill 0.5
     ]
     result = SweepResult(symbols=["AAA"], arm_names=["base", "other"], cells=cells)
     comparison = result.paired_comparison("AAA", "base", "other")

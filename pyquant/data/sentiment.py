@@ -173,9 +173,7 @@ def align_to_sessions(daily: pd.DataFrame, sessions: pd.DatetimeIndex) -> pd.Dat
     within = positions < len(sessions)
     n_dropped = int((~within).sum())
     if n_dropped:
-        logger.info(
-            "Dropping %d sentiment day(s) dated after the last trading session", n_dropped
-        )
+        logger.info("Dropping %d sentiment day(s) dated after the last trading session", n_dropped)
 
     landed = daily.loc[within].copy()
     landed["_session"] = sessions[positions[within]]
