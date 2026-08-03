@@ -1,6 +1,6 @@
 [project]
 name = "pyquant"
-version = "0.2.0"
+version = "0.3.0"
 description = "Multi-modal market research tool: Temporal Fusion Transformer forecasts with uncertainty bands and interpretability."
 readme = "README.md"
 requires-python = ">=3.10,<3.13"

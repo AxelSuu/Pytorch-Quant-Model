@@ -103,6 +103,7 @@ particular, {py:mod}`pyquant.api.deps`.
    pyquant.api.jobs
    pyquant.api.schemas
    pyquant.api.routes.health
+   pyquant.api.routes.bundles
    pyquant.api.routes.forecast
    pyquant.api.routes.explain
    pyquant.api.routes.train

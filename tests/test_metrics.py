@@ -74,6 +74,20 @@ def test_log_return_metrics_use_zero_return_persistence_baseline():
     assert result.model_mae == pytest.approx(0.0)
 
 
+def test_skill_vs_baseline_from_maes_matches_the_dataclass_property():
+    ev = metrics.EvaluationMetrics(
+        model_mae=1.5, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+    )
+    assert metrics.skill_vs_baseline_from_maes(ev.baseline_mae, ev.model_mae) == pytest.approx(
+        ev.skill_vs_baseline
+    )
+
+
+def test_skill_vs_baseline_from_maes_is_none_without_a_recorded_baseline():
+    assert metrics.skill_vs_baseline_from_maes(None, 1.0) is None
+    assert metrics.skill_vs_baseline_from_maes(0.0, 1.0) is None
+
+
 def test_effective_sample_size_accounts_for_overlapping_horizons():
     assert metrics.effective_sample_size(56, 5) == 12
     assert (

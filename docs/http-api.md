@@ -52,6 +52,8 @@ request. The per-request check in `require_api_key` stays as defense in depth on
 | Method | Path | Auth | Returns |
 |---|---|---|---|
 | `GET` | `/healthz` | — | `{"status": "ok"}`. 200 whenever the process is up. |
+| `GET` | `/symbols` | ✔ | Every trained bundle under `checkpoint_dir` (symbol, `trained_at`, `bundle_skill`), most recently trained first. |
+| `GET` | `/metrics/{symbol}` | ✔ | A bundle's recorded evaluation (skill vs. persistence, calibration, directional accuracy) — reads `meta.json`, generates no forecast. |
 | `GET` | `/forecast/{symbol}` | ✔ | p10/p50/p90 quantile forecast. |
 | `POST` | `/scan` | ✔ | One comparison row per requested symbol. |
 | `GET` | `/explain/{symbol}` | ✔ | Feature importances and temporal attention. |
@@ -62,6 +64,12 @@ request. The per-request check in `require_api_key` stays as defense in depth on
 
 Symbols are upper-cased on the way in, so `/forecast/aapl` and `/forecast/AAPL` are the
 same bundle.
+
+`GET /forecast/{symbol}/history` (past forecasts vs. realized outcomes) is deliberately not
+built yet (features.md#pyq-283): forecasts are regenerated live on every `GET /forecast`
+request rather than stored, so a history endpoint today would mean re-running historical
+panels on every call — the thing it exists to avoid. Sequenced after features.md#pyq-282's
+forecast store lands.
 
 `/docs`, `/redoc` and `/openapi.json` also require `X-API-Key` (bugs.md#pyq-160) — unlike
 FastAPI's defaults, which mount independently of any router's `dependencies=` and would

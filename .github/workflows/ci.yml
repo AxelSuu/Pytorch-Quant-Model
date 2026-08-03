@@ -90,3 +90,10 @@ jobs:
         # from a single number into the per-module, per-line answer to "which paths
         # are uncovered" -- the question bugs.md#pyq-120 showed actually matters.
         run: uv run pytest -q --cov --cov-report=term-missing
+
+      - name: Doctests
+        # `analysis/` is torch/Lightning-free (the layering rule this file's own
+        # matrix comment describes), so this runs on every leg rather than being
+        # pinned to one like the docs build above. `--doctest-modules` is built
+        # into pytest core -- no new dependency (PYQ-237).
+        run: uv run pytest --doctest-modules pyquant/analysis -q

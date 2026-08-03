@@ -59,7 +59,14 @@ def model_mae(actuals: np.ndarray, median: np.ndarray) -> float:
 def directional_hit_rate(
     actuals: np.ndarray, median: np.ndarray, last_observed: np.ndarray
 ) -> float:
-    """Fraction of forecasts whose direction (vs. last observed) matches the realized direction."""
+    """Fraction of forecasts whose direction (vs. last observed) matches the realized direction.
+
+    >>> actuals = np.array([[101.0], [99.0]])
+    >>> median = np.array([[100.5], [99.5]])
+    >>> last_observed = np.array([100.0, 100.0])
+    >>> directional_hit_rate(actuals, median, last_observed)
+    1.0
+    """
     baseline = np.broadcast_to(np.asarray(last_observed)[:, None], actuals.shape)
     predicted_dir = np.sign(np.asarray(median) - baseline)
     actual_dir = np.sign(np.asarray(actuals) - baseline)
@@ -67,7 +74,14 @@ def directional_hit_rate(
 
 
 def calibration_coverage(actuals: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> float:
-    """Fraction of actuals falling within [lower, upper] (e.g. the p10-p90 band)."""
+    """Fraction of actuals falling within [lower, upper] (e.g. the p10-p90 band).
+
+    >>> actuals = np.array([100.0, 105.0, 90.0])
+    >>> lower = np.array([95.0, 95.0, 95.0])
+    >>> upper = np.array([110.0, 110.0, 110.0])
+    >>> round(calibration_coverage(actuals, lower, upper), 4)
+    0.6667
+    """
     actuals, lower, upper = np.asarray(actuals), np.asarray(lower), np.asarray(upper)
     inside = (actuals >= lower) & (actuals <= upper)
     return float(np.mean(inside))
@@ -170,6 +184,24 @@ def pit_values(actuals: np.ndarray, predictions: np.ndarray, quantiles: list[flo
     return np.array(
         [float(np.interp(a, row, quantiles)) for a, row in zip(actuals, preds, strict=True)]
     )
+
+
+def skill_vs_baseline_from_maes(
+    baseline_mae: float | None, model_mae: float | None
+) -> float | None:
+    """`EvaluationMetrics.skill_vs_baseline`'s formula, computable from just the two MAEs.
+
+    A bundle's persisted ``meta.json`` records ``vars(evaluation)`` -- dataclass
+    fields only, not the ``@property`` itself -- so anything reading skill back
+    off a bundle's own meta.json (rather than a live ``EvaluationMetrics``
+    instance) needs to recompute it the same way every other reader does
+    (`analysis.interpret._bundle_skill`, the API's ``GET /symbols``/``GET
+    /metrics/{symbol}``, PYQ-283). ``None`` when ``baseline_mae`` is missing or
+    zero, distinguishing "not recorded" from a real zero-skill result.
+    """
+    if not baseline_mae:
+        return None
+    return (baseline_mae - model_mae) / baseline_mae
 
 
 def effective_sample_size(n_samples: int, horizon: int) -> int:
@@ -428,7 +460,18 @@ class EvaluationMetrics:
 
     @property
     def skill_vs_baseline(self) -> float:
-        """Relative MAE improvement over the persistence baseline (positive = better)."""
+        """Relative MAE improvement over the persistence baseline (positive = better).
+
+        A dimensionless fraction: 0.25 means the model's MAE is 25% below the
+        persistence baseline's, regardless of whether the underlying MAE is in
+        dollars or log-return units.
+
+        >>> metrics = EvaluationMetrics(
+        ...     model_mae=1.5, baseline_mae=2.0, directional_accuracy=0.6, calibration_coverage=0.8
+        ... )
+        >>> round(metrics.skill_vs_baseline, 2)
+        0.25
+        """
         if self.baseline_mae == 0:
             return 0.0
         return (self.baseline_mae - self.model_mae) / self.baseline_mae
