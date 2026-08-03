@@ -103,10 +103,36 @@ class JobRegistry:
             return job_id
 
     def _evict_locked(self) -> None:
-        while len(self._order) > self._max_jobs:
-            oldest = self._order.pop(0)
-            record = self._jobs.pop(oldest, None)
+        """Drop oldest finished jobs until at/under `_max_jobs`.
+
+        Caller holds `_lock`. Never evicts a "queued"/"running" record (PYQ-325):
+        popping a still-live job here also released its bundle-name guard early,
+        letting a second POST /train for the same bundle_name start writing to
+        the same checkpoint directory while the first fit was still in flight,
+        and orphaned the eventual mark_succeeded/mark_failed call (silently
+        discarded, since the record was already gone). Mirrors deps.py's
+        `_BoundedLockRegistry`, which never evicts a currently-held lock -- the
+        registry is allowed to grow past the cap while every tracked job is
+        live, bounded by concurrent in-flight jobs rather than by the cap.
+        """
+        if len(self._order) <= self._max_jobs:
+            return
+        for job_id in list(self._order):
+            if len(self._order) <= self._max_jobs:
+                return
+            record = self._jobs.get(job_id)
+            if record is not None and record.status in ("queued", "running"):
+                continue
+            self._order.remove(job_id)
+            self._jobs.pop(job_id, None)
             self._release_bundle_name_locked(record)
+        if len(self._order) > self._max_jobs:
+            logger.warning(
+                "Job registry holding %d entries, over its %d cap -- every "
+                "tracked job is currently queued/running, so none could be evicted.",
+                len(self._order),
+                self._max_jobs,
+            )
 
     def get(self, job_id: str) -> JobRecord | None:
         """Return the record for job_id, or None if it doesn't exist."""
