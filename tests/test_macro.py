@@ -196,7 +196,9 @@ def test_vintage_requests_are_bounded_and_never_ask_for_a_future_realtime_end(
         assert pd.Timestamp(realtime_start) <= pd.Timestamp(realtime_end)
         # Chunked so no single request can exceed FRED's 2000-vintage ceiling.
         span_days = (pd.Timestamp(realtime_end) - pd.Timestamp(realtime_start)).days
-        assert span_days <= 400, f"chunk spans {span_days} days; a daily series would exceed 2000 vintages"
+        assert span_days <= 400, (
+            f"chunk spans {span_days} days; a daily series would exceed 2000 vintages"
+        )
 
 
 def test_a_ten_year_request_is_split_into_chunks_that_cover_the_whole_window(

@@ -96,11 +96,17 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p_compare = sub.add_parser("compare", help="Table of runs across every bundle, sorted by skill.")
-    p_compare.add_argument("--checkpoint-dir", help="Override the checkpoint directory (default: Settings())")
+    p_compare = sub.add_parser(
+        "compare", help="Table of runs across every bundle, sorted by skill."
+    )
+    p_compare.add_argument(
+        "--checkpoint-dir", help="Override the checkpoint directory (default: Settings())"
+    )
     p_compare.add_argument("--symbol", help="Restrict to one bundle's runs.jsonl")
     p_compare.add_argument("--sort-by", default="skill", choices=sorted(_SORT_KEYS))
     p_compare.add_argument("--top", type=int, default=30, help="Max rows to show (default 30)")

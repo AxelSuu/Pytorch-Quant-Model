@@ -23,6 +23,70 @@ from pyquant.models import tft
 
 logger = logging.getLogger(__name__)
 
+# Cap on how many per-name locks either registry below retains. Both are keyed
+# by names that already passed SYMBOL_PATTERN (`^[A-Za-z0-9][A-Za-z0-9.\-]{0,15}$`,
+# api/schemas.py) -- a large but finite space, not an arbitrary-string injection
+# point -- so unbounded growth here is slow, bounded memory drift under a
+# long-running process, not an unbounded DoS from one request (bugs.md#pyq-164).
+# 1024 distinct names touched by one process comfortably covers any real
+# operator's symbol universe while keeping the registry meaningfully bounded.
+_MAX_TRACKED_LOCKS = 1024
+
+
+class _BoundedLockRegistry:
+    """One `threading.Lock` per name, created lazily, LRU-evicted past a cap.
+
+    Only an *unheld* lock is ever evicted (bugs.md#pyq-164): replacing a lock
+    object out from under a thread that is currently holding it or blocked in
+    `.acquire()` on it would let a second, unrelated `Lock` get created for the
+    same name afterward, silently breaking the "one lock per name" mutual-
+    exclusion guarantee this registry exists to provide. If every tracked lock
+    is currently held, the registry is allowed to grow past the cap rather
+    than break that guarantee -- bounded by how many requests can be
+    concurrently in flight, not by how many distinct names have ever been
+    seen -- and a warning is logged so sustained overflow is visible.
+    """
+
+    def __init__(self, max_size: int = _MAX_TRACKED_LOCKS) -> None:
+        self.max_size = max_size
+        self._locks: OrderedDict[str, threading.Lock] = OrderedDict()
+        self._registry_lock = threading.Lock()
+
+    def get(self, name: str) -> threading.Lock:
+        with self._registry_lock:
+            lock = self._locks.get(name)
+            if lock is not None:
+                self._locks.move_to_end(name)
+                return lock
+            lock = threading.Lock()
+            self._locks[name] = lock
+            self._evict_unheld_past_cap()
+            return lock
+
+    def _evict_unheld_past_cap(self) -> None:
+        """Drop least-recently-used unheld locks until at/under `max_size`.
+
+        Caller holds `_registry_lock`. Stops early once none are evictable.
+        """
+        if len(self._locks) <= self.max_size:
+            return
+        for existing_name in list(self._locks):
+            if len(self._locks) <= self.max_size:
+                return
+            if self._locks[existing_name].locked():
+                continue
+            del self._locks[existing_name]
+        if len(self._locks) > self.max_size:
+            logger.warning(
+                "Lock registry holding %d entries, over its %d cap -- every "
+                "tracked lock is currently held, so none could be evicted.",
+                len(self._locks),
+                self.max_size,
+            )
+
+    def __len__(self) -> int:
+        return len(self._locks)
+
 
 def get_settings() -> Settings:
     """FastAPI dependency: settings for the current request."""
@@ -48,16 +112,12 @@ class BundleCache:
         # happens outside `_lock` (see the comment below). Per-name, not
         # global, so concurrent loads of *different* bundles still proceed in
         # parallel -- only a stampede on the identical name is serialized.
-        self._load_locks: dict[str, threading.Lock] = {}
-        self._load_locks_registry_lock = threading.Lock()
+        # LRU-bounded (bugs.md#pyq-164): this dict used to grow by one entry
+        # per distinct bundle name ever requested and never shrink.
+        self._load_locks = _BoundedLockRegistry()
 
     def _load_lock_for(self, name: str) -> threading.Lock:
-        with self._load_locks_registry_lock:
-            lock = self._load_locks.get(name)
-            if lock is None:
-                lock = threading.Lock()
-                self._load_locks[name] = lock
-            return lock
+        return self._load_locks.get(name)
 
     def get(self, name: str, settings: Settings) -> tft.ModelBundle:
         """Return the cached bundle, loading (and caching) it on a miss."""
@@ -115,18 +175,13 @@ class _PredictionLocks:
 
     def __init__(self) -> None:
         """No locks yet; each is created lazily on first get()."""
-        self._locks: dict[str, threading.Lock] = {}
-        self._registry_lock = threading.Lock()
+        # LRU-bounded (bugs.md#pyq-164): this dict used to grow by one entry
+        # per distinct bundle name ever requested and never shrink.
+        self._locks = _BoundedLockRegistry()
 
     def get(self, name: str) -> threading.Lock:
         """Return this bundle's lock, creating it on first use."""
-        name = name.upper()
-        with self._registry_lock:
-            lock = self._locks.get(name)
-            if lock is None:
-                lock = threading.Lock()
-                self._locks[name] = lock
-            return lock
+        return self._locks.get(name.upper())
 
 
 _PREDICTION_LOCKS = _PredictionLocks()
@@ -188,9 +243,9 @@ def api_auth_is_configured() -> bool:
     Shared by `require_api_key` (per-request) and `app.py`'s startup lifespan
     check (once, at boot) so the two can't drift on what "configured" means.
     """
-    return bool(_configured_api_keys()) or os.environ.get(
-        "PYQUANT_API_ALLOW_UNAUTHENTICATED"
-    ) == "1"
+    return (
+        bool(_configured_api_keys()) or os.environ.get("PYQUANT_API_ALLOW_UNAUTHENTICATED") == "1"
+    )
 
 
 def require_api_key(x_api_key: str | None = Header(default=None)) -> None:

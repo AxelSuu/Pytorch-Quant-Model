@@ -101,7 +101,9 @@ def read_cache(
     if ttl_seconds is not None:
         meta_path = _meta_path(path)
         try:
-            cached_at = json.loads(meta_path.read_text())["cached_at"] if meta_path.exists() else 0.0
+            cached_at = (
+                json.loads(meta_path.read_text())["cached_at"] if meta_path.exists() else 0.0
+            )
         except (json.JSONDecodeError, KeyError):
             logger.warning("Cache metadata for %s is corrupt; treating as a miss.", key)
             return None
@@ -228,9 +230,7 @@ def cache_stats(cache_dir: Path) -> dict:
     }
 
 
-def prune_expired(
-    cache_dir: Path, ttl_seconds: float, now: float | None = None
-) -> list[str]:
+def prune_expired(cache_dir: Path, ttl_seconds: float, now: float | None = None) -> list[str]:
     """Delete TTL entries older than ``ttl_seconds``; return the removed keys.
 
     Valid (unexpired) entries and all pins are left untouched.

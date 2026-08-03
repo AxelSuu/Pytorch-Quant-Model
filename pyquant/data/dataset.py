@@ -48,6 +48,7 @@ KNOWN_REALS = ["time_idx", "dow", "month_num"]
 # cached panel could silently be reused across the opposite setting).
 SCHEMA_DATA_FIELDS = (
     "period",
+    "price_provider",
     "use_macro",
     "use_sectors",
     "use_sentiment",
@@ -105,7 +106,12 @@ def build_panel(
 
     period = settings.data.period
     panel = fetch_prices(
-        symbol, period=period, start=start, end=end, use_indicators=settings.data.use_indicators
+        symbol,
+        period=period,
+        start=start,
+        end=end,
+        use_indicators=settings.data.use_indicators,
+        provider=settings.data.price_provider,
     )
     # Drop leading rows still NaN from indicator warm-up (e.g. SMA_50 needs
     # 49 days of history) before joining other sources, so their own
@@ -151,9 +157,9 @@ def build_panel(
                 0.0 if coverage_start is None else (panel.index >= coverage_start).astype(float)
             )
             # Days without news are neutral (0 sentiment, 0 headlines).
-            panel[["Sentiment", "HeadlineCount"]] = panel[
-                ["Sentiment", "HeadlineCount"]
-            ].fillna(0.0)
+            panel[["Sentiment", "HeadlineCount"]] = panel[["Sentiment", "HeadlineCount"]].fillna(
+                0.0
+            )
             logger.info(
                 "Joined sentiment features; news coverage begins %s (%d of %d rows)",
                 coverage_start.date() if coverage_start is not None else "never",

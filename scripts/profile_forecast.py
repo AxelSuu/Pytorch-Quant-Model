@@ -53,7 +53,9 @@ def _count_calls(monkeypatch, counts: dict) -> None:
         return real_download(*a, **k)
 
     def counted_releases(self, *a, **k):
-        counts["fredapi.get_series_all_releases"] = counts.get("fredapi.get_series_all_releases", 0) + 1
+        counts["fredapi.get_series_all_releases"] = (
+            counts.get("fredapi.get_series_all_releases", 0) + 1
+        )
         return real_get_releases(self, *a, **k)
 
     def counted_get(*a, **k):

@@ -93,7 +93,9 @@ def test_model_recovers_an_injected_learnable_signal(monkeypatch, learnability_s
 
     result = tft.train("SIGNAL", learnability_settings, progress=False)
 
-    assert result.evaluation.n_samples >= 20, "too few validation windows to trust the skill estimate"
+    assert result.evaluation.n_samples >= 20, (
+        "too few validation windows to trust the skill estimate"
+    )
     assert result.evaluation.skill_vs_baseline > 0.3, (
         "expected clear positive skill on an injected learnable signal, got "
         f"{result.evaluation.skill_vs_baseline:.3f} -- the training pipeline may be "
@@ -112,7 +114,9 @@ def test_model_does_not_find_skill_in_pure_noise(monkeypatch, learnability_setti
 
     result = tft.train("NOISE", learnability_settings, progress=False)
 
-    assert result.evaluation.n_samples >= 20, "too few validation windows to trust the skill estimate"
+    assert result.evaluation.n_samples >= 20, (
+        "too few validation windows to trust the skill estimate"
+    )
     assert result.evaluation.skill_vs_baseline < 0.15, (
         "expected no meaningful skill on pure noise, got "
         f"{result.evaluation.skill_vs_baseline:.3f} -- possible leak in the split/scaling path"

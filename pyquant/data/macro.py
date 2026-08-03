@@ -86,7 +86,9 @@ def _vintage_series(releases: pd.DataFrame) -> pd.Series:
     """
     required = {"date", "realtime_start", "value"}
     if not required.issubset(releases.columns):
-        raise ValueError(f"FRED vintage response is missing columns {sorted(required - set(releases))}")
+        raise ValueError(
+            f"FRED vintage response is missing columns {sorted(required - set(releases))}"
+        )
     releases = releases.loc[:, ["date", "realtime_start", "value"]].copy()
     releases["date"] = pd.to_datetime(releases["date"]).dt.normalize()
     releases["realtime_start"] = pd.to_datetime(releases["realtime_start"]).dt.normalize()
@@ -133,9 +135,7 @@ def _period_to_offset(period: str) -> pd.DateOffset:
     return pd.DateOffset(years=5)
 
 
-def _vintage_windows(
-    start: str | None, end: str | None, period: str
-) -> list[tuple[str, str]]:
+def _vintage_windows(start: str | None, end: str | None, period: str) -> list[tuple[str, str]]:
     """Bounded, chunked ``(realtime_start, realtime_end)`` pairs to request.
 
     Two live failures came from leaving this unset (PYQ-139). With no explicit

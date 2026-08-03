@@ -159,7 +159,9 @@ def _bundle_health(bundle_dir: Path, settings: Settings) -> BundleHealth:
         return health
 
     missing_keys = []
-    if needs["use_macro"] and any(f.startswith(("FedFunds", "YieldSpread", "CPI")) for f in features):
+    if needs["use_macro"] and any(
+        f.startswith(("FedFunds", "YieldSpread", "CPI")) for f in features
+    ):
         if not settings.fred_api_key:
             missing_keys.append("FRED_API_KEY")
     if needs["use_sentiment"] and not settings.finnhub_api_key:
@@ -176,9 +178,7 @@ def run_doctor(settings: Settings) -> DoctorReport:
     """Collect the full health report. Never raises on a degraded environment."""
     checkpoint_dir = settings.checkpoint_dir
     bundle_dirs = (
-        sorted(d for d in checkpoint_dir.iterdir() if d.is_dir())
-        if checkpoint_dir.exists()
-        else []
+        sorted(d for d in checkpoint_dir.iterdir() if d.is_dir()) if checkpoint_dir.exists() else []
     )
 
     try:

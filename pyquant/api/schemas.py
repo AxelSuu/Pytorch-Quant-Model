@@ -43,9 +43,7 @@ MAX_BACKTEST_WINDOWS = 50
 def _validate_symbol(value: str) -> str:
     normalized = value.strip().upper()
     if not _SYMBOL_RE.match(normalized):
-        raise ValueError(
-            f"Invalid symbol/bundle name {value!r}: must match {SYMBOL_PATTERN}"
-        )
+        raise ValueError(f"Invalid symbol/bundle name {value!r}: must match {SYMBOL_PATTERN}")
     return normalized
 
 

@@ -146,9 +146,7 @@ def test_generate_forecast_orchestration(monkeypatch, sample_ohlcv_df):
         meta = {"quantiles": [0.1, 0.5, 0.9]}
 
     monkeypatch.setattr(fc_mod.tft, "load", lambda *a, **k: FakeBundle())
-    monkeypatch.setattr(
-        fc_mod.tft, "predict_quantiles", lambda b, df: np.ones((5, 3)) * 100.0
-    )
+    monkeypatch.setattr(fc_mod.tft, "predict_quantiles", lambda b, df: np.ones((5, 3)) * 100.0)
 
     fc = fc_mod.generate_forecast("test", object())
     assert fc.symbol == "TEST"

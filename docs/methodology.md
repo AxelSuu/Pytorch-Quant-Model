@@ -148,7 +148,12 @@ CRPS, Winkler score, PIT
   *width* as well as coverage, and the probability-integral-transform values behind a
   calibration histogram. All three exist because coverage alone cannot distinguish a
   well-calibrated band from an absurdly wide one — a band from −∞ to +∞ scores 100%
-  coverage.
+  coverage. **PIT values are edge-clamped, not extrapolated** (PYQ-153): with the default
+  three quantiles (p10/p50/p90), an actual outside the predicted band maps to exactly 0.1 or
+  0.9 rather than a value reflecting how far past it landed, since the interpolation behind
+  `pit_values()` saturates outside its knot range by construction. A PIT histogram built from
+  this can show *how many* points fell outside the band, not *how far* — read mass piled in
+  the two edge bins as a lower bound on miscalibration, not the full picture.
 
 (split-geometry)=
 ## Split geometry
