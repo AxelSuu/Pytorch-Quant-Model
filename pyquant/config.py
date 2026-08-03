@@ -189,7 +189,12 @@ class DataConfig(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    period: str = "5y"  # history pulled from yfinance
+    period: str = "5y"  # history pulled from the configured price provider
+    # PYQ-258 built a licensed Tiingo alternative to yfinance; PYQ-277 found it
+    # unreachable outside a Python REPL (no config field, so build_panel's
+    # fetch_prices call never passed anything but the "yfinance" default).
+    # This is the config change PYQ-258's own acceptance criteria asked for.
+    price_provider: Literal["yfinance", "tiingo"] = "yfinance"
     use_macro: bool = True
     use_options: bool = True
     use_sentiment: bool = True

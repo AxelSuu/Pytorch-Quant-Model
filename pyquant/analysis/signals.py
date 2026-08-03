@@ -113,9 +113,7 @@ def evaluate_signals(
     buy_returns = [r for s, r in zip(signals, realized_returns_pct, strict=True) if s == "BUY"]
     sell_returns = [r for s, r in zip(signals, realized_returns_pct, strict=True) if s == "SELL"]
 
-    changes = sum(
-        1 for i in range(n) if positions[i] != (positions[i - 1] if i > 0 else 0.0)
-    )
+    changes = sum(1 for i in range(n) if positions[i] != (positions[i - 1] if i > 0 else 0.0))
     cost_pct = cost_bps / 100.0
     strategy_returns_pct = []
     for i in range(n):
@@ -127,8 +125,12 @@ def evaluate_signals(
         n_buy=len(buy_returns),
         n_sell=len(sell_returns),
         n_hold=n - len(buy_returns) - len(sell_returns),
-        hit_rate_buy=(sum(1 for r in buy_returns if r > 0) / len(buy_returns)) if buy_returns else 0.0,
-        hit_rate_sell=(sum(1 for r in sell_returns if r < 0) / len(sell_returns)) if sell_returns else 0.0,
+        hit_rate_buy=(sum(1 for r in buy_returns if r > 0) / len(buy_returns))
+        if buy_returns
+        else 0.0,
+        hit_rate_sell=(sum(1 for r in sell_returns if r < 0) / len(sell_returns))
+        if sell_returns
+        else 0.0,
         avg_return_buy_pct=(sum(buy_returns) / len(buy_returns)) if buy_returns else 0.0,
         avg_return_sell_pct=(sum(sell_returns) / len(sell_returns)) if sell_returns else 0.0,
         turnover=changes / n,

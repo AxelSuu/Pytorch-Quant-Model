@@ -145,10 +145,14 @@ def load_all() -> dict[str, tuple[Ticket, str]]:
 
 def build_labels(ticket: Ticket, type_label: str) -> list[str]:
     labels = [type_label]
-    priority_kw = (ticket.detail_priority or _leading_keyword(ticket.table_priority, PRIORITY_RE) or "").lower()
+    priority_kw = (
+        ticket.detail_priority or _leading_keyword(ticket.table_priority, PRIORITY_RE) or ""
+    ).lower()
     if priority_kw in PRIORITY_LABEL:
         labels.append(PRIORITY_LABEL[priority_kw])
-    status_kw = (ticket.detail_status or _leading_keyword(ticket.table_status, STATUS_RE) or "").lower()
+    status_kw = (
+        ticket.detail_status or _leading_keyword(ticket.table_status, STATUS_RE) or ""
+    ).lower()
     if status_kw == "open":
         labels.append("status:backlog")
     if NEEDS_HUMAN_HINTS.search(ticket.body):
@@ -167,7 +171,9 @@ def build_body(pyq_id: str, source_file: str, ticket: Ticket) -> str:
 
 
 def is_closed(ticket: Ticket) -> bool:
-    status_kw = (ticket.detail_status or _leading_keyword(ticket.table_status, STATUS_RE) or "").lower()
+    status_kw = (
+        ticket.detail_status or _leading_keyword(ticket.table_status, STATUS_RE) or ""
+    ).lower()
     return status_kw in {"resolved", "answered", "superseded"}
 
 
@@ -182,7 +188,9 @@ def run_gh(args: list[str], execute: bool) -> str:
     return result.stdout.strip()
 
 
-def migrate_one(repo: str, pyq_id: str, ticket: Ticket, type_label: str, source_file: str, execute: bool) -> None:
+def migrate_one(
+    repo: str, pyq_id: str, ticket: Ticket, type_label: str, source_file: str, execute: bool
+) -> None:
     labels = build_labels(ticket, type_label)
     body = build_body(pyq_id, source_file, ticket)
     title = f"[{pyq_id}] {ticket.title}"
@@ -202,18 +210,34 @@ def migrate_one(repo: str, pyq_id: str, ticket: Ticket, type_label: str, source_
         # output is the issue URL; gh issue close accepts a URL directly.
         status_kw = ticket.detail_status or "Resolved"
         run_gh(
-            ["issue", "close", output, "--comment", f"Migrated as already {status_kw} -- see body for detail."],
+            [
+                "issue",
+                "close",
+                output,
+                "--comment",
+                f"Migrated as already {status_kw} -- see body for detail.",
+            ],
             execute,
         )
     elif is_closed(ticket) and not execute:
-        print(f"  [dry-run] gh issue close <new-issue-url> --comment 'Migrated as already {ticket.detail_status or 'Resolved'}'")
+        print(
+            f"  [dry-run] gh issue close <new-issue-url> --comment 'Migrated as already {ticket.detail_status or 'Resolved'}'"
+        )
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--repo", required=True, help="owner/repo, e.g. AxelSuu/Pytorch-Quant-Model")
-    parser.add_argument("--execute", action="store_true", help="Actually call gh. Default is dry-run.")
-    parser.add_argument("--only", help="Comma-separated PYQ-NNN IDs to migrate (for smoke-testing).")
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    parser.add_argument(
+        "--repo", required=True, help="owner/repo, e.g. AxelSuu/Pytorch-Quant-Model"
+    )
+    parser.add_argument(
+        "--execute", action="store_true", help="Actually call gh. Default is dry-run."
+    )
+    parser.add_argument(
+        "--only", help="Comma-separated PYQ-NNN IDs to migrate (for smoke-testing)."
+    )
     args = parser.parse_args()
 
     if not args.execute:
@@ -221,12 +245,19 @@ def main() -> int:
 
     all_tickets = load_all()
     if not all_tickets:
-        print("No tickets parsed -- check backlog/*.md exist and match the expected format.", file=sys.stderr)
+        print(
+            "No tickets parsed -- check backlog/*.md exist and match the expected format.",
+            file=sys.stderr,
+        )
         return 1
 
     only = {s.strip().upper() for s in args.only.split(",")} if args.only else None
 
-    source_file_by_type = {"bug": "bugs.md", "feature": "features.md", "investigation": "investigations.md"}
+    source_file_by_type = {
+        "bug": "bugs.md",
+        "feature": "features.md",
+        "investigation": "investigations.md",
+    }
 
     count = 0
     for pyq_id, (ticket, type_label) in sorted(all_tickets.items(), key=lambda kv: kv[1][0].id):
@@ -239,8 +270,12 @@ def main() -> int:
 
     print(f"\n{count} ticket(s) processed.")
     if not args.execute:
-        print("This was a dry run -- nothing was created. Re-run with --execute once this looks right.")
-        print("Recommended: smoke-test first with --execute --only PYQ-101,PYQ-141 (pick a couple of IDs).")
+        print(
+            "This was a dry run -- nothing was created. Re-run with --execute once this looks right."
+        )
+        print(
+            "Recommended: smoke-test first with --execute --only PYQ-101,PYQ-141 (pick a couple of IDs)."
+        )
     return 0
 
 

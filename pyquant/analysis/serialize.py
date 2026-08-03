@@ -40,7 +40,10 @@ def evaluation_to_dict(ev: EvaluationMetrics) -> dict[str, Any]:
         "pinball_losses": ev.pinball_losses,
         # Proper scoring rule + width-aware interval score (PYQ-252). `pit` is
         # the raw per-point transform behind the calibration histogram, so a
-        # consumer can render it without re-running the model.
+        # consumer can render it without re-running the model. Values are
+        # edge-clamped, not extrapolated into the tails -- an out-of-band
+        # actual reads as exactly 0.1 or 0.9, not how far past the band it
+        # landed (PYQ-153, see pit_values()'s docstring).
         "crps": ev.crps,
         "winkler_score": ev.winkler_score,
         "pit": list(ev.pit),
@@ -242,8 +245,10 @@ def interpretation_to_dict(interp: Interpretation, top: int | None = None) -> di
         top: Keep only the ``top`` most important features. ``None`` keeps all,
             still sorted, so a consumer can truncate rather than re-rank.
     """
-    features = interp.top_features(top) if top is not None else sorted(
-        interp.feature_importance.items(), key=lambda kv: kv[1], reverse=True
+    features = (
+        interp.top_features(top)
+        if top is not None
+        else sorted(interp.feature_importance.items(), key=lambda kv: kv[1], reverse=True)
     )
     return {
         "symbol": interp.symbol,

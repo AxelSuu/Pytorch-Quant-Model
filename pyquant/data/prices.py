@@ -142,9 +142,7 @@ def compute_macd(
     ema_fast = series.ewm(span=fast, adjust=False, min_periods=warmup_spans * fast).mean()
     ema_slow = series.ewm(span=slow, adjust=False, min_periods=warmup_spans * slow).mean()
     macd_line = ema_fast - ema_slow
-    signal_line = macd_line.ewm(
-        span=signal, adjust=False, min_periods=warmup_spans * signal
-    ).mean()
+    signal_line = macd_line.ewm(span=signal, adjust=False, min_periods=warmup_spans * signal).mean()
     histogram = macd_line - signal_line
     return macd_line, signal_line, histogram
 

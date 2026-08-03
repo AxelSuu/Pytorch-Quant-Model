@@ -56,7 +56,9 @@ def model_mae(actuals: np.ndarray, median: np.ndarray) -> float:
     return float(np.mean(np.abs(np.asarray(actuals) - np.asarray(median))))
 
 
-def directional_hit_rate(actuals: np.ndarray, median: np.ndarray, last_observed: np.ndarray) -> float:
+def directional_hit_rate(
+    actuals: np.ndarray, median: np.ndarray, last_observed: np.ndarray
+) -> float:
     """Fraction of forecasts whose direction (vs. last observed) matches the realized direction."""
     baseline = np.broadcast_to(np.asarray(last_observed)[:, None], actuals.shape)
     predicted_dir = np.sign(np.asarray(median) - baseline)
@@ -71,7 +73,9 @@ def calibration_coverage(actuals: np.ndarray, lower: np.ndarray, upper: np.ndarr
     return float(np.mean(inside))
 
 
-def quantile_exceedance(actuals: np.ndarray, predictions: np.ndarray, quantiles: list[float]) -> dict[float, float]:
+def quantile_exceedance(
+    actuals: np.ndarray, predictions: np.ndarray, quantiles: list[float]
+) -> dict[float, float]:
     """Empirical fraction of outcomes at or below each predicted quantile."""
     actuals = np.asarray(actuals)
     return {
@@ -80,7 +84,9 @@ def quantile_exceedance(actuals: np.ndarray, predictions: np.ndarray, quantiles:
     }
 
 
-def pinball_loss(actuals: np.ndarray, predictions: np.ndarray, quantiles: list[float]) -> dict[float, float]:
+def pinball_loss(
+    actuals: np.ndarray, predictions: np.ndarray, quantiles: list[float]
+) -> dict[float, float]:
     """Mean quantile-regression loss for each requested quantile."""
     actuals = np.asarray(actuals)
     losses: dict[float, float] = {}
@@ -112,9 +118,7 @@ def crps_from_quantiles(
     return float(np.mean(list(losses.values()))) if losses else 0.0
 
 
-def winkler_score(
-    actuals: np.ndarray, lower: np.ndarray, upper: np.ndarray, alpha: float
-) -> float:
+def winkler_score(actuals: np.ndarray, lower: np.ndarray, upper: np.ndarray, alpha: float) -> float:
     """Interval score: band width plus a ``2/alpha`` penalty for each miss.
 
     Scores an interval on coverage *and* width in one number, which is exactly
@@ -137,9 +141,7 @@ def winkler_score(
     return float(np.mean(width + below + above))
 
 
-def pit_values(
-    actuals: np.ndarray, predictions: np.ndarray, quantiles: list[float]
-) -> np.ndarray:
+def pit_values(actuals: np.ndarray, predictions: np.ndarray, quantiles: list[float]) -> np.ndarray:
     """Probability-integral transform of each actual through the predictive CDF.
 
     The predicted quantiles give the CDF at a handful of points; each actual is
@@ -150,6 +152,15 @@ def pit_values(
 
     One histogram replaces several numbers, which is why this is worth rendering
     rather than only tabulating.
+
+    Edge-clamped, not extrapolated (PYQ-153): ``np.interp`` saturates outside
+    its knot range by construction, so with the default three quantiles
+    (p10/p50/p90) every actual below the predicted p10 maps to exactly 0.1 and
+    every actual above p90 maps to exactly 0.9 -- a point mass at each band
+    edge rather than a spread into the tails. A resulting histogram can show
+    *how many* points landed outside the band, not *how far past it* they
+    landed; treat mass piled at the two edge bins as a lower bound on
+    miscalibration, not the whole picture.
     """
     actuals = np.asarray(actuals, dtype=float).reshape(-1)
     preds = np.asarray(predictions, dtype=float).reshape(-1, len(quantiles))
@@ -518,7 +529,9 @@ def evaluate_predictions(
     if history is not None:
         baseline_mae_by_name.update(
             baselines.baseline_maes(
-                actuals, history, [b for b in baselines.DEFAULT_BASELINES if b.name != "persistence"]
+                actuals,
+                history,
+                [b for b in baselines.DEFAULT_BASELINES if b.name != "persistence"],
             )
         )
     return EvaluationMetrics(

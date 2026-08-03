@@ -13,9 +13,7 @@ from pyquant.data.sentiment import _EXCHANGE_TZ
 
 
 def _patch_prices(monkeypatch, df):
-    monkeypatch.setattr(
-        dataset, "fetch_prices", lambda *a, **k: add_technical_indicators(df)
-    )
+    monkeypatch.setattr(dataset, "fetch_prices", lambda *a, **k: add_technical_indicators(df))
 
 
 def _epoch_et(date: pd.Timestamp, hour: int) -> int:
@@ -73,6 +71,26 @@ def test_build_panel_can_disable_technical_indicators(monkeypatch, sample_ohlcv_
     assert "Close" in panel.columns
 
 
+def test_build_panel_passes_the_configured_price_provider_through_to_fetch_prices(
+    monkeypatch, sample_ohlcv_df, settings
+):
+    """PYQ-277: `fetch_prices` supported a `provider=` argument, but nothing in
+    `build_panel` ever passed one, so `DataConfig.price_provider` had no effect
+    -- Tiingo was only reachable from a Python REPL."""
+    seen = {}
+
+    def fake_fetch_prices(symbol, **kwargs):
+        seen["provider"] = kwargs.get("provider")
+        return sample_ohlcv_df.copy()
+
+    monkeypatch.setattr(dataset, "fetch_prices", fake_fetch_prices)
+    settings.data.price_provider = "tiingo"
+
+    dataset.build_panel("AAPL", settings)
+
+    assert seen["provider"] == "tiingo"
+
+
 def test_build_panel_joins_options_history_respecting_observation_time(
     monkeypatch, sample_ohlcv_df, settings
 ):
@@ -119,7 +137,9 @@ def test_build_panel_skips_options_join_below_the_minimum_history(
     settings.data.use_options = True
     _patch_prices(monkeypatch, sample_ohlcv_df)
     monkeypatch.setattr(
-        options, "load_snapshot_history", lambda *a, **k: pd.DataFrame(columns=options.SNAPSHOT_COLUMNS)
+        options,
+        "load_snapshot_history",
+        lambda *a, **k: pd.DataFrame(columns=options.SNAPSHOT_COLUMNS),
     )
 
     panel = dataset.build_panel("AAPL", settings)
@@ -148,9 +168,7 @@ def test_build_panel_drops_target_symbols_own_sector_column(monkeypatch, sample_
     _patch_prices(monkeypatch, sample_ohlcv_df)
     settings.data.use_sectors = True
 
-    sec_df = pd.DataFrame(
-        {"SEC_SPY": 0.02, "SEC_XLK": 0.01}, index=sample_ohlcv_df.index
-    )
+    sec_df = pd.DataFrame({"SEC_SPY": 0.02, "SEC_XLK": 0.01}, index=sample_ohlcv_df.index)
     monkeypatch.setattr(dataset, "fetch_sector_returns", lambda *a, **k: sec_df)
 
     panel = dataset.build_panel("SPY", settings)
@@ -481,9 +499,10 @@ def test_extend_for_prediction_extends_each_symbol_independently(
     assert len(extended) == len(pooled) + 6
     for symbol in ("AAA", "BBB"):
         group = extended[extended["symbol"] == symbol]
-        assert int(group["time_idx"].max()) == int(
-            pooled[pooled["symbol"] == symbol]["time_idx"].max()
-        ) + 3
+        assert (
+            int(group["time_idx"].max())
+            == int(pooled[pooled["symbol"] == symbol]["time_idx"].max()) + 3
+        )
 
 
 # --- PYQ-116: pooled symbols must share one calendar -------------------------
@@ -512,9 +531,7 @@ def test_align_time_index_maps_the_same_date_to_the_same_index(
     assert (overlap["LONG"] == overlap["SHORT"]).all()
 
 
-def test_align_time_index_leaves_a_single_symbol_unchanged(
-    monkeypatch, sample_ohlcv_df, settings
-):
+def test_align_time_index_leaves_a_single_symbol_unchanged(monkeypatch, sample_ohlcv_df, settings):
     """A lone symbol's dates are already contiguous positions -- alignment is a no-op."""
     _patch_prices(monkeypatch, sample_ohlcv_df)
     df = dataset.panel_to_long(dataset.build_panel("AAPL", settings), "AAPL")

@@ -72,8 +72,15 @@ def record_prices(manifest: dict) -> None:
     print("Fetching yfinance prices (AAPL, 3mo)...")
     df = yf.Ticker("AAPL").history(period="3mo", auto_adjust=True)
     df.to_pickle(FIXTURES_DIR / "yfinance_prices_aapl.pkl")
-    _record(manifest, "yfinance_prices_aapl.pkl", vendor="yfinance", library_version=yf.__version__,
-            symbol="AAPL", rows=len(df), columns=list(df.columns))
+    _record(
+        manifest,
+        "yfinance_prices_aapl.pkl",
+        vendor="yfinance",
+        library_version=yf.__version__,
+        symbol="AAPL",
+        rows=len(df),
+        columns=list(df.columns),
+    )
 
 
 def record_vix(manifest: dict) -> None:
@@ -82,8 +89,15 @@ def record_vix(manifest: dict) -> None:
     print("Fetching yfinance VIX (3mo)...")
     df = yf.Ticker("^VIX").history(period="3mo", auto_adjust=True)
     df.to_pickle(FIXTURES_DIR / "yfinance_vix.pkl")
-    _record(manifest, "yfinance_vix.pkl", vendor="yfinance", library_version=yf.__version__,
-            symbol="^VIX", rows=len(df), columns=list(df.columns))
+    _record(
+        manifest,
+        "yfinance_vix.pkl",
+        vendor="yfinance",
+        library_version=yf.__version__,
+        symbol="^VIX",
+        rows=len(df),
+        columns=list(df.columns),
+    )
 
 
 def record_sectors(manifest: dict) -> None:
@@ -92,8 +106,14 @@ def record_sectors(manifest: dict) -> None:
     print("Fetching yfinance sector ETFs (XLK, SPY, 3mo)...")
     df = yf.download(["XLK", "SPY"], period="3mo", progress=False, auto_adjust=True)
     df.to_pickle(FIXTURES_DIR / "yfinance_sectors.pkl")
-    _record(manifest, "yfinance_sectors.pkl", vendor="yfinance", library_version=yf.__version__,
-            symbols=["XLK", "SPY"], rows=len(df))
+    _record(
+        manifest,
+        "yfinance_sectors.pkl",
+        vendor="yfinance",
+        library_version=yf.__version__,
+        symbols=["XLK", "SPY"],
+        rows=len(df),
+    )
 
 
 def record_options(manifest: dict) -> None:
@@ -111,10 +131,23 @@ def record_options(manifest: dict) -> None:
         fast_last_price = float(ticker.fast_info["lastPrice"])
     except Exception:
         fast_last_price = None
-    payload = {"expiry": expiry, "calls": chain.calls, "puts": chain.puts, "fast_last_price": fast_last_price}
+    payload = {
+        "expiry": expiry,
+        "calls": chain.calls,
+        "puts": chain.puts,
+        "fast_last_price": fast_last_price,
+    }
     pd.to_pickle(payload, FIXTURES_DIR / "yfinance_options_aapl.pkl")
-    _record(manifest, "yfinance_options_aapl.pkl", vendor="yfinance", library_version=yf.__version__,
-            symbol="AAPL", expiry=expiry, n_calls=len(chain.calls), n_puts=len(chain.puts))
+    _record(
+        manifest,
+        "yfinance_options_aapl.pkl",
+        vendor="yfinance",
+        library_version=yf.__version__,
+        symbol="AAPL",
+        expiry=expiry,
+        n_calls=len(chain.calls),
+        n_puts=len(chain.puts),
+    )
 
 
 def record_fred(manifest: dict, settings: Settings) -> None:
@@ -142,8 +175,14 @@ def record_fred(manifest: dict, settings: Settings) -> None:
     releases = releases[releases["date"] >= cutoff].sort_values(["realtime_start", "date"])
     records = json.loads(releases.to_json(orient="records", date_format="iso"))
     (FIXTURES_DIR / "fred_dff.json").write_text(json.dumps(records, indent=2))
-    _record(manifest, "fred_dff.json", vendor="FRED (fredapi)", library_version=fredapi.__version__,
-            series_id="DFF", rows=len(records))
+    _record(
+        manifest,
+        "fred_dff.json",
+        vendor="FRED (fredapi)",
+        library_version=fredapi.__version__,
+        series_id="DFF",
+        rows=len(records),
+    )
 
 
 def _sanitize_headline(article: dict, i: int) -> dict:
@@ -170,16 +209,27 @@ def record_finnhub(manifest: dict, settings: Settings) -> None:
     start = end - dt.timedelta(days=7)
     resp = requests.get(
         "https://finnhub.io/api/v1/company-news",
-        params={"symbol": "AAPL", "from": start.isoformat(), "to": end.isoformat(),
-                "token": settings.finnhub_api_key},
+        params={
+            "symbol": "AAPL",
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "token": settings.finnhub_api_key,
+        },
         timeout=20,
     )
     resp.raise_for_status()
     articles = resp.json()
     sanitized = [_sanitize_headline(a, i) for i, a in enumerate(articles)]
     (FIXTURES_DIR / "finnhub_news_aapl.json").write_text(json.dumps(sanitized, indent=2))
-    _record(manifest, "finnhub_news_aapl.json", vendor="Finnhub", library_version="REST v1 (requests)",
-            symbol="AAPL", rows=len(sanitized), note="headline/summary/url/image text sanitized")
+    _record(
+        manifest,
+        "finnhub_news_aapl.json",
+        vendor="Finnhub",
+        library_version="REST v1 (requests)",
+        symbol="AAPL",
+        rows=len(sanitized),
+        note="headline/summary/url/image text sanitized",
+    )
 
 
 def main() -> None:

@@ -67,7 +67,9 @@ def test_fetch_options_snapshot_normal_case(monkeypatch):
 
 
 def test_fetch_options_snapshot_no_options_listed(monkeypatch):
-    monkeypatch.setattr(options.yf, "Ticker", _fake_ticker([], _FakeChain(pd.DataFrame(), pd.DataFrame())))
+    monkeypatch.setattr(
+        options.yf, "Ticker", _fake_ticker([], _FakeChain(pd.DataFrame(), pd.DataFrame()))
+    )
     snap = options.fetch_options_snapshot("AAPL")
     assert snap == options.OptionsSnapshot(None, None, None, None)
 
@@ -188,7 +190,9 @@ class _Settings:
 
 
 def test_append_snapshot_writes_one_recorded_row(monkeypatch, tmp_path):
-    fake_snap = options.OptionsSnapshot(put_call_ratio=1.1, atm_iv=0.3, iv_skew=0.02, expiry="2024-06-21")
+    fake_snap = options.OptionsSnapshot(
+        put_call_ratio=1.1, atm_iv=0.3, iv_skew=0.02, expiry="2024-06-21"
+    )
     monkeypatch.setattr(options, "fetch_options_snapshot", lambda symbol: fake_snap)
 
     path = options.append_snapshot("aapl", _Settings(tmp_path))
@@ -208,7 +212,14 @@ def test_load_snapshot_history_is_empty_below_the_minimum_days(monkeypatch, tmp_
     path = tmp_path / "AAPL.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
-        {"date": f"2024-01-{d:02d}", "observed_at": f"2024-01-{d:02d}T15:00:00", "put_call_ratio": 1.0, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+        {
+            "date": f"2024-01-{d:02d}",
+            "observed_at": f"2024-01-{d:02d}T15:00:00",
+            "put_call_ratio": 1.0,
+            "atm_iv": 0.2,
+            "iv_skew": 0.01,
+            "expiry": "2024-06-21",
+        }
         for d in range(1, options.MIN_SNAPSHOT_DAYS)  # one short of the threshold
     ]
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
@@ -224,7 +235,14 @@ def test_load_snapshot_history_returns_data_once_enough_days_accumulate(tmp_path
     path = tmp_path / "AAPL.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
-        {"date": f"2024-01-{d:02d}", "observed_at": f"2024-01-{d:02d}T15:00:00", "put_call_ratio": 1.0 + d * 0.01, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+        {
+            "date": f"2024-01-{d:02d}",
+            "observed_at": f"2024-01-{d:02d}T15:00:00",
+            "put_call_ratio": 1.0 + d * 0.01,
+            "atm_iv": 0.2,
+            "iv_skew": 0.01,
+            "expiry": "2024-06-21",
+        }
         for d in range(1, options.MIN_SNAPSHOT_DAYS + 1)
     ]
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
@@ -243,12 +261,26 @@ def test_load_snapshot_history_keeps_the_latest_of_a_repeated_day(tmp_path):
     path = tmp_path / "AAPL.jsonl"
     path.parent.mkdir(parents=True, exist_ok=True)
     rows = [
-        {"date": f"2024-01-{d:02d}", "observed_at": f"2024-01-{d:02d}T10:00:00", "put_call_ratio": 1.0, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+        {
+            "date": f"2024-01-{d:02d}",
+            "observed_at": f"2024-01-{d:02d}T10:00:00",
+            "put_call_ratio": 1.0,
+            "atm_iv": 0.2,
+            "iv_skew": 0.01,
+            "expiry": "2024-06-21",
+        }
         for d in range(1, options.MIN_SNAPSHOT_DAYS + 1)
     ]
     # A second, later snapshot on the same first day, with a different value.
     rows.append(
-        {"date": "2024-01-01", "observed_at": "2024-01-01T15:30:00", "put_call_ratio": 9.9, "atm_iv": 0.2, "iv_skew": 0.01, "expiry": "2024-06-21"}
+        {
+            "date": "2024-01-01",
+            "observed_at": "2024-01-01T15:30:00",
+            "put_call_ratio": 9.9,
+            "atm_iv": 0.2,
+            "iv_skew": 0.01,
+            "expiry": "2024-06-21",
+        }
     )
     path.write_text("\n".join(json.dumps(r) for r in rows) + "\n")
 

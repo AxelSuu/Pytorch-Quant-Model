@@ -95,11 +95,17 @@ def next_sessions(after: pd.Timestamp, count: int) -> pd.DatetimeIndex:
 
     start = pd.Timestamp(after).normalize() + pd.Timedelta(days=1)
     # Over-fetch so a run of holidays cannot come up short, then take the first
-    # `count`. 9 holidays a year means a horizon can never lose more than a few
-    # days, but the margin is cheap and makes the function total.
-    span = pd.bdate_range(start, periods=count + 15)
-    holidays = exchange_holidays(span[0], span[-1])
-    return span.difference(holidays)[:count]
+    # `count`. 9 holidays a year means a small horizon can never lose more than
+    # a few days, but a fixed margin isn't total for a large `count` -- doubling
+    # it until satisfied is (PYQ-154).
+    margin = 15
+    while True:
+        span = pd.bdate_range(start, periods=count + margin)
+        holidays = exchange_holidays(span[0], span[-1])
+        sessions = span.difference(holidays)
+        if len(sessions) >= count:
+            return sessions[:count]
+        margin *= 2
 
 
 # --- Known limitations -------------------------------------------------------

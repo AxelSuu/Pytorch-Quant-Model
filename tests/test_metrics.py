@@ -76,12 +76,17 @@ def test_log_return_metrics_use_zero_return_persistence_baseline():
 
 def test_effective_sample_size_accounts_for_overlapping_horizons():
     assert metrics.effective_sample_size(56, 5) == 12
-    assert metrics.EvaluationMetrics(1, 2, 0.5, 0.8, n_samples=56, n_points=280).effective_n_samples == 12
+    assert (
+        metrics.EvaluationMetrics(1, 2, 0.5, 0.8, n_samples=56, n_points=280).effective_n_samples
+        == 12
+    )
 
 
 def test_moving_block_bootstrap_interval_uses_contiguous_blocks_deterministically():
     values = [0.0, 0.0, 1.0, 1.0]
-    interval = metrics.moving_block_bootstrap_interval(values, block_size=2, n_resamples=100, seed=7)
+    interval = metrics.moving_block_bootstrap_interval(
+        values, block_size=2, n_resamples=100, seed=7
+    )
     assert interval == metrics.moving_block_bootstrap_interval(values, 2, n_resamples=100, seed=7)
     assert 0.0 <= interval[0] <= interval[1] <= 1.0
     with pytest.raises(ValueError, match="positive"):
@@ -185,7 +190,9 @@ def test_evaluate_predictions_combines_all_metrics():
     result = metrics.evaluate_predictions(predictions, actuals, last_observed, [0.1, 0.5, 0.9])
 
     assert abs(result.model_mae - np.mean(np.abs(actuals - predictions[:, :, 1]))) < 1e-9
-    assert abs(result.baseline_mae - metrics.persistence_baseline_mae(actuals, last_observed)) < 1e-9
+    assert (
+        abs(result.baseline_mae - metrics.persistence_baseline_mae(actuals, last_observed)) < 1e-9
+    )
     assert 0.0 <= result.directional_accuracy <= 1.0
     assert 0.0 <= result.calibration_coverage <= 1.0
 
@@ -297,12 +304,20 @@ def test_aggregate_metrics_pooled_skill_is_not_the_mean_of_per_window_skills():
     refactored into agreement."""
     windows = [
         metrics.EvaluationMetrics(
-            model_mae=0.5, baseline_mae=1.0, directional_accuracy=0.5, calibration_coverage=0.8,
-            n_samples=1, n_points=5,
+            model_mae=0.5,
+            baseline_mae=1.0,
+            directional_accuracy=0.5,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=5,
         ),
         metrics.EvaluationMetrics(
-            model_mae=90.0, baseline_mae=100.0, directional_accuracy=0.5, calibration_coverage=0.8,
-            n_samples=1, n_points=5,
+            model_mae=90.0,
+            baseline_mae=100.0,
+            directional_accuracy=0.5,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=5,
         ),
     ]
     per_window_skills = [w.skill_vs_baseline for w in windows]  # [0.5, 0.1]
@@ -347,8 +362,12 @@ def test_skill_confidence_interval_has_nonzero_width_at_the_default_window_count
     (block_size=1) interval must have real width."""
     windows = [
         metrics.EvaluationMetrics(
-            model_mae=m, baseline_mae=2.0, directional_accuracy=0.5, calibration_coverage=0.8,
-            n_samples=1, n_points=5,
+            model_mae=m,
+            baseline_mae=2.0,
+            directional_accuracy=0.5,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=5,
         )
         for m in [0.0, 0.4, 0.8, 1.2, 1.6]  # skill = [1.0, 0.8, 0.6, 0.4, 0.2]
     ]
@@ -359,8 +378,12 @@ def test_skill_confidence_interval_has_nonzero_width_at_the_default_window_count
 def test_directional_accuracy_confidence_interval_has_nonzero_width_at_the_default_window_count():
     windows = [
         metrics.EvaluationMetrics(
-            model_mae=1.0, baseline_mae=2.0, directional_accuracy=d, calibration_coverage=0.8,
-            n_samples=1, n_points=5,
+            model_mae=1.0,
+            baseline_mae=2.0,
+            directional_accuracy=d,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=5,
         )
         for d in [0.2, 0.4, 0.6, 0.8, 1.0]
     ]
@@ -429,8 +452,20 @@ def test_aggregate_metrics_pools_per_horizon_position_wise_weighted_by_n_samples
         n_samples=4,
         n_points=8,
         per_horizon=[
-            metrics.PerHorizonMetrics(1, model_mae=0.0, baseline_mae=1.0, directional_accuracy=1.0, calibration_coverage=1.0),
-            metrics.PerHorizonMetrics(2, model_mae=10.0, baseline_mae=10.0, directional_accuracy=0.0, calibration_coverage=0.0),
+            metrics.PerHorizonMetrics(
+                1,
+                model_mae=0.0,
+                baseline_mae=1.0,
+                directional_accuracy=1.0,
+                calibration_coverage=1.0,
+            ),
+            metrics.PerHorizonMetrics(
+                2,
+                model_mae=10.0,
+                baseline_mae=10.0,
+                directional_accuracy=0.0,
+                calibration_coverage=0.0,
+            ),
         ],
     )
     b = metrics.EvaluationMetrics(
@@ -441,8 +476,20 @@ def test_aggregate_metrics_pools_per_horizon_position_wise_weighted_by_n_samples
         n_samples=1,
         n_points=2,
         per_horizon=[
-            metrics.PerHorizonMetrics(1, model_mae=4.0, baseline_mae=1.0, directional_accuracy=0.0, calibration_coverage=0.0),
-            metrics.PerHorizonMetrics(2, model_mae=20.0, baseline_mae=10.0, directional_accuracy=1.0, calibration_coverage=1.0),
+            metrics.PerHorizonMetrics(
+                1,
+                model_mae=4.0,
+                baseline_mae=1.0,
+                directional_accuracy=0.0,
+                calibration_coverage=0.0,
+            ),
+            metrics.PerHorizonMetrics(
+                2,
+                model_mae=20.0,
+                baseline_mae=10.0,
+                directional_accuracy=1.0,
+                calibration_coverage=1.0,
+            ),
         ],
     )
 
@@ -635,9 +682,9 @@ def test_winkler_scores_an_overwide_band_worse_than_a_calibrated_one():
 
     assert metrics.calibration_coverage(actuals, calibrated_lo, calibrated_hi) == 1.0
     assert metrics.calibration_coverage(actuals, overwide_lo, overwide_hi) == 1.0  # identical
-    assert metrics.winkler_score(actuals, calibrated_lo, calibrated_hi, 0.2) < metrics.winkler_score(
-        actuals, overwide_lo, overwide_hi, 0.2
-    )
+    assert metrics.winkler_score(
+        actuals, calibrated_lo, calibrated_hi, 0.2
+    ) < metrics.winkler_score(actuals, overwide_lo, overwide_hi, 0.2)
 
 
 def test_pit_is_uniform_for_a_calibrated_forecaster_and_clustered_for_an_overwide_one():
@@ -660,6 +707,21 @@ def test_pit_is_uniform_for_a_calibrated_forecaster_and_clustered_for_an_overwid
     # Over-wide: every outcome lands near the middle of a vastly-too-large band.
     assert pit_overwide.std() < 0.05
     assert abs(pit_overwide.mean() - 0.5) < 0.05
+
+
+def test_pit_values_clamp_out_of_band_actuals_to_the_outer_quantile_exactly():
+    """PYQ-153: an actual outside the predicted band saturates at exactly
+    0.1/0.9 rather than extending into the tails, a real limitation now
+    documented on `pit_values()` -- verified here so that claim can't
+    silently drift from the implementation."""
+    quantiles = [0.1, 0.5, 0.9]
+    predictions = np.array([[10.0, 20.0, 30.0]])
+
+    far_below = metrics.pit_values(np.array([-1000.0]), predictions, quantiles)
+    far_above = metrics.pit_values(np.array([1000.0]), predictions, quantiles)
+
+    assert far_below[0] == 0.1
+    assert far_above[0] == 0.9
 
 
 def test_crps_and_winkler_survive_weighted_aggregation_across_windows():

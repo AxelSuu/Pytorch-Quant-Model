@@ -28,11 +28,26 @@ import pandas as pd
 warnings.filterwarnings("ignore")
 
 GROUPS: list[tuple[str, dict[str, bool]]] = [
-    ("price_only", {"use_indicators": False, "use_macro": False, "use_sectors": False, "use_sentiment": False}),
-    ("+technicals", {"use_indicators": True, "use_macro": False, "use_sectors": False, "use_sentiment": False}),
-    ("+macro", {"use_indicators": True, "use_macro": True, "use_sectors": False, "use_sentiment": False}),
-    ("+sectors", {"use_indicators": True, "use_macro": True, "use_sectors": True, "use_sentiment": False}),
-    ("+sentiment", {"use_indicators": True, "use_macro": True, "use_sectors": True, "use_sentiment": True}),
+    (
+        "price_only",
+        {"use_indicators": False, "use_macro": False, "use_sectors": False, "use_sentiment": False},
+    ),
+    (
+        "+technicals",
+        {"use_indicators": True, "use_macro": False, "use_sectors": False, "use_sentiment": False},
+    ),
+    (
+        "+macro",
+        {"use_indicators": True, "use_macro": True, "use_sectors": False, "use_sentiment": False},
+    ),
+    (
+        "+sectors",
+        {"use_indicators": True, "use_macro": True, "use_sectors": True, "use_sentiment": False},
+    ),
+    (
+        "+sentiment",
+        {"use_indicators": True, "use_macro": True, "use_sectors": True, "use_sentiment": True},
+    ),
 ]
 
 

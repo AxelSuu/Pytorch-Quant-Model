@@ -135,7 +135,11 @@ class SweepResult:
 
     def skill_by_symbol(self, arm: str) -> dict[str, float]:
         """{symbol: skill_vs_baseline} for every symbol where ``arm`` succeeded."""
-        return {c.symbol: c.result.aggregated.skill_vs_baseline for c in self.cells if c.arm == arm and c.ok}
+        return {
+            c.symbol: c.result.aggregated.skill_vs_baseline
+            for c in self.cells
+            if c.arm == arm and c.ok
+        }
 
     def pooled_skill(self, arm: str) -> float | None:
         """Unweighted mean skill across symbols where ``arm`` succeeded, or None if none did."""
@@ -150,7 +154,9 @@ class SweepResult:
         helped = sum(1 for s in common if other[s] > base[s])
         return helped, len(common)
 
-    def paired_comparison(self, symbol: str, base_arm: str, other_arm: str) -> PairedComparison | None:
+    def paired_comparison(
+        self, symbol: str, base_arm: str, other_arm: str
+    ) -> PairedComparison | None:
         """A window-paired comparison for one symbol between two arms (PYQ-266).
 
         None if either cell failed, or if their windows don't verifiably align

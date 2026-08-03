@@ -92,9 +92,7 @@ class ConformalOffset:
         )
 
 
-def conformity_scores(
-    actuals: np.ndarray, lower: np.ndarray, upper: np.ndarray
-) -> np.ndarray:
+def conformity_scores(actuals: np.ndarray, lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
     """CQR score per point: how far outside the band the actual fell.
 
     Positive means the point missed the band by that much; negative means it was
@@ -136,7 +134,9 @@ def fit_conformal_offset(
     """
     predictions = np.asarray(predictions, dtype=float)
     if predictions.ndim != 3:
-        raise ValueError(f"predictions must be (n_samples, horizon, n_quantiles), got {predictions.shape}")
+        raise ValueError(
+            f"predictions must be (n_samples, horizon, n_quantiles), got {predictions.shape}"
+        )
     if len(quantiles) < 2:
         raise ValueError("at least two quantiles are needed to form a band")
 

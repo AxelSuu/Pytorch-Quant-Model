@@ -386,6 +386,54 @@ def test_bundle_cache_still_loads_different_names_in_parallel(monkeypatch):
     assert second_start < first_end, f"different-name loads serialized: {call_spans}"
 
 
+# --- PYQ-164: per-name lock registries stay bounded --------------------------------
+
+
+def test_bounded_lock_registry_evicts_the_least_recently_used_unheld_lock():
+    registry = deps._BoundedLockRegistry(max_size=3)
+    for name in ("A", "B", "C"):
+        registry.get(name)
+    registry.get("D")  # over cap; "A" is least-recently-used and unheld
+    assert len(registry) == 3
+
+
+def test_bounded_lock_registry_never_evicts_a_currently_held_lock():
+    """A lock a thread is holding (or waiting to acquire) must never be
+    replaced out from under it -- a second Lock object created for the same
+    name afterward would silently break mutual exclusion for that name."""
+    registry = deps._BoundedLockRegistry(max_size=2)
+    held = registry.get("HELD")
+    held.acquire()
+    try:
+        for i in range(10):  # far past the cap, all unheld and evictable
+            registry.get(f"OTHER{i}")
+        assert registry.get("HELD") is held  # same lock object, not re-created
+    finally:
+        held.release()
+
+
+def test_prediction_locks_registry_stays_bounded_across_many_symbols(monkeypatch):
+    fresh = deps._PredictionLocks()
+    fresh._locks.max_size = 4
+    monkeypatch.setattr(deps, "_PREDICTION_LOCKS", fresh)
+
+    for i in range(50):
+        deps.get_prediction_lock(f"SYM{i}")
+
+    assert len(fresh._locks) <= 4
+
+
+def test_bundle_cache_load_locks_stay_bounded_across_many_names(monkeypatch):
+    monkeypatch.setattr("pyquant.api.deps.tft.load", lambda name, settings: object())
+    cache = deps.BundleCache(max_size=100)  # bundle cache itself not under test here
+    cache._load_locks.max_size = 4
+
+    for i in range(50):
+        cache.get(f"SYM{i}", object())
+
+    assert len(cache._load_locks) <= 4
+
+
 # --- PYQ-163: /train, /backtest run on a dedicated executor, not the shared pool --
 
 
@@ -425,9 +473,7 @@ def test_train_job_is_dispatched_via_the_dedicated_job_executor(monkeypatch):
             return real_executor.submit(fn, *a, **k)
 
     app.dependency_overrides[jobs_mod.get_job_executor] = lambda: _SpyExecutor()
-    monkeypatch.setattr(
-        "pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result()
-    )
+    monkeypatch.setattr("pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result())
 
     try:
         r = client.post("/train", json={"symbols": ["AAPL"]})
@@ -505,7 +551,9 @@ def test_a_slow_training_job_does_not_delay_a_concurrent_sync_read_endpoint(monk
         elapsed = time.monotonic() - start
 
         assert forecast_resp.status_code == 200
-        assert elapsed < 2.0, f"a concurrent sync route took {elapsed:.2f}s -- queued behind the job?"
+        assert elapsed < 2.0, (
+            f"a concurrent sync route took {elapsed:.2f}s -- queued behind the job?"
+        )
     finally:
         release.set()
 
@@ -519,9 +567,7 @@ def test_train_returns_202_and_a_pollable_job_id(monkeypatch):
     app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
     app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
 
-    monkeypatch.setattr(
-        "pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result()
-    )
+    monkeypatch.setattr("pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result())
 
     r = client.post("/train", json={"symbols": ["AAPL"]})
     assert r.status_code == 202
@@ -608,7 +654,8 @@ def test_train_conflict_names_the_bundle_in_the_error(monkeypatch):
     app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
 
     monkeypatch.setattr(
-        "pyquant.api.routes.train.tft.train", lambda *a, **k: time.sleep(0.1) or _fake_train_result()
+        "pyquant.api.routes.train.tft.train",
+        lambda *a, **k: time.sleep(0.1) or _fake_train_result(),
     )
 
     responses = []
@@ -733,13 +780,9 @@ def test_train_rejects_an_out_of_range_epochs():
     app.dependency_overrides[deps.get_settings] = lambda: object()
     app.dependency_overrides[jobs_mod.get_job_registry] = lambda: JobRegistry()
     app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+    assert client.post("/train", json={"symbols": ["AAPL"], "epochs": 0}).status_code == 422
     assert (
-        client.post("/train", json={"symbols": ["AAPL"], "epochs": 0}).status_code == 422
-    )
-    assert (
-        client.post(
-            "/train", json={"symbols": ["AAPL"], "epochs": MAX_EPOCHS + 1}
-        ).status_code
+        client.post("/train", json={"symbols": ["AAPL"], "epochs": MAX_EPOCHS + 1}).status_code
         == 422
     )
 
@@ -869,9 +912,7 @@ def test_train_job_id_not_found_via_backtest_endpoint(monkeypatch):
     app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
     app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
 
-    monkeypatch.setattr(
-        "pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result()
-    )
+    monkeypatch.setattr("pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result())
     job_id = client.post("/train", json={"symbols": ["AAPL"]}).json()["job_id"]
 
     r = client.get(f"/backtest/{job_id}")

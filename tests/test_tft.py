@@ -87,11 +87,15 @@ def test_train_rejects_insufficient_history(monkeypatch, sample_ohlcv_df, fast_s
         tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
 
-def test_walk_forward_backtest_aggregates_across_windows(monkeypatch, sample_ohlcv_df, fast_settings):
+def test_walk_forward_backtest_aggregates_across_windows(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
 
-    result = tft.walk_forward_backtest("TEST", fast_settings, n_windows=2, max_epochs=1, progress=False)
+    result = tft.walk_forward_backtest(
+        "TEST", fast_settings, n_windows=2, max_epochs=1, progress=False
+    )
 
     assert result.symbol == "TEST"
     assert result.n_windows == 2
@@ -191,7 +195,9 @@ def test_train_pools_multiple_symbols_into_one_dataset(monkeypatch, sample_ohlcv
     assert set(bundle.meta["symbols"]) == {"AAA", "BBB"}
 
 
-def test_train_single_symbol_still_uses_symbol_as_bundle_name(monkeypatch, sample_ohlcv_df, fast_settings):
+def test_train_single_symbol_still_uses_symbol_as_bundle_name(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
 
@@ -213,14 +219,18 @@ def test_train_forwards_pin_to_build_panel(monkeypatch, sample_ohlcv_df, fast_se
     assert received["pin"] == "exp-1"
 
 
-def test_walk_forward_backtest_rejects_insufficient_history(monkeypatch, sample_ohlcv_df, fast_settings):
+def test_walk_forward_backtest_rejects_insufficient_history(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
     short = add_technical_indicators(sample_ohlcv_df).iloc[:15]
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: short)
     with pytest.raises(ValueError):
         tft.walk_forward_backtest("TEST", fast_settings, n_windows=3, max_epochs=1, progress=False)
 
 
-def test_train_evaluates_best_checkpoint_not_live_model(monkeypatch, sample_ohlcv_df, fast_settings):
+def test_train_evaluates_best_checkpoint_not_live_model(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
     """Reported metrics must come from the reloaded best checkpoint (the deployed
     model), not the live post-fit model EarlyStopping leaves past the best epoch
     (PYQ-109). The two are distinct objects; assert evaluation used the reload."""
@@ -732,9 +742,7 @@ def test_backtest_threads_early_stopping_patience_into_the_callback(
     assert recorded == [3, 3]
 
 
-def test_train_records_provenance_including_the_pin(
-    monkeypatch, sample_ohlcv_df, fast_settings
-):
+def test_train_records_provenance_including_the_pin(monkeypatch, sample_ohlcv_df, fast_settings):
     """PYQ-225: seed + pinned data only reproduce a run if the code version is known too."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
@@ -859,7 +867,9 @@ def _spy_trainer_val_dataset(monkeypatch, captured, key):
 
         def fit(model, train_dataloaders=None, val_dataloaders=None):
             captured[key] = val_dataloaders.dataset
-            return real_fit(model, train_dataloaders=train_dataloaders, val_dataloaders=val_dataloaders)
+            return real_fit(
+                model, train_dataloaders=train_dataloaders, val_dataloaders=val_dataloaders
+            )
 
         trainer.fit = fit
         return trainer
@@ -1038,7 +1048,9 @@ def test_seed_sweep_result_summary_stats_match_manual_calculation(
     assert result.skill_sd >= 0.0
 
 
-def test_seed_sweep_result_skill_sd_is_zero_for_a_single_seed(monkeypatch, sample_ohlcv_df, fast_settings):
+def test_seed_sweep_result_skill_sd_is_zero_for_a_single_seed(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
 
@@ -1191,7 +1203,9 @@ def test_tune_writes_a_config_and_scores_the_winner_on_a_held_out_split(
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
 
-    result = tft.tune("TEST", fast_settings, n_trials=1, max_epochs=1, held_out_days=20, progress=False)
+    result = tft.tune(
+        "TEST", fast_settings, n_trials=1, max_epochs=1, held_out_days=20, progress=False
+    )
 
     assert result.symbol == "TEST"
     assert result.n_trials == 1

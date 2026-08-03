@@ -177,8 +177,14 @@ _FEATURE_SOURCE_HINTS: tuple[tuple[str, str], ...] = (
     ("FedFunds", "FRED macro series (DataConfig.use_macro + FRED_API_KEY)"),
     ("YieldSpread", "FRED macro series (DataConfig.use_macro + FRED_API_KEY)"),
     ("CPI", "FRED macro series (DataConfig.use_macro + FRED_API_KEY)"),
-    ("Sentiment", "news sentiment (DataConfig.use_sentiment + FINNHUB_API_KEY + 'sentiment' extra)"),
-    ("HeadlineCount", "news sentiment (DataConfig.use_sentiment + FINNHUB_API_KEY + 'sentiment' extra)"),
+    (
+        "Sentiment",
+        "news sentiment (DataConfig.use_sentiment + FINNHUB_API_KEY + 'sentiment' extra)",
+    ),
+    (
+        "HeadlineCount",
+        "news sentiment (DataConfig.use_sentiment + FINNHUB_API_KEY + 'sentiment' extra)",
+    ),
 )
 
 
@@ -198,7 +204,9 @@ class ModelBundle:
     meta: dict
 
 
-def build_model(training_dataset: TimeSeriesDataSet, settings: Settings) -> TemporalFusionTransformer:
+def build_model(
+    training_dataset: TimeSeriesDataSet, settings: Settings
+) -> TemporalFusionTransformer:
     """Construct a TFT sized to the dataset and config."""
     return TemporalFusionTransformer.from_dataset(
         training_dataset,
@@ -250,7 +258,8 @@ def _build_pooled_long_df(
     dropped.
     """
     frames = [
-        panel_to_long(build_panel(symbol, settings, start, end, pin=pin), symbol) for symbol in symbols
+        panel_to_long(build_panel(symbol, settings, start, end, pin=pin), symbol)
+        for symbol in symbols
     ]
     if len(frames) == 1:
         return align_time_index(frames[0])
@@ -463,9 +472,15 @@ def train(
 
     batch_size = settings.training.batch_size
     num_workers = settings.training.num_workers
-    train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
-    val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
-    selection_loader = selection.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
+    train_loader = training.to_dataloader(
+        train=True, batch_size=batch_size, num_workers=num_workers
+    )
+    val_loader = validation.to_dataloader(
+        train=False, batch_size=batch_size, num_workers=num_workers
+    )
+    selection_loader = selection.to_dataloader(
+        train=False, batch_size=batch_size, num_workers=num_workers
+    )
 
     model = build_model(training, settings)
 
@@ -503,7 +518,9 @@ def train(
 
     torch.save(training.get_parameters(), bundle_dir / "dataset_params.pt")
 
-    val_loss = float(ckpt_cb.best_model_score) if ckpt_cb.best_model_score is not None else float("nan")
+    val_loss = (
+        float(ckpt_cb.best_model_score) if ckpt_cb.best_model_score is not None else float("nan")
+    )
     # Evaluate the *best* checkpoint (the one saved to model.ckpt and actually
     # loaded by forecast/explain), not the live post-fit model -- EarlyStopping
     # stops training several epochs past the best one without rewinding the live
@@ -565,7 +582,10 @@ def train(
         # (PYQ-267); flatten those to plain dicts so json.dumps below doesn't
         # choke, consistent with vars() itself already omitting computed
         # properties like skill_vs_baseline (derivable from model_mae/baseline_mae).
-        "evaluation": {**vars(evaluation), "per_horizon": [vars(step) for step in evaluation.per_horizon]},
+        "evaluation": {
+            **vars(evaluation),
+            "per_horizon": [vars(step) for step in evaluation.per_horizon],
+        },
         # Explicitly null, not omitted (PYQ-270): this evaluation is one
         # held-out validation split, not a multi-window walk-forward backtest,
         # so there is no per-window series to bootstrap a skill interval from.
@@ -604,9 +624,7 @@ def _window_validation_dataset(
     out-of-sample window instead.
     """
     window = df[df["time_idx"] <= cutoff + horizon]
-    return TimeSeriesDataSet.from_dataset(
-        training, window, predict=True, stop_randomization=True
-    )
+    return TimeSeriesDataSet.from_dataset(training, window, predict=True, stop_randomization=True)
 
 
 def _window_signal(
@@ -736,8 +754,12 @@ def walk_forward_backtest(
         selection = TimeSeriesDataSet.from_dataset(
             training, selection_df, min_prediction_idx=selection_start, stop_randomization=True
         )
-        train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
-        val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
+        train_loader = training.to_dataloader(
+            train=True, batch_size=batch_size, num_workers=num_workers
+        )
+        val_loader = validation.to_dataloader(
+            train=False, batch_size=batch_size, num_workers=num_workers
+        )
         selection_loader = selection.to_dataloader(
             train=False, batch_size=batch_size, num_workers=num_workers
         )
@@ -787,9 +809,15 @@ def walk_forward_backtest(
                 # arrays a signal needs, and this stays opt-in specifically to keep the
                 # default backtest path (no signals) at its current one-pass cost.
                 best_model = _load_best_checkpoint(ckpt_cb.best_model_path, model)
-                predictions, actuals, last_observed, _ = _raw_validation_arrays(best_model, val_loader)
+                predictions, actuals, last_observed, _ = _raw_validation_arrays(
+                    best_model, val_loader
+                )
                 signal, realized_pct = _window_signal(
-                    predictions, actuals, last_observed, settings.tft.quantiles, target_column(settings)
+                    predictions,
+                    actuals,
+                    last_observed,
+                    settings.tft.quantiles,
+                    target_column(settings),
                 )
                 signals.append(signal)
                 signal_returns_pct.append(realized_pct)
@@ -893,9 +921,7 @@ def tune(
             optimize_hyperparameters,
         )
     except ImportError as exc:
-        raise ImportError(
-            "pyquant tune needs the 'tuning' extra: uv sync --extra tuning"
-        ) from exc
+        raise ImportError("pyquant tune needs the 'tuning' extra: uv sync --extra tuning") from exc
 
     symbol = symbol.upper()
     seed_everything(settings.training.seed, workers=True)
@@ -928,8 +954,12 @@ def tune(
     )
     batch_size = settings.training.batch_size
     num_workers = settings.training.num_workers
-    train_loader = training.to_dataloader(train=True, batch_size=batch_size, num_workers=num_workers)
-    val_loader = validation.to_dataloader(train=False, batch_size=batch_size, num_workers=num_workers)
+    train_loader = training.to_dataloader(
+        train=True, batch_size=batch_size, num_workers=num_workers
+    )
+    val_loader = validation.to_dataloader(
+        train=False, batch_size=batch_size, num_workers=num_workers
+    )
 
     bundle_name = f"{symbol}_TUNED"
     bundle_dir = _bundle_dir(settings, bundle_name)
@@ -966,7 +996,9 @@ def tune(
         )
 
     best_params = dict(study.best_trial.params)
-    logger.info("Optuna search for %s: %d trials, best value %.6g", symbol, n_trials, study.best_value)
+    logger.info(
+        "Optuna search for %s: %d trials, best value %.6g", symbol, n_trials, study.best_value
+    )
 
     tuned = settings.model_copy(deep=True)
     for tft_field in ("hidden_size", "hidden_continuous_size", "attention_head_size", "dropout"):

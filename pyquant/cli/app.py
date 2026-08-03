@@ -8,6 +8,7 @@ import warnings
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+from typing import get_args
 
 import typer
 from rich.console import Console
@@ -23,7 +24,7 @@ from pyquant.analysis.metrics import (
 )
 from pyquant.analysis.signals import evaluate_signals
 from pyquant.cli import charts
-from pyquant.config import Settings, load_settings
+from pyquant.config import DataConfig, Settings, load_settings
 from pyquant.data import cache as data_cache
 from pyquant.data.options import OptionsSnapshot, append_snapshot, fetch_options_snapshot
 from pyquant.experiments.sweep import Arm, run_sweep
@@ -116,6 +117,7 @@ def _build_settings(
     no_sentiment: bool,
     no_sectors: bool,
     config: Path | None = None,
+    provider: str | None = None,
 ) -> Settings:
     """Resolve settings for one command invocation, applying CLI flags last.
 
@@ -134,6 +136,15 @@ def _build_settings(
         s.data.use_sentiment = False
     if no_sectors:
         s.data.use_sectors = False
+    if provider:
+        # Validated here, not left to fail inside build_panel: PriceProviderError
+        # is a RuntimeError, not one of EXPECTED_FAILURES below, so an unknown
+        # name would otherwise surface as an uncaught traceback instead of the
+        # one-line message PYQ-120 established for a bad CLI input.
+        available = get_args(DataConfig.model_fields["price_provider"].annotation)
+        if provider not in available:
+            raise ValueError(f"--provider must be one of {list(available)}, got {provider!r}")
+        s.data.price_provider = provider
     return s
 
 
@@ -249,7 +260,9 @@ def _per_window_table(result, quantiles: list[float]) -> Table:
     return table
 
 
-def _per_horizon_table(evaluation, quantiles: list[float], title: str = "Per-horizon breakdown") -> Table:
+def _per_horizon_table(
+    evaluation, quantiles: list[float], title: str = "Per-horizon breakdown"
+) -> Table:
     """The per-decoder-step profile every other metric averages away (PYQ-267).
 
     Persistence is hardest to beat at h=1 and progressively less so as h grows,
@@ -302,6 +315,9 @@ def train(
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
     no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+    provider: str = typer.Option(
+        None, "--provider", help="Price data provider: yfinance (default) or tiingo (PYQ-277)"
+    ),
     as_of: str = typer.Option(
         None,
         "--as-of",
@@ -311,7 +327,9 @@ def train(
 ):
     """Train a Temporal Fusion Transformer for SYMBOLS (pooled if more than one)."""
     try:
-        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+        settings = _build_settings(
+            period, no_macro, no_sentiment, no_sectors, config=config, provider=provider
+        )
         _validate_as_of(as_of)
     except EXPECTED_FAILURES as exc:
         _fail(exc)
@@ -356,7 +374,9 @@ def train(
         console.print("[dim]Next: pyquant forecast " + result.symbols[0] + "[/dim]")
 
 
-def _run_seed_sweep(symbol: str, settings, windows: int, epochs: int | None, signals: bool, seeds: int) -> None:
+def _run_seed_sweep(
+    symbol: str, settings, windows: int, epochs: int | None, signals: bool, seeds: int
+) -> None:
     """The `backtest --seeds N` path (PYQ-265).
 
     Reports mean +/- sd (min, max) skill across N independent walk-forward
@@ -383,7 +403,9 @@ def _run_seed_sweep(symbol: str, settings, windows: int, epochs: int | None, sig
             console.print(
                 f"[bold cyan]Walk-forward backtesting {symbol.upper()} across {seeds} seeds[/bold cyan]"
             )
-            with console.status(f"Training and evaluating {windows} rolling window(s) x {seeds} seed(s)..."):
+            with console.status(
+                f"Training and evaluating {windows} rolling window(s) x {seeds} seed(s)..."
+            ):
                 sweep = _run_sweep()
     except EXPECTED_FAILURES as exc:
         _fail(exc)
@@ -432,12 +454,17 @@ def backtest(
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
     no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+    provider: str = typer.Option(
+        None, "--provider", help="Price data provider: yfinance (default) or tiingo (PYQ-277)"
+    ),
     signals: bool = typer.Option(
         False,
         "--signals",
         help="Also score scan()'s BUY/SELL/HOLD signal: hit rate, turnover, P&L vs. buy-and-hold",
     ),
-    cost_bps: float = typer.Option(5.0, help="Per-trade round-trip cost in basis points, with --signals"),
+    cost_bps: float = typer.Option(
+        5.0, help="Per-trade round-trip cost in basis points, with --signals"
+    ),
     seeds: int = typer.Option(
         1,
         "--seeds",
@@ -447,7 +474,9 @@ def backtest(
 ):
     """Walk-forward backtest SYMBOL across multiple rolling origins."""
     try:
-        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+        settings = _build_settings(
+            period, no_macro, no_sentiment, no_sectors, config=config, provider=provider
+        )
     except EXPECTED_FAILURES as exc:
         _fail(exc)
 
@@ -522,12 +551,17 @@ def backtest(
         )
     if len(result.aggregated.per_horizon) > 1:
         console.print(
-            _per_horizon_table(result.aggregated, settings.tft.quantiles, title="Per-horizon breakdown (pooled)")
+            _per_horizon_table(
+                result.aggregated, settings.tft.quantiles, title="Per-horizon breakdown (pooled)"
+            )
         )
 
     if signal_eval is not None:
         sig_table = Table(title="Signal evaluation (scan's BUY/SELL/HOLD)", show_header=False)
-        sig_table.add_row("Signals", f"{signal_eval.n_buy} BUY / {signal_eval.n_sell} SELL / {signal_eval.n_hold} HOLD")
+        sig_table.add_row(
+            "Signals",
+            f"{signal_eval.n_buy} BUY / {signal_eval.n_sell} SELL / {signal_eval.n_hold} HOLD",
+        )
         sig_table.add_row(
             "Hit rate, conditional on firing",
             f"BUY {signal_eval.hit_rate_buy:.1%}  SELL {signal_eval.hit_rate_sell:.1%}",
@@ -537,8 +571,12 @@ def backtest(
             f"BUY {signal_eval.avg_return_buy_pct:+.2f}%  SELL {signal_eval.avg_return_sell_pct:+.2f}%",
         )
         sig_table.add_row("Turnover", f"{signal_eval.turnover:.1%}")
-        sig_table.add_row(f"Strategy P&L (cost {cost_bps:.0f}bps/trade)", f"{signal_eval.strategy_pnl_pct:+.2f}%")
-        sig_table.add_row("Buy-and-hold P&L, same period", f"{signal_eval.buy_and_hold_pnl_pct:+.2f}%")
+        sig_table.add_row(
+            f"Strategy P&L (cost {cost_bps:.0f}bps/trade)", f"{signal_eval.strategy_pnl_pct:+.2f}%"
+        )
+        sig_table.add_row(
+            "Buy-and-hold P&L, same period", f"{signal_eval.buy_and_hold_pnl_pct:+.2f}%"
+        )
         console.print(sig_table)
         console.print(
             "[dim]Note: thresholds tuned on this same data are a selection event; "
@@ -564,7 +602,8 @@ def tune(
     symbol: str = typer.Argument(..., help="Ticker symbol, e.g. AAPL"),
     trials: int = typer.Option(15, "--trials", help="Number of Optuna trials"),
     held_out_days: int = typer.Option(
-        None, help="Days reserved for the honest final score (default: TrainingConfig.validation_days)"
+        None,
+        help="Days reserved for the honest final score (default: TrainingConfig.validation_days)",
     ),
     epochs: int = typer.Option(5, help="Max epochs per trial and for the final retrain"),
     config: Path = typer.Option(
@@ -574,6 +613,9 @@ def tune(
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
     no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+    provider: str = typer.Option(
+        None, "--provider", help="Price data provider: yfinance (default) or tiingo (PYQ-277)"
+    ),
 ):
     """Optuna hyperparameter search for SYMBOL (PYQ-253); writes the winner to configs/.
 
@@ -582,7 +624,9 @@ def tune(
     the in-search validation loss, which is optimistically biased.
     """
     try:
-        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+        settings = _build_settings(
+            period, no_macro, no_sentiment, no_sectors, config=config, provider=provider
+        )
     except EXPECTED_FAILURES as exc:
         _fail(exc)
 
@@ -600,7 +644,9 @@ def tune(
         if _output.quiet:
             result = _run()
         else:
-            console.print(f"[bold cyan]Optuna search for {symbol.upper()}: {trials} trial(s)[/bold cyan]")
+            console.print(
+                f"[bold cyan]Optuna search for {symbol.upper()}: {trials} trial(s)[/bold cyan]"
+            )
             result = _run()
     except (*EXPECTED_FAILURES, ImportError) as exc:
         _fail(exc)
@@ -637,7 +683,9 @@ def tune(
 
 @app.command()
 def sweep(
-    symbols: str = typer.Option(..., "--symbols", help="Comma-separated symbols, e.g. AAPL,MSFT,NVDA"),
+    symbols: str = typer.Option(
+        ..., "--symbols", help="Comma-separated symbols, e.g. AAPL,MSFT,NVDA"
+    ),
     arm: list[str] = typer.Option(
         ...,
         "--arm",
@@ -652,6 +700,9 @@ def sweep(
     no_macro: bool = typer.Option(False, "--no-macro", help="Disable macro features"),
     no_sentiment: bool = typer.Option(False, "--no-sentiment", help="Disable news sentiment"),
     no_sectors: bool = typer.Option(False, "--no-sectors", help="Disable sector features"),
+    provider: str = typer.Option(
+        None, "--provider", help="Price data provider: yfinance (default) or tiingo (PYQ-277)"
+    ),
 ):
     """Walk-forward backtest every symbol against every arm (PYQ-268).
 
@@ -664,7 +715,9 @@ def sweep(
     recorded as a gap rather than taking the whole sweep down.
     """
     try:
-        settings = _build_settings(period, no_macro, no_sentiment, no_sectors, config=config)
+        settings = _build_settings(
+            period, no_macro, no_sentiment, no_sectors, config=config, provider=provider
+        )
     except EXPECTED_FAILURES as exc:
         _fail(exc)
 
@@ -687,7 +740,9 @@ def sweep(
     if _output.quiet:
         result = _run()
     else:
-        console.print(f"[bold cyan]Sweeping {len(symbol_list)} symbol(s) x {len(arms)} arm(s)[/bold cyan]")
+        console.print(
+            f"[bold cyan]Sweeping {len(symbol_list)} symbol(s) x {len(arms)} arm(s)[/bold cyan]"
+        )
         with console.status(f"Running {len(symbol_list) * len(arms)} cell(s)..."):
             result = _run()
 
@@ -703,14 +758,20 @@ def sweep(
         row = [symbol]
         for name in result.arm_names:
             cell = result.cell(symbol, name)
-            row.append(f"{cell.result.aggregated.skill_vs_baseline:+.1%}" if cell.ok else "[red]failed[/red]")
+            row.append(
+                f"{cell.result.aggregated.skill_vs_baseline:+.1%}"
+                if cell.ok
+                else "[red]failed[/red]"
+            )
         table.add_row(*row)
     console.print(table)
 
     pooled_table = Table(title="Pooled (unweighted mean across symbols)", show_header=False)
     for name in result.arm_names:
         pooled = result.pooled_skill(name)
-        pooled_table.add_row(name, f"{pooled:+.1%}" if pooled is not None else "n/a (every symbol failed)")
+        pooled_table.add_row(
+            name, f"{pooled:+.1%}" if pooled is not None else "n/a (every symbol failed)"
+        )
     console.print(pooled_table)
 
     # "Helped 11 of 15 symbols" and "mean skill +0.3%" answer different
@@ -718,7 +779,9 @@ def sweep(
     if len(result.arm_names) >= 2:
         base, other = result.arm_names[0], result.arm_names[1]
         helped, total = result.helped_summary(base, other)
-        console.print(f"[dim]{other!r} scored higher than {base!r} on {helped} of {total} symbol(s)[/dim]")
+        console.print(
+            f"[dim]{other!r} scored higher than {base!r} on {helped} of {total} symbol(s)[/dim]"
+        )
         for symbol in result.symbols:
             comparison = result.paired_comparison(symbol, base, other)
             if comparison is None:
@@ -839,7 +902,9 @@ def forecast(
 def explain(
     symbol: str = typer.Argument(..., help="Ticker symbol"),
     bundle_name: str = typer.Option(
-        None, "--bundle", help="Bundle name to load, if different from SYMBOL (e.g. a pooled bundle)"
+        None,
+        "--bundle",
+        help="Bundle name to load, if different from SYMBOL (e.g. a pooled bundle)",
     ),
     top: int = typer.Option(10, help="Number of top features to show"),
     no_chart: bool = typer.Option(False, "--no-chart", help="Skip the terminal charts"),
@@ -962,9 +1027,7 @@ def snapshot(
     console.print(f"[green]Recorded options snapshot for {symbol.upper()} to {path}[/green]")
 
 
-cache_app = typer.Typer(
-    help="Inspect and prune the local data-panel cache.", no_args_is_help=True
-)
+cache_app = typer.Typer(help="Inspect and prune the local data-panel cache.", no_args_is_help=True)
 app.add_typer(cache_app, name="cache")
 
 
@@ -1003,9 +1066,7 @@ def cache_list():
 def cache_prune():
     """Delete TTL-expired cache entries (pins are never touched)."""
     settings = load_settings()
-    removed = data_cache.prune_expired(
-        settings.data.cache_dir, settings.data.cache_ttl_seconds
-    )
+    removed = data_cache.prune_expired(settings.data.cache_dir, settings.data.cache_ttl_seconds)
     if _output.json:
         _emit_json({"removed": removed, "count": len(removed)})
         return

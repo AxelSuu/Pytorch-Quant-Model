@@ -69,3 +69,14 @@ def test_next_sessions_returns_exactly_the_requested_count_across_holidays():
 
 def test_next_sessions_is_empty_for_a_non_positive_horizon():
     assert len(next_sessions(pd.Timestamp("2026-07-02"), 0)) == 0
+
+
+def test_next_sessions_is_total_past_the_fixed_margin_that_used_to_cap_it():
+    """PYQ-154: a fixed 15-business-day over-fetch margin came up short once
+    `count` grew large enough that more than 15 holidays fell in the span --
+    verified directly at `count=380`, which used to raise instead of return.
+    `next_sessions` must return exactly `count` dates for any `count`."""
+    dates = next_sessions(pd.Timestamp("2026-01-01"), 380)
+    assert len(dates) == 380
+    assert dates.is_monotonic_increasing
+    assert dates.is_unique
