@@ -902,6 +902,92 @@ def test_backtest_request_period_overrides_settings_data_period(monkeypatch):
     assert captured["period"] == "10y"
 
 
+# --- PYQ-327: an identical in-flight /backtest request must not duplicate work ----
+
+
+def test_backtest_deduplicates_an_identical_in_flight_request(monkeypatch):
+    """Two concurrent identical POST /backtest calls must not both spin up a
+    full multi-window Lightning run on the shared executor -- the second
+    should get back the first's job id rather than scheduling a duplicate."""
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    def slow_backtest(*a, **k):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        time.sleep(0.1)
+        return _fake_backtest_result()
+
+    monkeypatch.setattr("pyquant.api.routes.backtest.tft.walk_forward_backtest", slow_backtest)
+
+    responses: list = []
+    resp_lock = threading.Lock()
+
+    def post():
+        r = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+        with resp_lock:
+            responses.append(r)
+
+    threads = [threading.Thread(target=post) for _ in range(2)]
+    for t in threads:
+        t.start()
+        time.sleep(0.02)  # let the first request register its dedup key first
+    for t in threads:
+        t.join()
+
+    assert all(r.status_code == 202 for r in responses)
+    job_ids = {r.json()["job_id"] for r in responses}
+    assert len(job_ids) == 1
+
+    _wait_for_job(f"/backtest/{job_ids.pop()}")
+    assert call_count == 1
+
+
+def test_backtest_does_not_deduplicate_requests_with_different_parameters(monkeypatch):
+    """A different `windows` is a different request -- both must actually run,
+    not get folded into one job the way an identical retry should be."""
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    monkeypatch.setattr(
+        "pyquant.api.routes.backtest.tft.walk_forward_backtest",
+        lambda *a, **k: _fake_backtest_result(),
+    )
+
+    r1 = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+    r2 = client.post("/backtest", json={"symbol": "AAPL", "windows": 3})
+    assert r1.status_code == 202
+    assert r2.status_code == 202
+    assert r1.json()["job_id"] != r2.json()["job_id"]
+
+
+def test_backtest_dedup_key_releases_once_the_job_finishes(monkeypatch):
+    """A later request with the same parameters, after the first job has
+    finished, must start a fresh job rather than being folded into a
+    long-gone one -- the dedup key is only held while genuinely in flight."""
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    monkeypatch.setattr(
+        "pyquant.api.routes.backtest.tft.walk_forward_backtest",
+        lambda *a, **k: _fake_backtest_result(),
+    )
+
+    first = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+    _wait_for_job(f"/backtest/{first.json()['job_id']}")
+
+    second = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+    assert second.status_code == 202
+    assert second.json()["job_id"] != first.json()["job_id"]
+
+
 def test_train_job_id_not_found_via_backtest_endpoint(monkeypatch):
     """Job ids share one registry (PYQ-271 reuses JobRegistry rather than
     building a second job mechanism) but not one namespace across kinds --

@@ -46,6 +46,11 @@ class JobRecord:
     # Set only for "train" jobs (PYQ-161's in-flight guard); None for "backtest",
     # which never writes a persistent bundle so has nothing to race on disk.
     bundle_name: str | None = None
+    # Set only for "backtest" jobs (PYQ-327's dedup guard): identifies the request
+    # shape (symbol/windows/epochs/period) this job is currently the in-flight
+    # representative for, so an identical concurrent request can be folded into it
+    # instead of spinning up a duplicate multi-window Lightning run.
+    backtest_key: str | None = None
     status: JobStatus = "queued"
     result: JobResult | None = None
     error: str | None = None
@@ -73,6 +78,12 @@ class JobRegistry:
         # rejected before it races the first onto the same on-disk checkpoint
         # directory, mirroring deps.py's per-bundle prediction lock.
         self._active_bundle_names: dict[str, str] = {}
+        # backtest request key -> job_id, for "backtest" jobs currently
+        # queued/running (PYQ-327). A backtest can't corrupt shared state the
+        # way a second concurrent train for one bundle can, so this folds an
+        # identical concurrent request into the existing job rather than
+        # rejecting it outright.
+        self._active_backtest_keys: dict[str, str] = {}
 
     def create(self, kind: JobKind = "train") -> str:
         """Register a new queued job (no bundle-name guard) and return its id."""
@@ -102,11 +113,35 @@ class JobRegistry:
             self._evict_locked()
             return job_id
 
+    def try_start_backtest(self, key: str) -> tuple[str, bool]:
+        """Atomically register a queued "backtest" job for `key`, or fold it into an existing in-flight job for the same request.
+
+        Unlike `try_start_train`, this never rejects a request outright --
+        two concurrent backtests for the same symbol can't corrupt shared disk
+        state (nothing here for bugs.md#pyq-161's guard to protect). But
+        nothing bounded how much duplicate work an identical retry/double-click
+        could pile onto the shared 4-worker `_JOB_EXECUTOR` either (PYQ-327).
+        `key` should identify the full request shape (symbol + windows +
+        epochs + period); an identical key gets the *same* job_id back rather
+        than a new job, and the caller should not schedule new work in that
+        case. Returns `(job_id, created)`.
+        """
+        with self._lock:
+            existing = self._active_backtest_keys.get(key)
+            if existing is not None:
+                return existing, False
+            job_id = uuid.uuid4().hex
+            self._jobs[job_id] = JobRecord(job_id=job_id, kind="backtest", backtest_key=key)
+            self._order.append(job_id)
+            self._active_backtest_keys[key] = job_id
+            self._evict_locked()
+            return job_id, True
+
     def _evict_locked(self) -> None:
         while len(self._order) > self._max_jobs:
             oldest = self._order.pop(0)
             record = self._jobs.pop(oldest, None)
-            self._release_bundle_name_locked(record)
+            self._release_locks_locked(record)
 
     def get(self, job_id: str) -> JobRecord | None:
         """Return the record for job_id, or None if it doesn't exist."""
@@ -128,7 +163,7 @@ class JobRegistry:
             record.status = "running"
 
     def mark_succeeded(self, job_id: str, result: JobResult) -> None:
-        """Record a job's successful result and release its bundle-name guard."""
+        """Record a job's successful result and release its in-flight guard."""
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
@@ -136,10 +171,10 @@ class JobRegistry:
                 return
             record.status = "succeeded"
             record.result = result
-            self._release_bundle_name_locked(record)
+            self._release_locks_locked(record)
 
     def mark_failed(self, job_id: str, error: str) -> None:
-        """Record a job's failure message and release its bundle-name guard."""
+        """Record a job's failure message and release its in-flight guard."""
         with self._lock:
             record = self._jobs.get(job_id)
             if record is None:
@@ -147,13 +182,17 @@ class JobRegistry:
                 return
             record.status = "failed"
             record.error = error
-            self._release_bundle_name_locked(record)
+            self._release_locks_locked(record)
 
-    def _release_bundle_name_locked(self, record: JobRecord | None) -> None:
-        if record is None or record.bundle_name is None:
+    def _release_locks_locked(self, record: JobRecord | None) -> None:
+        if record is None:
             return
-        if self._active_bundle_names.get(record.bundle_name) == record.job_id:
-            del self._active_bundle_names[record.bundle_name]
+        if record.bundle_name is not None:
+            if self._active_bundle_names.get(record.bundle_name) == record.job_id:
+                del self._active_bundle_names[record.bundle_name]
+        if record.backtest_key is not None:
+            if self._active_backtest_keys.get(record.backtest_key) == record.job_id:
+                del self._active_backtest_keys[record.backtest_key]
 
 
 _REGISTRY = JobRegistry()
