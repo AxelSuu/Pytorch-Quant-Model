@@ -213,6 +213,50 @@ def test_signals_without_compute_signals_does_not_warn_about_calibration(
     assert "PYQ-149" not in caplog.text
 
 
+# --- PYQ-328: overlapping windows must not silently double-count in the P&L -------
+
+
+def test_walk_forward_backtest_rejects_overlapping_windows_with_signals(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """analysis.signals.evaluate_signals/_compound treats each window's realized
+    return as one sequential, non-overlapping "trade" and compounds them
+    multiplicatively. step < horizon means consecutive windows share calendar
+    days, so that compounding double-counts them into a strategy_pnl_pct that
+    doesn't correspond to any real trading history. Must fail loudly rather
+    than silently return a wrong number."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    horizon = fast_settings.training.max_prediction_length
+
+    with pytest.raises(ValueError, match="double-count"):
+        tft.walk_forward_backtest(
+            "TEST",
+            fast_settings,
+            n_windows=2,
+            step=horizon - 1,
+            max_epochs=1,
+            progress=False,
+            compute_signals=True,
+        )
+
+
+def test_walk_forward_backtest_allows_overlapping_windows_without_signals(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """The double-counting only exists in the P&L accounting compute_signals
+    turns on -- a plain backtest (per_window metrics only) has nothing to
+    double-count, so step < horizon must not be rejected there."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    horizon = fast_settings.training.max_prediction_length
+
+    result = tft.walk_forward_backtest(
+        "TEST", fast_settings, n_windows=2, step=horizon - 1, max_epochs=1, progress=False
+    )
+    assert result.n_windows == 2
+
+
 def test_train_pools_multiple_symbols_into_one_dataset(monkeypatch, sample_ohlcv_df, fast_settings):
     panel_a = add_technical_indicators(sample_ohlcv_df).dropna()
     panel_b = add_technical_indicators(sample_ohlcv_df * 1.01).dropna()

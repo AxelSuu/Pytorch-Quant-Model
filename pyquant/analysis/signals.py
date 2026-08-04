@@ -99,6 +99,13 @@ def evaluate_signals(
     a -1, HOLD a 0 (no P&L, no cost); a round-trip cost of ``cost_bps`` basis
     points is charged whenever the position changes from the previous period
     (including going from no position to one on the very first signal).
+
+    Assumes periods are sequential and non-overlapping -- ``_compound`` treats
+    each entry as one trade and compounds them multiplicatively, which
+    double-counts any calendar days two periods share. ``models.tft
+    .walk_forward_backtest`` enforces this by rejecting ``compute_signals=True``
+    with ``step < horizon`` (bugs.md#pyq-328); a caller building ``signals``/
+    ``realized_returns_pct`` some other way must keep the same invariant itself.
     """
     if len(signals) != len(realized_returns_pct):
         raise ValueError(

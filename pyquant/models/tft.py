@@ -714,6 +714,21 @@ def walk_forward_backtest(
     horizon = settings.training.max_prediction_length
     encoder_len = settings.training.max_encoder_length
     step = step if step is not None else horizon
+    if compute_signals and step < horizon:
+        # analysis.signals.evaluate_signals/_compound treats each window's realized
+        # return as one sequential, non-overlapping "trade" and compounds them
+        # multiplicatively -- correct only when consecutive windows don't share
+        # calendar days. step < horizon means they do, so the resulting
+        # strategy_pnl_pct/buy_and_hold_pnl_pct double-counts the overlapping days
+        # and doesn't correspond to any real trading history (bugs.md#pyq-328).
+        # Currently unreachable from the CLI (no --step flag), but reachable from
+        # this function's own Python API -- fail loudly rather than let a future
+        # caller silently get a wrong number.
+        raise ValueError(
+            f"walk_forward_backtest(compute_signals=True) requires step >= horizon "
+            f"to avoid double-counting overlapping windows in the P&L accounting "
+            f"(got step={step}, horizon={horizon})"
+        )
     max_idx = int(df["time_idx"].max())
 
     latest_cutoff = max_idx - horizon
