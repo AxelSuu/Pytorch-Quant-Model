@@ -236,7 +236,9 @@ def test_pooled_symbols_share_one_calendar(
     every pooled symbol, or a shared market shock lands at a different position per
     group and cross-sectional learning is impossible by construction.
     """
-    monkeypatch.setattr(training, "build_panel", lambda symbol, *a, **k: unequal_history_panels[symbol])
+    monkeypatch.setattr(
+        training, "build_panel", lambda symbol, *a, **k: unequal_history_panels[symbol]
+    )
     df = tft._build_pooled_long_df(["LONG", "SHORT"], invariants_settings, None, None)
     per_date = df.groupby("Date")["time_idx"].nunique()
     assert (per_date == 1).all(), "at least one Date maps to more than one time_idx across symbols"
@@ -250,7 +252,9 @@ def test_every_pooled_symbols_validation_window_is_strictly_after_the_training_c
     inside the training slice, corrupting val_loss, EarlyStopping and checkpoint
     selection. "True on average" or "true for the longest symbol" is not the claim.
     """
-    monkeypatch.setattr(training, "build_panel", lambda symbol, *a, **k: unequal_history_panels[symbol])
+    monkeypatch.setattr(
+        training, "build_panel", lambda symbol, *a, **k: unequal_history_panels[symbol]
+    )
     df = tft._build_pooled_long_df(["LONG", "SHORT"], invariants_settings, None, None)
 
     horizon = invariants_settings.training.max_prediction_length
