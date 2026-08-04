@@ -516,10 +516,22 @@ defaults on:**
 
 1. **Coverage.** N ≥ 10 symbols, spanning at least 3 distinct sectors — not ten names from
    one industry, which would be one bet dressed as ten.
-2. **Per-symbol evidence.** Enough walk-forward windows that
-   `EvaluationMetrics.effective_n_samples` (PYQ-251) is ≥ 10 for *each* symbol/arm cell — the
-   project's existing 60-day-validation default already clears this (~12 effective windows),
-   so this is "don't shrink below today's own bar," not a new number invented for this rule.
+2. **Per-symbol evidence.** Enough evaluation windows that
+   `EvaluationMetrics.effective_n_samples` (PYQ-251) is ≥ 10 for *each* symbol/arm cell — on
+   whichever evaluation path actually produces the effect sizes being compared, since
+   `train()` and `walk_forward_backtest`/`pyquant sweep` are different estimators here
+   (GitHub Issue #193). `train()`'s own 60-day-validation default already clears this per
+   fitted model (~12 effective windows, from ~56 overlapping decode origins scored by one
+   fit — PYQ-117). `walk_forward_backtest`/`sweep` instead anchor each window's validation to
+   exactly its own last `horizon` timesteps (PYQ-127, so no two windows share a decoded day),
+   which means each window is one sample from one independently retrained model:
+   `effective_n_samples = ceil(windows / horizon)` there, not ~12. At the default `horizon=5`
+   this needs **`--windows ≥ 50`** to clear the same ≥10 floor — not the `--windows 5` used
+   in this document's own worked example above (`effective_n_samples = 1` at that setting).
+   Whether `ceil(n/horizon)` — a discount calibrated for repeated-decode overlap from one
+   model — is the right conservative formula for walk-forward's *already-independent*
+   windows is a separate, open question (tracked as its own investigation, not decided here
+   or by picking whichever answer is cheaper to clear, per non-negotiable #1).
 3. **Seed floor.** K ≥ 5 seeds per (symbol, arm) cell, run via
    `models.tft.walk_forward_backtest_multi_seed` (PYQ-265). This is a floor, not necessarily
    sufficient — investigations.md#pyq-321 measures the actual seed-to-seed standard

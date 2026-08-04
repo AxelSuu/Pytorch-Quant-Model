@@ -96,6 +96,54 @@ def test_effective_sample_size_accounts_for_overlapping_horizons():
     )
 
 
+def test_aggregated_walk_forward_windows_are_a_different_estimator_than_train_validation():
+    """docs/methodology.md's decision-rule criterion 2 (GitHub Issue #193).
+
+    `train()`'s ~12-effective-window figure comes from one fitted model scored
+    on 56 overlapping decode origins in a single validation holdout. Each
+    `walk_forward_backtest` window is instead exactly one sample (n_samples=1)
+    from one independently retrained model (PYQ-127), so aggregating windows
+    sums n_samples directly rather than reproducing that ~12. This pins the
+    two numbers methodology.md cites so a future change to either estimator
+    can't silently invalidate the documented claim without a test noticing.
+    """
+    horizon = 5
+
+    def one_window() -> metrics.EvaluationMetrics:
+        # walk_forward_backtest's per-window result: exactly one sample,
+        # `horizon` points (PYQ-127's docstring on _window_signal).
+        return metrics.EvaluationMetrics(
+            model_mae=1.0,
+            baseline_mae=1.0,
+            directional_accuracy=0.5,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=horizon,
+        )
+
+    # `backtest --windows 5` (methodology.md's own worked example): 5 independently
+    # retrained models, one sample each -- effective_n_samples = 1, not ~12.
+    five_windows = metrics.aggregate_metrics([one_window() for _ in range(5)])
+    assert five_windows.effective_n_samples == 1
+
+    # Clearing the decision rule's own effective_n >= 10 floor at horizon=5 needs
+    # windows >= 50, exactly as the corrected criterion 2 text now states.
+    fifty_windows = metrics.aggregate_metrics([one_window() for _ in range(50)])
+    assert fifty_windows.effective_n_samples == 10
+
+    # train()'s validation split is the other estimator: one fit, ~56 overlapping
+    # decode origins -- the ~12 figure criterion 2 now attributes to train() only.
+    train_validation = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=1.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        n_samples=56,
+        n_points=56 * horizon,
+    )
+    assert train_validation.effective_n_samples == 12
+
+
 def test_moving_block_bootstrap_interval_uses_contiguous_blocks_deterministically():
     values = [0.0, 0.0, 1.0, 1.0]
     interval = metrics.moving_block_bootstrap_interval(
