@@ -213,6 +213,50 @@ def test_signals_without_compute_signals_does_not_warn_about_calibration(
     assert "PYQ-149" not in caplog.text
 
 
+# --- PYQ-328: overlapping windows must not silently double-count in the P&L -------
+
+
+def test_walk_forward_backtest_rejects_overlapping_windows_with_signals(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """analysis.signals.evaluate_signals/_compound treats each window's realized
+    return as one sequential, non-overlapping "trade" and compounds them
+    multiplicatively. step < horizon means consecutive windows share calendar
+    days, so that compounding double-counts them into a strategy_pnl_pct that
+    doesn't correspond to any real trading history. Must fail loudly rather
+    than silently return a wrong number."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    horizon = fast_settings.training.max_prediction_length
+
+    with pytest.raises(ValueError, match="double-count"):
+        tft.walk_forward_backtest(
+            "TEST",
+            fast_settings,
+            n_windows=2,
+            step=horizon - 1,
+            max_epochs=1,
+            progress=False,
+            compute_signals=True,
+        )
+
+
+def test_walk_forward_backtest_allows_overlapping_windows_without_signals(
+    monkeypatch, sample_ohlcv_df, fast_settings
+):
+    """The double-counting only exists in the P&L accounting compute_signals
+    turns on -- a plain backtest (per_window metrics only) has nothing to
+    double-count, so step < horizon must not be rejected there."""
+    panel = add_technical_indicators(sample_ohlcv_df).dropna()
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    horizon = fast_settings.training.max_prediction_length
+
+    result = tft.walk_forward_backtest(
+        "TEST", fast_settings, n_windows=2, step=horizon - 1, max_epochs=1, progress=False
+    )
+    assert result.n_windows == 2
+
+
 def test_train_pools_multiple_symbols_into_one_dataset(monkeypatch, sample_ohlcv_df, fast_settings):
     panel_a = add_technical_indicators(sample_ohlcv_df).dropna()
     panel_b = add_technical_indicators(sample_ohlcv_df * 1.01).dropna()
@@ -1223,6 +1267,59 @@ def test_permutation_importance_ranks_the_injected_signal_above_pure_noise_featu
     assert top_feature == "Signal", f"expected Signal on top, got {importance}"
     assert importance["Signal"] > importance.get("NoiseA", 0.0)
     assert importance["Signal"] > importance.get("NoiseB", 0.0)
+
+
+def test_permutation_importance_logs_a_cost_estimate_before_the_feature_loop(
+    monkeypatch, tmp_path, caplog
+):
+    """PYQ-329: one full-validation-set pass per feature with no size/cost guard
+    and no feedback to the caller until it returns. A caller with 20-30+ feature
+    columns (macro + sectors + sentiment + technicals + options) has no way to
+    know how long this will take before it's already running -- log an estimate,
+    derived from the baseline pass this function already has to run, up front."""
+    rng = np.random.default_rng(3)
+    n = 200
+    dates = pd.bdate_range("2022-01-03", periods=n)
+    close = 100 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+    panel = pd.DataFrame(
+        {
+            "Open": close,
+            "High": close * 1.001,
+            "Low": close * 0.999,
+            "Close": close,
+            "Volume": np.abs(rng.normal(0, 1, n)) * 1_000_000,
+        },
+        index=dates,
+    )
+    panel.index.name = "Date"
+    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+
+    from pyquant.config import Settings
+    from pyquant.data.dataset import panel_to_long
+
+    settings = Settings()
+    settings.data.use_macro = False
+    settings.data.use_sectors = False
+    settings.data.use_sentiment = False
+    settings.data.cache_enabled = False
+    settings.training.max_encoder_length = 15
+    settings.training.max_prediction_length = 1
+    settings.training.validation_days = 30
+    settings.training.batch_size = 32
+    settings.training.max_epochs = 1
+    settings.tft.hidden_size = 8
+    settings.tft.hidden_continuous_size = 4
+    settings.checkpoint_dir = tmp_path / "checkpoints"
+
+    tft.train("TEST", settings, progress=False)
+    bundle = tft.load("TEST", settings)
+    long_df = panel_to_long(panel, "TEST")
+
+    with caplog.at_level(logging.INFO, logger="pyquant.models.tft"):
+        tft.permutation_importance(bundle, long_df, settings)
+
+    assert "permutation_importance" in caplog.text
+    assert "estimated total" in caplog.text
 
 
 def test_tune_writes_a_config_and_scores_the_winner_on_a_held_out_split(

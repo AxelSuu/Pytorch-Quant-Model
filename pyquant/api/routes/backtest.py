@@ -9,8 +9,11 @@ job against the shared JobRegistry rather than blocking the request thread.
 Unlike /train, a backtest never writes a persistent bundle -- each window's
 model is discarded after evaluation -- so there is nothing here for
 bugs.md#pyq-161's per-bundle-name lock to guard; two concurrent backtests for
-the same symbol just duplicate work, they cannot corrupt a shared checkpoint
-directory.
+the same symbol cannot corrupt a shared checkpoint directory. But nothing
+bounded how much duplicate work they could still pile onto the shared
+4-worker job executor, so an identical in-flight request (same symbol,
+windows, epochs and period) is folded into the existing job instead of
+scheduling a second one (PYQ-327).
 """
 
 from __future__ import annotations
@@ -64,10 +67,20 @@ async def start_backtest(
     registry: JobRegistry = Depends(get_job_registry),
     executor: ThreadPoolExecutor = Depends(get_job_executor),
 ) -> BacktestJobResponse:
-    """Queue a walk-forward backtest; poll GET /backtest/{job_id} for its status/result."""
+    """Queue a walk-forward backtest; poll GET /backtest/{job_id} for its status/result.
+
+    An identical in-flight request (same symbol/windows/epochs/period) returns
+    the existing job's id and current status rather than scheduling a
+    duplicate run (PYQ-327).
+    """
     if request.period:
         settings.data.period = request.period
-    job_id = registry.create(kind="backtest")
+    key = f"{request.symbol.upper()}:{request.windows}:{request.epochs}:{request.period}"
+    job_id, created = registry.try_start_backtest(key)
+    if not created:
+        record = registry.get(job_id)
+        status = record.status if record is not None else "queued"
+        return BacktestJobResponse(job_id=job_id, status=status)
     # A dedicated executor, not BackgroundTasks.add_task -- see the matching
     # comment in routes/train.py (bugs.md#pyq-163).
     loop = asyncio.get_running_loop()

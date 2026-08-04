@@ -174,7 +174,10 @@ def test_train_command_forwards_as_of_to_tft_train(monkeypatch):
         )
 
     monkeypatch.setattr(app_mod.tft, "train", fake_train)
-    result = runner.invoke(app_mod.app, ["train", "AAPL", "--as-of", "2026-07-29"])
+    # --name required alongside --as-of (PYQ-326) -- see the two tests below.
+    result = runner.invoke(
+        app_mod.app, ["train", "AAPL", "--as-of", "2026-07-29", "--name", "AAPL-as-of-test"]
+    )
     assert result.exit_code == 0
     assert captured["end"] == "2026-07-29"
 
@@ -185,9 +188,48 @@ def test_train_command_rejects_malformed_as_of(monkeypatch):
         "train",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("tft.train should not be called")),
     )
-    result = runner.invoke(app_mod.app, ["train", "AAPL", "--as-of", "07/29/2026"])
+    result = runner.invoke(
+        app_mod.app, ["train", "AAPL", "--as-of", "07/29/2026", "--name", "AAPL-as-of-test"]
+    )
     assert result.exit_code == 1
     assert "--as-of" in result.stdout
+
+
+def test_train_command_rejects_as_of_without_name(monkeypatch):
+    """PYQ-326: --as-of with no --name would silently overwrite the symbol's
+    production bundle (checkpoints/<symbol>/) with a truncated-history one."""
+    monkeypatch.setattr(
+        app_mod.tft,
+        "train",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("tft.train should not be called")),
+    )
+    result = runner.invoke(app_mod.app, ["train", "AAPL", "--as-of", "2026-07-29"])
+    assert result.exit_code == 1
+    assert "--name" in result.stdout
+
+
+def test_train_command_accepts_as_of_with_name(monkeypatch):
+    captured = {}
+
+    def fake_train(symbols, settings, **kwargs):
+        captured["bundle_name"] = kwargs.get("bundle_name")
+        return TrainResult(
+            symbols=symbols,
+            bundle_dir=Path("checkpoints/AAPL-as-of-test"),
+            val_loss=0.1,
+            n_features=5,
+            epochs_run=1,
+            evaluation=EvaluationMetrics(
+                model_mae=1.0, baseline_mae=1.0, directional_accuracy=0.5, calibration_coverage=0.8
+            ),
+        )
+
+    monkeypatch.setattr(app_mod.tft, "train", fake_train)
+    result = runner.invoke(
+        app_mod.app, ["train", "AAPL", "--as-of", "2026-07-29", "--name", "AAPL-as-of-test"]
+    )
+    assert result.exit_code == 0
+    assert captured["bundle_name"] == "AAPL-as-of-test"
 
 
 def test_backtest_command_reports_aggregated_metrics(monkeypatch):

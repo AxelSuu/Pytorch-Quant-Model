@@ -119,6 +119,18 @@ GET  /train/{job_id}                    -> {"status": "running|succeeded|failed"
 updates the record on completion. Good enough for one instance and a low
 training concurrency.
 
+**In-flight request guards differ between the two routes,** because the two
+jobs fail differently under concurrency. `/train` rejects (409) a second
+request for a bundle already queued/running (`try_start_train`,
+bugs.md#pyq-161) — two concurrent fits racing the same on-disk checkpoint
+directory would corrupt it. `/backtest` never writes a persistent bundle, so
+concurrent backtests for the same symbol can't corrupt anything; instead
+`try_start_backtest` folds an identical in-flight request (same
+symbol/windows/epochs/period) into the existing job rather than rejecting or
+duplicating it — bounding how much redundant work a retry/double-click can
+pile onto the shared 4-worker executor (PYQ-327). Two backtests with
+*different* parameters for the same symbol still both run.
+
 **Where v1 stops scaling — the trigger to graduate to a real queue
 (arq/RQ/Celery + Redis):**
 - Job state is in process memory → **lost on restart/redeploy**, and invisible

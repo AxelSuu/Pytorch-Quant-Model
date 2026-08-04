@@ -689,8 +689,15 @@ def test_train_conflict_names_the_bundle_in_the_error(monkeypatch):
 
 
 def test_job_registry_bounds_its_size_under_sustained_job_creation():
+    # PYQ-325: eviction now skips queued/running records, so jobs must actually
+    # finish (mark_succeeded) to be eviction-eligible -- a bare create() leaves
+    # them "queued" forever, which is the exact case the fix protects.
     registry = JobRegistry(max_jobs=3)
-    job_ids = [registry.create(kind="backtest") for _ in range(5)]
+    job_ids = []
+    for _ in range(5):
+        job_id = registry.create(kind="backtest")
+        registry.mark_succeeded(job_id, _fake_backtest_result())
+        job_ids.append(job_id)
     remaining = [jid for jid in job_ids if registry.get(jid) is not None]
     assert len(remaining) == 3
     assert remaining == job_ids[-3:]  # oldest-first eviction: newest 3 survive
@@ -703,6 +710,32 @@ def test_job_registry_mark_methods_are_a_no_op_for_an_unknown_job_id():
     registry.mark_succeeded("nope", _fake_backtest_result())
     registry.mark_failed("nope", "boom")
     assert registry.get("nope") is None
+
+
+def test_job_registry_eviction_never_drops_a_still_running_job():
+    # PYQ-325: a running train job's bundle-name lock must survive eviction --
+    # dropping it early lets a second POST /train for the same bundle_name start
+    # writing to the same checkpoint directory while the first fit is still live.
+    registry = JobRegistry(max_jobs=3)
+    running_job_id = registry.try_start_train("AAPL")
+    registry.mark_running(running_job_id)
+
+    # Finished (never-started) jobs to force eviction past the cap.
+    for _ in range(5):
+        registry.create(kind="backtest")
+
+    assert registry.get(running_job_id) is not None
+    assert registry._active_bundle_names.get("AAPL") == running_job_id
+
+    # The registry is allowed to grow past max_jobs while a tracked job is
+    # still live -- mirrors deps.py's _BoundedLockRegistry never evicting a
+    # held lock.
+    assert len(registry._order) > registry._max_jobs
+
+    registry.mark_succeeded(running_job_id, _fake_train_result())
+    record = registry.get(running_job_id)
+    assert record.status == "succeeded"
+    assert "AAPL" not in registry._active_bundle_names
 
 
 def test_train_request_period_overrides_settings_data_period(monkeypatch):
@@ -910,6 +943,92 @@ def test_backtest_request_period_overrides_settings_data_period(monkeypatch):
     r = client.post("/backtest", json={"symbol": "AAPL", "period": "10y"})
     assert r.status_code == 202
     assert captured["period"] == "10y"
+
+
+# --- PYQ-327: an identical in-flight /backtest request must not duplicate work ----
+
+
+def test_backtest_deduplicates_an_identical_in_flight_request(monkeypatch):
+    """Two concurrent identical POST /backtest calls must not both spin up a
+    full multi-window Lightning run on the shared executor -- the second
+    should get back the first's job id rather than scheduling a duplicate."""
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    call_count = 0
+    call_count_lock = threading.Lock()
+
+    def slow_backtest(*a, **k):
+        nonlocal call_count
+        with call_count_lock:
+            call_count += 1
+        time.sleep(0.1)
+        return _fake_backtest_result()
+
+    monkeypatch.setattr("pyquant.api.routes.backtest.tft.walk_forward_backtest", slow_backtest)
+
+    responses: list = []
+    resp_lock = threading.Lock()
+
+    def post():
+        r = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+        with resp_lock:
+            responses.append(r)
+
+    threads = [threading.Thread(target=post) for _ in range(2)]
+    for t in threads:
+        t.start()
+        time.sleep(0.02)  # let the first request register its dedup key first
+    for t in threads:
+        t.join()
+
+    assert all(r.status_code == 202 for r in responses)
+    job_ids = {r.json()["job_id"] for r in responses}
+    assert len(job_ids) == 1
+
+    _wait_for_job(f"/backtest/{job_ids.pop()}")
+    assert call_count == 1
+
+
+def test_backtest_does_not_deduplicate_requests_with_different_parameters(monkeypatch):
+    """A different `windows` is a different request -- both must actually run,
+    not get folded into one job the way an identical retry should be."""
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    monkeypatch.setattr(
+        "pyquant.api.routes.backtest.tft.walk_forward_backtest",
+        lambda *a, **k: _fake_backtest_result(),
+    )
+
+    r1 = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+    r2 = client.post("/backtest", json={"symbol": "AAPL", "windows": 3})
+    assert r1.status_code == 202
+    assert r2.status_code == 202
+    assert r1.json()["job_id"] != r2.json()["job_id"]
+
+
+def test_backtest_dedup_key_releases_once_the_job_finishes(monkeypatch):
+    """A later request with the same parameters, after the first job has
+    finished, must start a fresh job rather than being folded into a
+    long-gone one -- the dedup key is only held while genuinely in flight."""
+    registry = JobRegistry()
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
+
+    monkeypatch.setattr(
+        "pyquant.api.routes.backtest.tft.walk_forward_backtest",
+        lambda *a, **k: _fake_backtest_result(),
+    )
+
+    first = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+    _wait_for_job(f"/backtest/{first.json()['job_id']}")
+
+    second = client.post("/backtest", json={"symbol": "AAPL", "windows": 2})
+    assert second.status_code == 202
+    assert second.json()["job_id"] != first.json()["job_id"]
 
 
 def test_train_job_id_not_found_via_backtest_endpoint(monkeypatch):
