@@ -43,8 +43,10 @@ Each vendor gets a module; {py:mod}`pyquant.data.dataset` is where they meet.
 
 ## Models
 
-The only module in the project that imports pytorch-forecasting or Lightning, apart from
-`data/dataset.py`.
+The only package in the project that imports pytorch-forecasting or Lightning, apart from
+`data/dataset.py` (PYQ-269 split the implementation across
+`bundle.py`/`backtest.py`/`training.py`/`tuning.py`/`inference.py`; `tft.py` re-exports
+all of it, which is why it's the only page documented here).
 
 ```{eval-rst}
 .. autosummary::

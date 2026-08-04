@@ -9,20 +9,21 @@ name external code and the test suite reference, so ``from pyquant.models
 import tft`` and ``from pyquant.models.tft import train, load, ...`` keep
 resolving unchanged and no bundle produced by a prior version is invalidated.
 
-    models/bundle.py     dataclasses, bundle load/save, provenance, schema check
-    models/backtest.py   walk-forward, window geometry, purged cutoff, and the
-                          checkpoint/evaluation helpers shared with training.py
-    models/training.py   train()
-    models/tuning.py     tune() (Optuna)
-    models/inference.py  predict_quantiles(), interpret(), permutation_importance()
+- ``models/bundle.py`` -- dataclasses, bundle load/save, provenance, schema check
+- ``models/backtest.py`` -- walk-forward, window geometry, purged cutoff, and
+  the checkpoint/evaluation helpers shared with ``training.py``
+- ``models/training.py`` -- ``train()``
+- ``models/tuning.py`` -- ``tune()`` (Optuna)
+- ``models/inference.py`` -- ``predict_quantiles()``, ``interpret()``,
+  ``permutation_importance()``
 
 A caller reaching into ``pyquant.models.tft`` for an *internal* helper (e.g. a
 test patching ``tft.build_panel`` before calling ``tft.train(...)``) should
-patch the submodule that actually calls it instead -- ``pyquant.models
-.training.build_panel`` in that example -- since that is where the name is
-looked up at call time now. Patching ``some_module.tft.<public function>``
-from outside the ``models`` package (e.g. ``pyquant.api.deps.tft.load``) is
-unaffected by the split and continues to work exactly as before.
+patch the submodule that actually calls it instead -- ``pyquant.models.training.build_panel``
+in that example -- since that is where the name is looked up at call time
+now. Patching ``some_module.tft.<public function>`` from outside the
+``models`` package (e.g. ``pyquant.api.deps.tft.load``) is unaffected by the
+split and continues to work exactly as before.
 """
 
 from __future__ import annotations

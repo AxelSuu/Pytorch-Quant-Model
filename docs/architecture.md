@@ -17,7 +17,7 @@ the same calls, without either being a rewrite of the other.
                                                                           │
                                                        ┌──────────────────┘
                                                        ▼
-                                        models/tft.py  ── the only module that
+                                        models/  ── the only package that
                                         train() / walk_forward_backtest()  imports
                                         predict_quantiles() / interpret() / tune()  Lightning
                                                        │
@@ -53,10 +53,18 @@ the same calls, without either being a rewrite of the other.
   a dependency-free exponential backoff used by the flaky fetches, and `providers.py` is
   the `PriceProvider` protocol (yfinance, Tiingo) behind `fetch_prices`.
 
-`models/tft.py`
-: Every pytorch-forecasting and Lightning call in the project. Training, walk-forward
-  backtesting, Optuna hyperparameter search (`tune()`), checkpoint/bundle persistence,
-  prediction and interpretation extraction. A trained bundle is a directory under
+`models/`
+: Every pytorch-forecasting and Lightning call in the project (PYQ-269 split the original
+  single 1075-line `tft.py` into a package once the containment rule below made it the
+  only place anything Lightning-touching could go): `bundle.py` (dataclasses, bundle
+  load/save, provenance, feature-schema checking), `backtest.py` (window geometry, the
+  walk-forward loop, and the checkpoint-loading/validation-evaluation helpers `training.py`
+  and `backtest.py` itself both need), `training.py` (`train()`), `tuning.py` (Optuna
+  `tune()`), and `inference.py` (`predict_quantiles()`, `interpret()`,
+  `permutation_importance()`). `tft.py` is now a thin re-export shim over all five, kept so
+  `from pyquant.models.tft import train, load, ...` and `from pyquant.models import tft;
+  tft.train(...)` still resolve unchanged — no existing bundle or external caller
+  (`cli/app.py`, `api/`) needed to change. A trained bundle is a directory under
   `checkpoints/<name>/` holding `model.ckpt`, `dataset_params.pt` and `meta.json` (symbol,
   feature names, metrics, resolved config, seed, code version, pin).
 
@@ -85,7 +93,7 @@ the same calls, without either being a rewrite of the other.
 
 ## Two structural rules
 
-**1. pytorch-forecasting and Lightning are confined to `models/tft.py` and
+**1. pytorch-forecasting and Lightning are confined to the `models/` package and
 `data/dataset.py`.** Nothing in `analysis/`, `cli/` or `api/` may import them.
 
 **2. `analysis/` and `models/` never import Typer, Rich, or FastAPI.**
