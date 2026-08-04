@@ -331,6 +331,13 @@ def train(
             period, no_macro, no_sentiment, no_sectors, config=config, provider=provider
         )
         _validate_as_of(as_of)
+        if as_of and not name:
+            raise ValueError(
+                "--as-of requires --name: without it, the bundle directory defaults to "
+                "the symbol(s) joined with '_', so this run would overwrite the symbol's "
+                "production bundle (checkpoints/<symbol>/) with a truncated-history one "
+                "(PYQ-326). Pass --name to save this as-of run under a distinct bundle."
+            )
     except EXPECTED_FAILURES as exc:
         _fail(exc)
     tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
