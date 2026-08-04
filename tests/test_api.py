@@ -679,8 +679,15 @@ def test_train_conflict_names_the_bundle_in_the_error(monkeypatch):
 
 
 def test_job_registry_bounds_its_size_under_sustained_job_creation():
+    # PYQ-325: eviction now skips queued/running records, so jobs must actually
+    # finish (mark_succeeded) to be eviction-eligible -- a bare create() leaves
+    # them "queued" forever, which is the exact case the fix protects.
     registry = JobRegistry(max_jobs=3)
-    job_ids = [registry.create(kind="backtest") for _ in range(5)]
+    job_ids = []
+    for _ in range(5):
+        job_id = registry.create(kind="backtest")
+        registry.mark_succeeded(job_id, _fake_backtest_result())
+        job_ids.append(job_id)
     remaining = [jid for jid in job_ids if registry.get(jid) is not None]
     assert len(remaining) == 3
     assert remaining == job_ids[-3:]  # oldest-first eviction: newest 3 survive
@@ -693,6 +700,32 @@ def test_job_registry_mark_methods_are_a_no_op_for_an_unknown_job_id():
     registry.mark_succeeded("nope", _fake_backtest_result())
     registry.mark_failed("nope", "boom")
     assert registry.get("nope") is None
+
+
+def test_job_registry_eviction_never_drops_a_still_running_job():
+    # PYQ-325: a running train job's bundle-name lock must survive eviction --
+    # dropping it early lets a second POST /train for the same bundle_name start
+    # writing to the same checkpoint directory while the first fit is still live.
+    registry = JobRegistry(max_jobs=3)
+    running_job_id = registry.try_start_train("AAPL")
+    registry.mark_running(running_job_id)
+
+    # Finished (never-started) jobs to force eviction past the cap.
+    for _ in range(5):
+        registry.create(kind="backtest")
+
+    assert registry.get(running_job_id) is not None
+    assert registry._active_bundle_names.get("AAPL") == running_job_id
+
+    # The registry is allowed to grow past max_jobs while a tracked job is
+    # still live -- mirrors deps.py's _BoundedLockRegistry never evicting a
+    # held lock.
+    assert len(registry._order) > registry._max_jobs
+
+    registry.mark_succeeded(running_job_id, _fake_train_result())
+    record = registry.get(running_job_id)
+    assert record.status == "succeeded"
+    assert "AAPL" not in registry._active_bundle_names
 
 
 def test_train_request_period_overrides_settings_data_period(monkeypatch):

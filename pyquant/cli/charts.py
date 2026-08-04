@@ -81,6 +81,12 @@ def export_fan_chart(forecast: Forecast, path: Path) -> Path:
     ax.plot(hist.index, hist.values, color="#1f77b4", label="history")
 
     lo, hi = forecast.quantiles[0], forecast.quantiles[-1]
+    last_date, last_close = forecast.last_date, forecast.current_price
+
+    # The main band is drawn first, keyed exactly to `fut` (== forecast_dates)
+    # -- invariant 8's test spies on fill_between and asserts its *first* call
+    # matches Forecast.forecast_dates exactly, so nothing may be prepended onto
+    # this series or drawn ahead of it.
     ax.fill_between(
         fut,
         forecast.quantile_series(lo),
@@ -91,6 +97,33 @@ def export_fan_chart(forecast: Forecast, path: Path) -> Path:
     )
     if 0.5 in forecast.quantiles:
         ax.plot(fut, forecast.quantile_series(0.5), "--", color="#ff7f0e", label="median")
+
+    # Bridge the visual gap between the last observed close and the forecast's
+    # first decoded step (PYQ-324), as a separate draw call after the ones
+    # above: plotted alone, the band and the median line both start cold at
+    # fut[0] already at their first-step values, which reads as the band
+    # popping in offset from history rather than fanning out of it -- an
+    # artifact of this rendering function, not of the underlying forecast (the
+    # reconstructed price band itself widens monotonically with horizon; see
+    # log_return_quantiles_to_price_band). Drawing it after, rather than
+    # before or merged into, the calls above keeps their x-values exactly
+    # `fut` for invariant 8; the two only touch at the single point x=fut[0],
+    # so draw order has no visible effect on the rendered fill/line color.
+    ax.fill_between(
+        [last_date, fut[0]],
+        [last_close, forecast.quantile_series(lo)[0]],
+        [last_close, forecast.quantile_series(hi)[0]],
+        color="#ff7f0e",
+        alpha=0.25,
+    )
+    if 0.5 in forecast.quantiles:
+        ax.plot(
+            [last_date, fut[0]],
+            [last_close, forecast.median[0]],
+            "--",
+            color="#ff7f0e",
+            alpha=0.6,
+        )
 
     ax.set_title(f"{forecast.symbol} — {forecast.horizon}-day forecast")
     ax.legend()
