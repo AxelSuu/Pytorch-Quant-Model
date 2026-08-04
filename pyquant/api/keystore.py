@@ -28,7 +28,7 @@ import sqlite3
 from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from pyquant.config import project_root
@@ -113,7 +113,7 @@ def _hash(raw_key: str) -> str:
 
 
 def _now() -> str:
-    return datetime.now(UTC).isoformat()
+    return datetime.now(timezone.utc).isoformat()
 
 
 def _validate_scopes(scopes: Iterable[str]) -> frozenset[str]:
