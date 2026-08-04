@@ -1466,9 +1466,7 @@ def test_keys_create_json_output_includes_the_raw_key(tmp_path, monkeypatch):
 
 def test_keys_create_rejects_an_unknown_scope(tmp_path, monkeypatch):
     monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
-    result = runner.invoke(
-        app_mod.app, ["keys", "create", "--name", "ci-bot", "--scopes", "admin"]
-    )
+    result = runner.invoke(app_mod.app, ["keys", "create", "--name", "ci-bot", "--scopes", "admin"])
     assert result.exit_code != 0
     assert "scope" in result.output.lower()
 

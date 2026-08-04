@@ -1014,9 +1014,7 @@ def keys_create(
 ):
     """Issue a new API key. The raw value is shown exactly once -- save it now."""
     try:
-        raw_key, record = keystore.create_key(
-            keystore.resolve_db_path(), name, scopes.split(",")
-        )
+        raw_key, record = keystore.create_key(keystore.resolve_db_path(), name, scopes.split(","))
     except keystore.InvalidScope as exc:
         _fail(exc)
     if _output.json:

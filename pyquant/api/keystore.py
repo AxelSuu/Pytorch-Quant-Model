@@ -140,7 +140,14 @@ def create_key(db_path: Path, name: str, scopes: Iterable[str]) -> tuple[str, Ap
         conn.execute(
             "INSERT INTO api_keys (id, key_hash, prefix, name, scopes, created_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
-            (key_id, _hash(raw_key), raw_key[:PREFIX_LEN], name, ",".join(sorted(validated_scopes)), now),
+            (
+                key_id,
+                _hash(raw_key),
+                raw_key[:PREFIX_LEN],
+                name,
+                ",".join(sorted(validated_scopes)),
+                now,
+            ),
         )
         conn.commit()
     record = ApiKeyRecord(
@@ -198,9 +205,7 @@ def has_active_keys(db_path: Path) -> bool:
     if not db_path.exists():
         return False
     with closing(_connect(db_path)) as conn:
-        row = conn.execute(
-            "SELECT 1 FROM api_keys WHERE revoked_at IS NULL LIMIT 1"
-        ).fetchone()
+        row = conn.execute("SELECT 1 FROM api_keys WHERE revoked_at IS NULL LIMIT 1").fetchone()
     return row is not None
 
 
@@ -225,9 +230,7 @@ def authenticate(db_path: Path, raw_key: str) -> ApiKey | None:
         ).fetchall()
         for key_id, key_hash, name, scopes in rows:
             if hmac.compare_digest(target_hash, key_hash):
-                conn.execute(
-                    "UPDATE api_keys SET last_used_at = ? WHERE id = ?", (_now(), key_id)
-                )
+                conn.execute("UPDATE api_keys SET last_used_at = ? WHERE id = ?", (_now(), key_id))
                 conn.commit()
                 return ApiKey(id=key_id, name=name, scopes=frozenset(scopes.split(",")))
     return None

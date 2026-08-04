@@ -128,9 +128,7 @@ def main() -> None:
                 f"{naive_n:16d} {current_formula_n:18d} {true_effective_n:17.2f}"
             )
 
-    print(
-        "\nMonte Carlo cross-check (should match true_effective_n's column above closely):"
-    )
+    print("\nMonte Carlo cross-check (should match true_effective_n's column above closely):")
     for rho, shared_frac in ((0.8, 0.5), (0.95, 0.75), (0.99, 1.0)):
         mc_var = simulate_true_variance(rho, shared_frac, N_WINDOWS, N_TRIALS, SEED)
         mc_effective_n = 1.0 / mc_var
