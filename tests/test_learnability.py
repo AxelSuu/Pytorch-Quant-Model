@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 
 from pyquant.data.prices import add_technical_indicators
-from pyquant.models import tft
+from pyquant.models import tft, training
 
 
 def _signal_panel(
@@ -89,7 +89,7 @@ def test_model_recovers_an_injected_learnable_signal(monkeypatch, learnability_s
     (plus light noise) function of an observable feature at a one-day lag.
     """
     panel = add_technical_indicators(_signal_panel(learnable=True)).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result = tft.train("SIGNAL", learnability_settings, progress=False)
 
@@ -110,7 +110,7 @@ def test_model_does_not_find_skill_in_pure_noise(monkeypatch, learnability_setti
     to know where.
     """
     panel = add_technical_indicators(_signal_panel(learnable=False)).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result = tft.train("NOISE", learnability_settings, progress=False)
 

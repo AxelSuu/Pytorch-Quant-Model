@@ -13,7 +13,7 @@ import pandas as pd
 import pytest
 
 from pyquant.data.prices import add_technical_indicators
-from pyquant.models import tft
+from pyquant.models import backtest, inference, tft, training, tuning
 
 warnings.filterwarnings("ignore")
 
@@ -33,7 +33,7 @@ def test_train_load_predict_roundtrip(monkeypatch, sample_ohlcv_df, fast_setting
     # build_panel() itself drops indicator warm-up rows (see dataset.py); this
     # test bypasses build_panel(), so it must replicate that cleanup itself.
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     assert result.bundle_dir.exists()
@@ -59,7 +59,7 @@ def test_train_appends_to_run_log_instead_of_overwriting_history(
 ):
     """Retraining the same symbol must not erase the previous run's record."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
@@ -119,7 +119,7 @@ def test_list_bundles_returns_empty_list_when_checkpoint_dir_does_not_exist(fast
 
 def test_train_rejects_insufficient_history(monkeypatch, sample_ohlcv_df, fast_settings):
     short = add_technical_indicators(sample_ohlcv_df).iloc[:15]
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: short)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: short)
     with pytest.raises(ValueError):
         tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
@@ -128,7 +128,7 @@ def test_walk_forward_backtest_aggregates_across_windows(
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     result = tft.walk_forward_backtest(
         "TEST", fast_settings, n_windows=2, max_epochs=1, progress=False
@@ -157,7 +157,7 @@ def test_walk_forward_backtest_computes_a_signal_per_window_when_requested(
     """PYQ-255: compute_signals=True must populate one BUY/SELL/HOLD signal and one
     realized return per window, using the same classify_signal() scan() uses."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     result = tft.walk_forward_backtest(
         "TEST", fast_settings, n_windows=2, max_epochs=1, progress=False, compute_signals=True
@@ -185,10 +185,10 @@ def test_signals_with_calibration_configured_warns_and_reports_uncalibrated(
     machine-readable BacktestResult.signals_calibrated=False regardless of
     calibration_days, so a JSON/programmatic consumer sees it too."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
     fast_settings.training.calibration_days = 5
 
-    with caplog.at_level(logging.WARNING, logger="pyquant.models.tft"):
+    with caplog.at_level(logging.WARNING, logger="pyquant.models.backtest"):
         result = tft.walk_forward_backtest(
             "TEST", fast_settings, n_windows=2, max_epochs=1, progress=False, compute_signals=True
         )
@@ -204,10 +204,10 @@ def test_signals_without_compute_signals_does_not_warn_about_calibration(
     """The warning is specifically about --signals' own uncalibrated band --
     a plain backtest (no signals requested) has nothing to warn about."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
     fast_settings.training.calibration_days = 5
 
-    with caplog.at_level(logging.WARNING, logger="pyquant.models.tft"):
+    with caplog.at_level(logging.WARNING, logger="pyquant.models.backtest"):
         tft.walk_forward_backtest("TEST", fast_settings, n_windows=2, max_epochs=1, progress=False)
 
     assert "PYQ-149" not in caplog.text
@@ -226,7 +226,7 @@ def test_walk_forward_backtest_rejects_overlapping_windows_with_signals(
     doesn't correspond to any real trading history. Must fail loudly rather
     than silently return a wrong number."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
     horizon = fast_settings.training.max_prediction_length
 
     with pytest.raises(ValueError, match="double-count"):
@@ -248,7 +248,7 @@ def test_walk_forward_backtest_allows_overlapping_windows_without_signals(
     turns on -- a plain backtest (per_window metrics only) has nothing to
     double-count, so step < horizon must not be rejected there."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
     horizon = fast_settings.training.max_prediction_length
 
     result = tft.walk_forward_backtest(
@@ -264,7 +264,7 @@ def test_train_pools_multiple_symbols_into_one_dataset(monkeypatch, sample_ohlcv
     def fake_build_panel(symbol, settings, *a, **k):
         return panel_a if symbol == "AAA" else panel_b
 
-    monkeypatch.setattr(tft, "build_panel", fake_build_panel)
+    monkeypatch.setattr(training, "build_panel", fake_build_panel)
 
     result = tft.train(["AAA", "BBB"], fast_settings, max_epochs=1, progress=False)
 
@@ -280,7 +280,7 @@ def test_train_single_symbol_still_uses_symbol_as_bundle_name(
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     assert result.symbols == ["TEST"]
@@ -295,7 +295,7 @@ def test_train_forwards_pin_to_build_panel(monkeypatch, sample_ohlcv_df, fast_se
         received["pin"] = pin
         return panel
 
-    monkeypatch.setattr(tft, "build_panel", fake_build_panel)
+    monkeypatch.setattr(training, "build_panel", fake_build_panel)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False, pin="exp-1")
     assert received["pin"] == "exp-1"
 
@@ -304,7 +304,7 @@ def test_walk_forward_backtest_rejects_insufficient_history(
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     short = add_technical_indicators(sample_ohlcv_df).iloc[:15]
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: short)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: short)
     with pytest.raises(ValueError):
         tft.walk_forward_backtest("TEST", fast_settings, n_windows=3, max_epochs=1, progress=False)
 
@@ -316,7 +316,7 @@ def test_train_evaluates_best_checkpoint_not_live_model(
     model), not the live post-fit model EarlyStopping leaves past the best epoch
     (PYQ-109). The two are distinct objects; assert evaluation used the reload."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     built = {}
     real_build_model = tft.build_model
@@ -326,7 +326,7 @@ def test_train_evaluates_best_checkpoint_not_live_model(
         built["live_model"] = model
         return model
 
-    monkeypatch.setattr(tft, "build_model", spy_build_model)
+    monkeypatch.setattr(training, "build_model", spy_build_model)
 
     evaluated = {}
     real_eval = tft._evaluate_validation
@@ -335,7 +335,7 @@ def test_train_evaluates_best_checkpoint_not_live_model(
         evaluated["model"] = model
         return real_eval(model, val_loader, quantiles, *args, **kwargs)
 
-    monkeypatch.setattr(tft, "_evaluate_validation", spy_eval)
+    monkeypatch.setattr(training, "_evaluate_validation", spy_eval)
 
     tft.train("TEST", fast_settings, max_epochs=3, progress=False)
 
@@ -358,7 +358,7 @@ def test_pooling_preserves_valid_sector_column_for_other_symbols(
     def fake_build_panel(symbol, settings, *a, **k):
         return panel_aaa if symbol == "AAA" else panel_spy
 
-    monkeypatch.setattr(tft, "build_panel", fake_build_panel)
+    monkeypatch.setattr(training, "build_panel", fake_build_panel)
     pooled = tft._build_pooled_long_df(["AAA", "SPY"], fast_settings, None, None)
 
     assert "SEC_SPY" in pooled.columns  # survived the pool-wide intersection
@@ -371,10 +371,10 @@ def test_pooling_preserves_valid_sector_column_for_other_symbols(
 def test_train_seeds_everything_and_records_seed(monkeypatch, sample_ohlcv_df, fast_settings):
     """train() must seed before the fit and persist the seed for reproducibility (PYQ-210)."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     seeds = []
-    monkeypatch.setattr(tft, "seed_everything", lambda s, **k: seeds.append(s))
+    monkeypatch.setattr(training, "seed_everything", lambda s, **k: seeds.append(s))
 
     fast_settings.training.seed = 123
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
@@ -406,7 +406,7 @@ def test_two_identically_seeded_runs_produce_identical_metrics(
     reproducibility the way this test verifies for CPU.
     """
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result_a = tft.train("TEST", fast_settings, max_epochs=3, progress=False)
     result_b = tft.train("TEST", fast_settings, max_epochs=3, progress=False)
@@ -420,7 +420,7 @@ def test_train_threads_num_workers_into_dataloaders(monkeypatch, sample_ohlcv_df
     from pytorch_forecasting import TimeSeriesDataSet
 
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     fast_settings.training.num_workers = 3
 
     recorded = []
@@ -444,7 +444,7 @@ def test_train_threads_precision_into_trainer(monkeypatch, sample_ohlcv_df, fast
     from lightning.pytorch import Trainer as RealTrainer
 
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     fast_settings.training.precision = "bf16-mixed"
 
     recorded = {}
@@ -454,7 +454,7 @@ def test_train_threads_precision_into_trainer(monkeypatch, sample_ohlcv_df, fast
         kwargs["precision"] = "32-true"  # run at fp32 on CPU regardless of request
         return RealTrainer(*args, **kwargs)
 
-    monkeypatch.setattr(tft, "Trainer", spy_trainer)
+    monkeypatch.setattr(training, "Trainer", spy_trainer)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
     assert recorded["precision"] == "bf16-mixed"
@@ -473,7 +473,7 @@ def test_prediction_decoder_covers_steps_after_last_observed_bar(
     from pyquant.data.dataset import panel_to_long
 
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     bundle = tft.load("TEST", fast_settings)
 
@@ -493,7 +493,7 @@ def test_prediction_encoder_ends_on_the_last_observed_bar(
     from pyquant.data.dataset import panel_to_long
 
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     bundle = tft.load("TEST", fast_settings)
 
@@ -518,7 +518,7 @@ def test_pooling_date_aligns_symbols_with_unequal_history(
     """
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     panels = {"LONG": panel, "SHORT": panel.tail(80)}
-    monkeypatch.setattr(tft, "build_panel", lambda symbol, *a, **k: panels[symbol])
+    monkeypatch.setattr(training, "build_panel", lambda symbol, *a, **k: panels[symbol])
 
     df = tft._build_pooled_long_df(["LONG", "SHORT"], fast_settings, None, None)
 
@@ -537,9 +537,9 @@ def test_train_warns_when_a_symbols_history_ends_before_the_cutoff(
     still has its validation window inside training, so say so out loud."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
     panels = {"LIVE": panel, "STALE": panel.head(200)}
-    monkeypatch.setattr(tft, "build_panel", lambda symbol, *a, **k: panels[symbol])
+    monkeypatch.setattr(training, "build_panel", lambda symbol, *a, **k: panels[symbol])
 
-    with caplog.at_level(logging.WARNING, logger="pyquant.models.tft"):
+    with caplog.at_level(logging.WARNING, logger="pyquant.models.training"):
         tft.train(["LIVE", "STALE"], fast_settings, max_epochs=1, progress=False)
 
     assert "STALE" in caplog.text
@@ -553,7 +553,7 @@ def test_train_evaluates_many_validation_windows_not_a_single_one(
     """PYQ-117: `predict=True` plus a one-horizon holdout gave exactly 1 sample --
     5 points driving every reported metric AND early stopping."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
@@ -569,7 +569,7 @@ def test_train_evaluation_scores_every_default_baseline_beyond_persistence(
     already has through to `evaluate_predictions`, so a real bundle's
     reported metrics carry more than the single persistence comparator."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result = tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
@@ -598,15 +598,15 @@ def test_validation_predictions_actuals_and_persistence_baseline_share_price_uni
 
     fast_settings.training.target = "close"
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     bundle = tft.load("TEST", fast_settings)
 
     df = align_time_index(panel_to_long(panel, "TEST"))
     cutoff = int(df["time_idx"].max()) - fast_settings.training.validation_days
-    training = make_dataset(df, fast_settings, training_cutoff=cutoff)
+    training_ds = make_dataset(df, fast_settings, training_cutoff=cutoff)
     validation = TimeSeriesDataSet.from_dataset(
-        training, df, min_prediction_idx=cutoff + 1, stop_randomization=True
+        training_ds, df, min_prediction_idx=cutoff + 1, stop_randomization=True
     )
     loader = validation.to_dataloader(train=False, batch_size=fast_settings.training.batch_size)
     result = bundle.model.predict(loader, mode="quantiles", return_x=True, return_y=True)
@@ -669,7 +669,7 @@ def test_predict_raises_a_clear_error_when_a_trained_feature_is_missing(
     from pyquant.data.dataset import panel_to_long
 
     rich, lean = _rich_and_lean_panels(sample_ohlcv_df)
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: rich)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: rich)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     bundle = tft.load("TEST", fast_settings)
 
@@ -688,7 +688,7 @@ def test_predict_ignores_columns_not_seen_during_training(
     from pyquant.data.dataset import panel_to_long
 
     rich, lean = _rich_and_lean_panels(sample_ohlcv_df)
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: lean)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: lean)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     bundle = tft.load("TEST", fast_settings)
 
@@ -703,7 +703,7 @@ def test_prediction_rejects_a_multi_symbol_frame_instead_of_returning_group_zero
     from pyquant.data.dataset import panel_to_long
 
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     bundle = tft.load("TEST", fast_settings)
     multi_symbol = pd.concat(
@@ -723,7 +723,7 @@ def test_interpret_raises_on_encoder_name_weight_length_mismatch(
     from pyquant.data.dataset import panel_to_long
 
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
     bundle = tft.load("TEST", fast_settings)
 
@@ -748,7 +748,7 @@ def test_train_records_the_resolved_data_config(monkeypatch, sample_ohlcv_df, fa
     """PYQ-119: the feature schema is a function of the data toggles, so the bundle
     must record them -- nothing else can recover them later."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     fast_settings.data.use_sectors = False
     fast_settings.data.period = "3y"
 
@@ -780,10 +780,13 @@ def test_settings_for_bundle_restores_the_recorded_data_toggles(fast_settings):
 # --- PYQ-224 / PYQ-225: configurable patience, recorded provenance -----------
 
 
-def _spy_trainer_patience(monkeypatch, recorded):
+def _spy_trainer_patience(monkeypatch, recorded, module):
+    """Patch ``module.Trainer`` (PYQ-269: ``train`` and ``walk_forward_backtest``
+    each resolve their own ``Trainer`` via their own module, ``training`` or
+    ``backtest`` respectively)."""
     from lightning.pytorch.callbacks import EarlyStopping
 
-    real_trainer = tft.Trainer
+    real_trainer = module.Trainer
 
     def spy(**kwargs):
         for cb in kwargs.get("callbacks", []):
@@ -791,7 +794,7 @@ def _spy_trainer_patience(monkeypatch, recorded):
                 recorded.append(cb.patience)
         return real_trainer(**kwargs)
 
-    monkeypatch.setattr(tft, "Trainer", spy)
+    monkeypatch.setattr(module, "Trainer", spy)
 
 
 def test_train_threads_early_stopping_patience_into_the_callback(
@@ -799,11 +802,11 @@ def test_train_threads_early_stopping_patience_into_the_callback(
 ):
     """PYQ-224: patience was a literal 5, while every neighbouring knob was configurable."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     fast_settings.training.early_stopping_patience = 2
 
     recorded: list[int] = []
-    _spy_trainer_patience(monkeypatch, recorded)
+    _spy_trainer_patience(monkeypatch, recorded, training)
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
     assert recorded == [2]
@@ -813,11 +816,11 @@ def test_backtest_threads_early_stopping_patience_into_the_callback(
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
     fast_settings.training.early_stopping_patience = 3
 
     recorded: list[int] = []
-    _spy_trainer_patience(monkeypatch, recorded)
+    _spy_trainer_patience(monkeypatch, recorded, backtest)
     tft.walk_forward_backtest("TEST", fast_settings, n_windows=2, max_epochs=1, progress=False)
 
     assert recorded == [3, 3]
@@ -826,7 +829,7 @@ def test_backtest_threads_early_stopping_patience_into_the_callback(
 def test_train_records_provenance_including_the_pin(monkeypatch, sample_ohlcv_df, fast_settings):
     """PYQ-225: seed + pinned data only reproduce a run if the code version is known too."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     tft.train("TEST", fast_settings, max_epochs=1, progress=False, pin="exp-7")
     bundle = tft.load("TEST", fast_settings)
@@ -920,7 +923,7 @@ def test_train_still_validates_on_the_full_holdout_after_purging(
     """Purging must shrink *training* only. If it moved the validation window
     too, the sample size PYQ-117 fought for would quietly shrink with it."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     fast_settings.training.validation_days = 30
 
     fast_settings.training.purge_horizon = 0
@@ -938,9 +941,14 @@ def test_train_still_validates_on_the_full_holdout_after_purging(
 # --- PYQ-143: checkpoint selection disjoint from the reported test window -----
 
 
-def _spy_trainer_val_dataset(monkeypatch, captured, key):
-    """Patch tft.Trainer so trainer.fit(...)'s val_dataloaders is recorded."""
-    real_trainer_cls = tft.Trainer
+def _spy_trainer_val_dataset(monkeypatch, captured, key, module):
+    """Patch ``module.Trainer`` so trainer.fit(...)'s val_dataloaders is recorded.
+
+    ``module`` is ``training`` or ``backtest`` (PYQ-269): ``train`` and
+    ``walk_forward_backtest`` each resolve their own ``Trainer`` via their own
+    module now.
+    """
+    real_trainer_cls = module.Trainer
 
     def spy_trainer(**kwargs):
         trainer = real_trainer_cls(**kwargs)
@@ -955,7 +963,7 @@ def _spy_trainer_val_dataset(monkeypatch, captured, key):
         trainer.fit = fit
         return trainer
 
-    monkeypatch.setattr(tft, "Trainer", spy_trainer)
+    monkeypatch.setattr(module, "Trainer", spy_trainer)
 
 
 def test_train_fits_against_a_selection_window_disjoint_from_the_reported_test_window(
@@ -968,10 +976,10 @@ def test_train_fits_against_a_selection_window_disjoint_from_the_reported_test_w
     selection-event bias `TuneResult`'s own docstring names for Optuna trials,
     applied to epochs instead)."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     captured: dict = {}
-    _spy_trainer_val_dataset(monkeypatch, captured, "fit_val_dataset")
+    _spy_trainer_val_dataset(monkeypatch, captured, "fit_val_dataset", training)
 
     real_evaluate = tft._evaluate_validation
 
@@ -979,7 +987,7 @@ def test_train_fits_against_a_selection_window_disjoint_from_the_reported_test_w
         captured["reported_val_dataset"] = val_loader.dataset
         return real_evaluate(model, val_loader, *a, **k)
 
-    monkeypatch.setattr(tft, "_evaluate_validation", spy_evaluate)
+    monkeypatch.setattr(training, "_evaluate_validation", spy_evaluate)
 
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
 
@@ -1002,10 +1010,10 @@ def test_walk_forward_backtest_fits_against_a_selection_window_per_origin(
     per-window (and aggregate) reported metric came from. Each origin must now
     select against its own disjoint selection window."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     captured: dict = {}
-    _spy_trainer_val_dataset(monkeypatch, captured, "fit_val_dataset")
+    _spy_trainer_val_dataset(monkeypatch, captured, "fit_val_dataset", backtest)
 
     real_evaluate = tft._evaluate_best_checkpoint
 
@@ -1013,7 +1021,7 @@ def test_walk_forward_backtest_fits_against_a_selection_window_per_origin(
         captured["reported_val_dataset"] = val_loader.dataset
         return real_evaluate(best_path, model, val_loader, *a, **k)
 
-    monkeypatch.setattr(tft, "_evaluate_best_checkpoint", spy_evaluate)
+    monkeypatch.setattr(backtest, "_evaluate_best_checkpoint", spy_evaluate)
 
     tft.walk_forward_backtest("TEST", fast_settings, n_windows=1, max_epochs=1, progress=False)
 
@@ -1029,7 +1037,7 @@ def test_selection_days_is_configurable_and_recorded_on_the_bundle(
     """selection_days is a TrainingConfig field like every other tunable split
     knob, and (via the existing whole-config recording) ends up in meta.json."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     fast_settings.training.selection_days = 15
 
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
@@ -1045,7 +1053,7 @@ def test_walk_forward_backtest_multi_seed_runs_once_per_seed_and_retains_each_re
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     result = tft.walk_forward_backtest_multi_seed(
         "TEST", fast_settings, seeds=[1, 2], n_windows=2, max_epochs=1, progress=False
@@ -1068,7 +1076,7 @@ def test_walk_forward_backtest_multi_seed_defaults_to_configured_training_seeds(
     defaults to a single-element list -- so a caller who never opts in gets
     exactly today's one-seed behaviour, just wrapped."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
     assert fast_settings.training.seeds == [42]
 
     result = tft.walk_forward_backtest_multi_seed(
@@ -1083,7 +1091,7 @@ def test_walk_forward_backtest_multi_seed_same_seeds_reproduce_identical_results
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     a = tft.walk_forward_backtest_multi_seed(
         "TEST", fast_settings, seeds=[7, 8], n_windows=2, max_epochs=1, progress=False
@@ -1100,7 +1108,7 @@ def test_walk_forward_backtest_multi_seed_different_seeds_give_different_results
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     a = tft.walk_forward_backtest_multi_seed(
         "TEST", fast_settings, seeds=[1], n_windows=2, max_epochs=1, progress=False
@@ -1116,7 +1124,7 @@ def test_seed_sweep_result_summary_stats_match_manual_calculation(
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     result = tft.walk_forward_backtest_multi_seed(
         "TEST", fast_settings, seeds=[1, 2, 3], n_windows=2, max_epochs=1, progress=False
@@ -1133,7 +1141,7 @@ def test_seed_sweep_result_skill_sd_is_zero_for_a_single_seed(
     monkeypatch, sample_ohlcv_df, fast_settings
 ):
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(backtest, "build_panel", lambda *a, **k: panel)
 
     result = tft.walk_forward_backtest_multi_seed(
         "TEST", fast_settings, seeds=[1], n_windows=2, max_epochs=1, progress=False
@@ -1152,7 +1160,7 @@ def test_calibration_slice_produces_an_offset_that_forecast_reuses(
     scored window, persisted, and applied at predict time -- otherwise the
     coverage a bundle reports is not the coverage of the band it prints."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     fast_settings.training.validation_days = 30
     fast_settings.training.calibration_days = 20
 
@@ -1172,7 +1180,7 @@ def test_calibration_slice_produces_an_offset_that_forecast_reuses(
 
     df = panel_to_long(panel, "TEST")
     calibrated = tft.predict_quantiles(bundle, df)
-    monkeypatch.setattr(tft, "bundle_conformal_offset", lambda _b: None)
+    monkeypatch.setattr(inference, "bundle_conformal_offset", lambda _b: None)
     raw = tft.predict_quantiles(bundle, df)
 
     assert not np.allclose(calibrated, raw)
@@ -1185,7 +1193,7 @@ def test_a_bundle_without_a_calibration_slice_records_no_offset(
     """calibration_days defaults to 0, so nothing changes for existing bundles
     and no coverage figure moves without someone asking for it."""
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
     assert fast_settings.training.calibration_days == 0
 
     tft.train("TEST", fast_settings, max_epochs=1, progress=False)
@@ -1235,7 +1243,7 @@ def test_permutation_importance_ranks_the_injected_signal_above_pure_noise_featu
         index=dates,
     )
     panel.index.name = "Date"
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     from pyquant.config import Settings
 
@@ -1292,7 +1300,7 @@ def test_permutation_importance_logs_a_cost_estimate_before_the_feature_loop(
         index=dates,
     )
     panel.index.name = "Date"
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     from pyquant.config import Settings
     from pyquant.data.dataset import panel_to_long
@@ -1315,7 +1323,7 @@ def test_permutation_importance_logs_a_cost_estimate_before_the_feature_loop(
     bundle = tft.load("TEST", settings)
     long_df = panel_to_long(panel, "TEST")
 
-    with caplog.at_level(logging.INFO, logger="pyquant.models.tft"):
+    with caplog.at_level(logging.INFO, logger="pyquant.models.inference"):
         tft.permutation_importance(bundle, long_df, settings)
 
     assert "permutation_importance" in caplog.text
@@ -1335,7 +1343,8 @@ def test_tune_writes_a_config_and_scores_the_winner_on_a_held_out_split(
     pytest.importorskip("tensorboard")
 
     panel = add_technical_indicators(sample_ohlcv_df).dropna()
-    monkeypatch.setattr(tft, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(tuning, "build_panel", lambda *a, **k: panel)
+    monkeypatch.setattr(training, "build_panel", lambda *a, **k: panel)
 
     result = tft.tune(
         "TEST", fast_settings, n_trials=1, max_epochs=1, held_out_days=20, progress=False
