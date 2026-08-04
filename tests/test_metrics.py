@@ -48,6 +48,17 @@ def test_calibration_coverage_half_outside_band():
     assert metrics.calibration_coverage(actuals, lower, upper) == 0.5
 
 
+def test_calibration_coverage_band_is_closed_at_both_ends():
+    """PYQ-245's mutation survey: neither existing coverage test has an actual
+    landing exactly on a bound, so `>=`/`<=` surviving as `>`/`<` went unnoticed.
+    The docstring's own `[lower, upper]` notation means closed -- an actual
+    exactly at either edge counts as inside the band, not outside it."""
+    actuals = np.array([[95.0, 105.0]])
+    lower = np.array([[95.0, 95.0]])
+    upper = np.array([[105.0, 105.0]])
+    assert metrics.calibration_coverage(actuals, lower, upper) == 1.0
+
+
 def test_quantile_exceedance_and_pinball_loss_match_hand_calculation():
     actuals = np.array([[1.0, 3.0]])
     predictions = np.array([[[0.0, 0.0, 2.0], [2.0, 4.0, 4.0]]])
@@ -336,6 +347,19 @@ def test_compare_backtests_raises_without_recorded_origins():
     a = _windows([1.0], [2.0], origins=[])
     b = _windows([1.0], [2.0], origins=[])
     with pytest.raises(ValueError, match="origins"):
+        metrics.compare_backtests(a, b)
+
+
+def test_compare_backtests_raises_when_only_one_side_has_recorded_origins():
+    """PYQ-245's mutation survey: the existing 'without recorded origins' test
+    leaves both sides empty, which can't distinguish `or` from `and` in
+    `if not a.origins or not b.origins`. Exactly one side empty is the case
+    that actually tells them apart -- with `and`, execution falls through to
+    the misaligned-origins check below and still raises, but with the wrong,
+    less specific message, silently losing the guard's own stated purpose."""
+    a = _windows([], [], origins=[])
+    b = _windows([1.0], [2.0], origins=[100])
+    with pytest.raises(ValueError, match="requires both sides to carry recorded window origins"):
         metrics.compare_backtests(a, b)
 
 

@@ -196,6 +196,43 @@ def test_fetch_prices_raises_on_empty(monkeypatch):
         prices.fetch_prices("BADSYM")
 
 
+# --- PYQ-245's mutation survey: _period_start had zero tests -----------------
+
+
+def test_period_start_parses_years():
+    assert prices._period_start("5y", anchor="2024-06-15") == "2019-06-15"
+
+
+def test_period_start_parses_months():
+    assert prices._period_start("6mo", anchor="2024-06-15") == "2023-12-15"
+
+
+def test_period_start_parses_days():
+    assert prices._period_start("30d", anchor="2024-06-15") == "2024-05-16"
+
+
+def test_period_start_parses_weeks():
+    assert prices._period_start("2wk", anchor="2024-06-15") == "2024-06-01"
+
+
+def test_period_start_is_case_insensitive():
+    assert prices._period_start("5Y", anchor="2024-06-15") == prices._period_start(
+        "5y", anchor="2024-06-15"
+    )
+
+
+def test_period_start_uses_the_given_anchor_not_todays_date():
+    """PYQ-284: defaulting to the real clock instead of the caller's own `end`
+    silently truncates the requested lookback to whatever gap sits between
+    `end` and today -- the whole reason `anchor` exists."""
+    assert prices._period_start("1y", anchor="2020-01-01") == "2019-01-01"
+    assert prices._period_start("1y", anchor="2030-01-01") == "2029-01-01"
+
+
+def test_period_start_falls_back_to_five_years_on_an_unrecognised_format():
+    assert prices._period_start("bogus", anchor="2024-06-15") == "2019-06-15"
+
+
 # --- PYQ-121: RSI must be Wilder's RSI, not a simple moving average ----------
 
 
@@ -255,6 +292,22 @@ def test_compute_rsi_is_0_when_price_only_falls():
     falling = pd.Series(np.arange(40.0, 1.0, -1.0))
     rsi = prices.compute_rsi(falling, 14)
     np.testing.assert_allclose(rsi.dropna().to_numpy(), 0.0)
+
+
+def test_wilder_average_seeds_on_the_exact_period_boundary():
+    """PYQ-245's mutation survey found `len(valid) < period` untested at its own
+    boundary: every existing RSI test has far more than `period` rows, so a
+    mutant flipping the comparison to `<=` (treating exactly `period` valid
+    changes as insufficient) survived. With exactly `period` values, the
+    function must seed and emit one value, not stay all-NaN."""
+    period = 5
+    changes = pd.Series([1.0, 2.0, 3.0, 4.0, 5.0])
+    out = prices._wilder_average(changes, period)
+    assert out.notna().sum() == 1
+    assert out.iloc[period - 1] == pytest.approx(changes.mean())
+
+    one_short = changes.iloc[:-1]
+    assert prices._wilder_average(one_short, period).isna().all()
 
 
 def test_compute_rsi_is_50_on_a_flat_series():
