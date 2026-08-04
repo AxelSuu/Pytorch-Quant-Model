@@ -153,6 +153,21 @@ convention = "google"
 python_version = "3.12"
 ignore_missing_imports = true
 
+# Deliberately a one-off survey, not a CI gate (PYQ-245, matching PYQ-310's mypy
+# disposition): 1011 mutants, 769 killed / 225 survived / 17 uncovered (dead code,
+# see #203 -- prices._normalize_index is never called) after four rounds of "add a
+# test, kill the real gap" (an off-by-one at _wilder_average's exact-period
+# boundary, a closed-vs-open band boundary in calibration_coverage, an `or`/`and`
+# guard in compare_backtests that only diverges with exactly one side empty, and
+# _period_start going from zero tests to seven). Sampling the remaining 225 found
+# them dominated by one pattern -- mutated error-message text and off-by-one
+# defaults nothing calls positionally -- not further correctness gaps; recorded
+# rather than chased to zero. Run locally with: uvx mutmut run
+[tool.mutmut]
+source_paths = ["pyquant/analysis/metrics.py", "pyquant/data/prices.py"]
+also_copy = ["pyquant/"]
+pytest_add_cli_args_test_selection = ["tests/test_metrics.py", "tests/test_prices.py"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 filterwarnings = [

@@ -48,6 +48,17 @@ def test_calibration_coverage_half_outside_band():
     assert metrics.calibration_coverage(actuals, lower, upper) == 0.5
 
 
+def test_calibration_coverage_band_is_closed_at_both_ends():
+    """PYQ-245's mutation survey: neither existing coverage test has an actual
+    landing exactly on a bound, so `>=`/`<=` surviving as `>`/`<` went unnoticed.
+    The docstring's own `[lower, upper]` notation means closed -- an actual
+    exactly at either edge counts as inside the band, not outside it."""
+    actuals = np.array([[95.0, 105.0]])
+    lower = np.array([[95.0, 95.0]])
+    upper = np.array([[105.0, 105.0]])
+    assert metrics.calibration_coverage(actuals, lower, upper) == 1.0
+
+
 def test_quantile_exceedance_and_pinball_loss_match_hand_calculation():
     actuals = np.array([[1.0, 3.0]])
     predictions = np.array([[[0.0, 0.0, 2.0], [2.0, 4.0, 4.0]]])
@@ -94,6 +105,54 @@ def test_effective_sample_size_accounts_for_overlapping_horizons():
         metrics.EvaluationMetrics(1, 2, 0.5, 0.8, n_samples=56, n_points=280).effective_n_samples
         == 12
     )
+
+
+def test_aggregated_walk_forward_windows_are_a_different_estimator_than_train_validation():
+    """docs/methodology.md's decision-rule criterion 2 (GitHub Issue #193).
+
+    `train()`'s ~12-effective-window figure comes from one fitted model scored
+    on 56 overlapping decode origins in a single validation holdout. Each
+    `walk_forward_backtest` window is instead exactly one sample (n_samples=1)
+    from one independently retrained model (PYQ-127), so aggregating windows
+    sums n_samples directly rather than reproducing that ~12. This pins the
+    two numbers methodology.md cites so a future change to either estimator
+    can't silently invalidate the documented claim without a test noticing.
+    """
+    horizon = 5
+
+    def one_window() -> metrics.EvaluationMetrics:
+        # walk_forward_backtest's per-window result: exactly one sample,
+        # `horizon` points (PYQ-127's docstring on _window_signal).
+        return metrics.EvaluationMetrics(
+            model_mae=1.0,
+            baseline_mae=1.0,
+            directional_accuracy=0.5,
+            calibration_coverage=0.8,
+            n_samples=1,
+            n_points=horizon,
+        )
+
+    # `backtest --windows 5` (methodology.md's own worked example): 5 independently
+    # retrained models, one sample each -- effective_n_samples = 1, not ~12.
+    five_windows = metrics.aggregate_metrics([one_window() for _ in range(5)])
+    assert five_windows.effective_n_samples == 1
+
+    # Clearing the decision rule's own effective_n >= 10 floor at horizon=5 needs
+    # windows >= 50, exactly as the corrected criterion 2 text now states.
+    fifty_windows = metrics.aggregate_metrics([one_window() for _ in range(50)])
+    assert fifty_windows.effective_n_samples == 10
+
+    # train()'s validation split is the other estimator: one fit, ~56 overlapping
+    # decode origins -- the ~12 figure criterion 2 now attributes to train() only.
+    train_validation = metrics.EvaluationMetrics(
+        model_mae=1.0,
+        baseline_mae=1.0,
+        directional_accuracy=0.5,
+        calibration_coverage=0.8,
+        n_samples=56,
+        n_points=56 * horizon,
+    )
+    assert train_validation.effective_n_samples == 12
 
 
 def test_moving_block_bootstrap_interval_uses_contiguous_blocks_deterministically():
@@ -288,6 +347,19 @@ def test_compare_backtests_raises_without_recorded_origins():
     a = _windows([1.0], [2.0], origins=[])
     b = _windows([1.0], [2.0], origins=[])
     with pytest.raises(ValueError, match="origins"):
+        metrics.compare_backtests(a, b)
+
+
+def test_compare_backtests_raises_when_only_one_side_has_recorded_origins():
+    """PYQ-245's mutation survey: the existing 'without recorded origins' test
+    leaves both sides empty, which can't distinguish `or` from `and` in
+    `if not a.origins or not b.origins`. Exactly one side empty is the case
+    that actually tells them apart -- with `and`, execution falls through to
+    the misaligned-origins check below and still raises, but with the wrong,
+    less specific message, silently losing the guard's own stated purpose."""
+    a = _windows([], [], origins=[])
+    b = _windows([1.0], [2.0], origins=[100])
+    with pytest.raises(ValueError, match="requires both sides to carry recorded window origins"):
         metrics.compare_backtests(a, b)
 
 

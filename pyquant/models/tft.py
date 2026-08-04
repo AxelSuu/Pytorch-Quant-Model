@@ -17,6 +17,7 @@ import datetime as dt
 import json
 import logging
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -714,6 +715,21 @@ def walk_forward_backtest(
     horizon = settings.training.max_prediction_length
     encoder_len = settings.training.max_encoder_length
     step = step if step is not None else horizon
+    if compute_signals and step < horizon:
+        # analysis.signals.evaluate_signals/_compound treats each window's realized
+        # return as one sequential, non-overlapping "trade" and compounds them
+        # multiplicatively -- correct only when consecutive windows don't share
+        # calendar days. step < horizon means they do, so the resulting
+        # strategy_pnl_pct/buy_and_hold_pnl_pct double-counts the overlapping days
+        # and doesn't correspond to any real trading history (bugs.md#pyq-328).
+        # Currently unreachable from the CLI (no --step flag), but reachable from
+        # this function's own Python API -- fail loudly rather than let a future
+        # caller silently get a wrong number.
+        raise ValueError(
+            f"walk_forward_backtest(compute_signals=True) requires step >= horizon "
+            f"to avoid double-counting overlapping windows in the P&L accounting "
+            f"(got step={step}, horizon={horizon})"
+        )
     max_idx = int(df["time_idx"].max())
 
     latest_cutoff = max_idx - horizon
@@ -1280,10 +1296,25 @@ def permutation_importance(
         actuals = result.y[0].cpu().numpy()
         return float(np.mean(np.abs(actuals - predictions[:, :, median_idx])))
 
+    baseline_start = time.monotonic()
     baseline = _mae(df)
+    pass_seconds = time.monotonic() - baseline_start
 
     rng = np.random.default_rng(seed)
     feature_names = [c for c in (bundle.meta.get("features") or []) if c in df.columns]
+    # One more _mae() pass per feature, each costing about as long as the baseline
+    # pass just measured -- macro + sectors + sentiment + technicals + options can
+    # total 20-30+ columns, and this had no feedback at all before the loop started
+    # (bugs.md#pyq-329). Logging the estimate is cheap; a max_features/subsampling
+    # knob is not added here since nothing calls this function outside a test yet
+    # (see PYQ-329's resolution note) -- add one against a real caller's actual
+    # constraint, not a guessed one.
+    logger.info(
+        "permutation_importance: %d features, ~%.1fs/pass (baseline) -> ~%.0fs estimated total",
+        len(feature_names),
+        pass_seconds,
+        pass_seconds * len(feature_names),
+    )
     degradation: dict[str, float] = {}
     for col in feature_names:
         shuffled = df.copy()
