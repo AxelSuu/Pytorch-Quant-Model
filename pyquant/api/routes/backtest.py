@@ -23,13 +23,15 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Depends, HTTPException
 
 from pyquant.analysis import serialize
-from pyquant.api.deps import get_settings, require_api_key
+from pyquant.api.deps import get_settings, require_scope
 from pyquant.api.jobs import JobRegistry, get_job_executor, get_job_registry
 from pyquant.api.schemas import BacktestJobResponse, BacktestJobStatusResponse, BacktestRequest
 from pyquant.config import Settings
 from pyquant.models import tft
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+# PYQ-281: same "train" scope /train requires -- a backtest trains n_windows
+# models sequentially, the same compute-budget exposure a read-only key must not have.
+router = APIRouter(dependencies=[Depends(require_scope("train"))])
 logger = logging.getLogger(__name__)
 
 

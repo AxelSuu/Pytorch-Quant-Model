@@ -22,6 +22,7 @@ from pyquant.analysis.metrics import (
     skill_confidence_interval,
 )
 from pyquant.analysis.signals import evaluate_signals
+from pyquant.api import keystore
 from pyquant.cli import charts
 from pyquant.cli.render import (
     _add_metric_rows,
@@ -996,6 +997,93 @@ def doctor():
             "configuration.[/red] Restore the source/key it names, or retrain it."
         )
         raise typer.Exit(1)
+
+
+keys_app = typer.Typer(
+    help="Issue, list, and revoke API keys for pyquant/api/ (PYQ-281).", no_args_is_help=True
+)
+app.add_typer(keys_app, name="keys")
+
+
+@keys_app.command("create")
+def keys_create(
+    name: str = typer.Option(..., "--name", help="A label identifying who/what this key is for"),
+    scopes: str = typer.Option(
+        "read", "--scopes", help="Comma-separated scopes, e.g. 'read' or 'read,train'"
+    ),
+):
+    """Issue a new API key. The raw value is shown exactly once -- save it now."""
+    try:
+        raw_key, record = keystore.create_key(
+            keystore.resolve_db_path(), name, scopes.split(",")
+        )
+    except keystore.InvalidScope as exc:
+        _fail(exc)
+    if _output.json:
+        _emit_json(
+            {
+                "id": record.id,
+                "name": record.name,
+                "scopes": sorted(record.scopes),
+                "key": raw_key,
+            }
+        )
+        return
+    console.print(f"[green]Key created for '{name}'.[/green] This is shown once -- save it now:")
+    console.print(f"  [bold]{raw_key}[/bold]")
+    console.print(f"id={record.id}  scopes={','.join(sorted(record.scopes))}")
+
+
+@keys_app.command("list")
+def keys_list():
+    """List issued keys (id, name, scopes, prefix, timestamps) -- never the raw value."""
+    records = keystore.list_keys(keystore.resolve_db_path())
+    if _output.json:
+        _emit_json(
+            [
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "prefix": r.prefix,
+                    "scopes": sorted(r.scopes),
+                    "created_at": r.created_at,
+                    "revoked_at": r.revoked_at,
+                    "last_used_at": r.last_used_at,
+                }
+                for r in records
+            ]
+        )
+        return
+    if not records:
+        console.print("[dim]No API keys issued yet. Run `pyquant keys create --name X`.[/dim]")
+        return
+    table = Table(title="API keys")
+    for column in ("ID", "Name", "Prefix", "Scopes", "Created", "Revoked", "Last used"):
+        table.add_column(column)
+    for r in records:
+        table.add_row(
+            r.id,
+            r.name,
+            r.prefix,
+            ",".join(sorted(r.scopes)),
+            r.created_at[:10],
+            "[red]" + r.revoked_at[:10] + "[/red]" if r.revoked_at else "[dim]—[/dim]",
+            r.last_used_at[:10] if r.last_used_at else "[dim]never[/dim]",
+        )
+    console.print(table)
+
+
+@keys_app.command("revoke")
+def keys_revoke(key_id: str = typer.Argument(..., help="The key id, from `pyquant keys list`")):
+    """Revoke a key. A revoked key is rejected by every subsequent request."""
+    removed = keystore.revoke_key(keystore.resolve_db_path(), key_id)
+    if _output.json:
+        _emit_json({"id": key_id, "revoked": removed})
+        return
+    if removed:
+        console.print(f"[green]Revoked key '{key_id}'.[/green]")
+    else:
+        console.print(f"[yellow]No active key '{key_id}' to revoke.[/yellow]")
 
 
 if __name__ == "__main__":
