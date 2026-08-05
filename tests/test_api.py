@@ -33,7 +33,10 @@ from pyquant.analysis import serialize  # noqa: E402
 from pyquant.analysis.forecast import Forecast  # noqa: E402
 from pyquant.analysis.interpret import Interpretation  # noqa: E402
 from pyquant.analysis.metrics import EvaluationMetrics  # noqa: E402
-from pyquant.api import deps  # noqa: E402
+from pyquant.api import (
+    deps,  # noqa: E402
+    keystore,  # noqa: E402
+)
 from pyquant.api import jobs as jobs_mod  # noqa: E402
 from pyquant.api.app import app  # noqa: E402
 from pyquant.api.jobs import JobRegistry  # noqa: E402
@@ -56,8 +59,15 @@ def _clear_dependency_overrides():
 
 @pytest.fixture(autouse=True)
 def _bypass_auth():
-    """Most tests aren't about auth; the auth-specific tests override this back."""
-    app.dependency_overrides[deps.require_api_key] = lambda: None
+    """Most tests aren't about auth; the auth-specific tests override this back.
+
+    Returns a full-scope identity (not ``None``, PYQ-281) so routes gated by
+    ``require_scope("train")`` -- which itself depends on ``require_api_key`` --
+    also resolve cleanly for tests that aren't exercising scope enforcement.
+    """
+    app.dependency_overrides[deps.require_api_key] = lambda: keystore.ApiKey(
+        id="test", name="test-bypass", scopes=keystore.ALLOWED_SCOPES
+    )
     yield
 
 
@@ -1109,12 +1119,23 @@ def test_train_job_id_not_found_via_backtest_endpoint(monkeypatch):
     assert r.status_code == 404
 
 
-def test_require_api_key_rejects_a_non_ascii_key_with_401_not_500(monkeypatch):
+def _configured_keystore(tmp_path, monkeypatch, scopes=("read",), name="test-key"):
+    """Point PYQUANT_API_KEYS_DB at a fresh temp store and issue one real key.
+
+    Returns the raw key string -- the only place it's ever available outside
+    `keystore.create_key`'s own return value, per PYQ-281's "shown once" rule.
+    """
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+    raw_key, _record = keystore.create_key(keystore.resolve_db_path(), name, scopes)
+    return raw_key
+
+
+def test_require_api_key_rejects_a_non_ascii_key_with_401_not_500(tmp_path, monkeypatch):
     """PYQ-145: Starlette decodes headers as latin-1, so a byte >127 in
     X-API-Key produces a non-ASCII str -- hmac.compare_digest used to raise
     TypeError on that, which FastAPI's default handler turned into a 500."""
     app.dependency_overrides.pop(deps.require_api_key, None)
-    monkeypatch.setenv("PYQUANT_API_KEYS", "a-real-key")
+    _configured_keystore(tmp_path, monkeypatch)
     _override_settings_and_cache()
 
     # httpx's header-value normalization ASCII-encodes str values by default, so
@@ -1128,44 +1149,44 @@ def test_require_api_key_rejects_a_non_ascii_key_with_401_not_500(monkeypatch):
 # --- auth (deliberately does NOT use the _bypass_auth fixture's override) --------
 
 
-def test_require_api_key_fails_loudly_when_unconfigured(monkeypatch):
+def test_require_api_key_fails_loudly_when_unconfigured(tmp_path, monkeypatch):
     app.dependency_overrides.pop(deps.require_api_key, None)
-    monkeypatch.delenv("PYQUANT_API_KEYS", raising=False)
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "empty.db"))
     monkeypatch.delenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", raising=False)
     r = client.get("/forecast/AAPL")
     assert r.status_code == 500  # not a silent 200 -- an unconfigured gate must not open
 
 
-def test_app_refuses_to_start_when_api_keys_unconfigured(monkeypatch):
+def test_app_refuses_to_start_when_api_keys_unconfigured(tmp_path, monkeypatch):
     """The lifespan hook makes the same check require_api_key does, once at
     boot -- a misconfigured deployment should crash-loop immediately rather
     than start, pass a liveness check, and 500 on the first real request.
     Only entering TestClient as a context manager runs ASGI lifespan events
     (verified against the installed Starlette source); the module-level
     `client` used elsewhere never does, so this is the one test that does."""
-    monkeypatch.delenv("PYQUANT_API_KEYS", raising=False)
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "empty.db"))
     monkeypatch.delenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", raising=False)
-    with pytest.raises(RuntimeError, match="PYQUANT_API_KEYS"):
+    with pytest.raises(RuntimeError, match="No active API keys"):
         with TestClient(app):
             pass  # pragma: no cover -- startup must fail before this runs
 
 
-def test_app_starts_cleanly_when_api_keys_configured(monkeypatch):
-    monkeypatch.setenv("PYQUANT_API_KEYS", "a-real-key")
+def test_app_starts_cleanly_when_api_keys_configured(tmp_path, monkeypatch):
+    _configured_keystore(tmp_path, monkeypatch)
     with TestClient(app) as c:
         assert c.get("/healthz").status_code == 200
 
 
-def test_app_starts_cleanly_with_the_explicit_dev_opt_out(monkeypatch):
-    monkeypatch.delenv("PYQUANT_API_KEYS", raising=False)
+def test_app_starts_cleanly_with_the_explicit_dev_opt_out(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "empty.db"))
     monkeypatch.setenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", "1")
     with TestClient(app) as c:
         assert c.get("/healthz").status_code == 200
 
 
-def test_require_api_key_allows_the_explicit_dev_opt_out(monkeypatch):
+def test_require_api_key_allows_the_explicit_dev_opt_out(tmp_path, monkeypatch):
     app.dependency_overrides.pop(deps.require_api_key, None)
-    monkeypatch.delenv("PYQUANT_API_KEYS", raising=False)
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "empty.db"))
     monkeypatch.setenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", "1")
     _override_settings_and_cache()
     monkeypatch.setattr(
@@ -1175,49 +1196,90 @@ def test_require_api_key_allows_the_explicit_dev_opt_out(monkeypatch):
     assert r.status_code == 200
 
 
-def test_require_api_key_rejects_a_missing_or_wrong_key(monkeypatch):
+def test_require_api_key_rejects_a_missing_or_wrong_key(tmp_path, monkeypatch):
     app.dependency_overrides.pop(deps.require_api_key, None)
-    monkeypatch.setenv("PYQUANT_API_KEYS", "correct-key")
+    _configured_keystore(tmp_path, monkeypatch, name="correct-key")
     r_missing = client.get("/forecast/AAPL")
     assert r_missing.status_code == 401
     r_wrong = client.get("/forecast/AAPL", headers={"x-api-key": "wrong"})
     assert r_wrong.status_code == 401
 
 
-def test_require_api_key_accepts_a_correct_key(monkeypatch):
+def test_require_api_key_accepts_a_correct_key(tmp_path, monkeypatch):
     app.dependency_overrides.pop(deps.require_api_key, None)
-    monkeypatch.setenv("PYQUANT_API_KEYS", "correct-key,another-key")
+    raw_key = _configured_keystore(tmp_path, monkeypatch, name="correct-key")
     _override_settings_and_cache()
     monkeypatch.setattr(
         "pyquant.api.routes.explain.explain_forecast", lambda *a, **k: _fake_interpretation()
     )
-    r = client.get("/explain/AAPL", headers={"x-api-key": "correct-key"})
+    r = client.get("/explain/AAPL", headers={"x-api-key": raw_key})
     assert r.status_code == 200
+
+
+def test_require_api_key_rejects_a_revoked_key(tmp_path, monkeypatch):
+    """PYQ-281's identity model makes this possible at all -- the old flat
+    PYQUANT_API_KEYS list had no way to invalidate one key without rotating
+    every key sharing that env var. A second, still-active key is issued
+    alongside the revoked one so the store is genuinely "configured" (has an
+    active key) -- otherwise this collapses into the unconfigured-service 500
+    case rather than testing revocation's own 401."""
+    app.dependency_overrides.pop(deps.require_api_key, None)
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+    db_path = keystore.resolve_db_path()
+    raw_key, record = keystore.create_key(db_path, "revoke-me", ["read"])
+    keystore.create_key(db_path, "still-active", ["read"])
+    assert keystore.revoke_key(db_path, record.id) is True
+
+    r = client.get("/forecast/AAPL", headers={"x-api-key": raw_key})
+    assert r.status_code == 401
+
+
+def test_require_scope_rejects_a_read_only_key_on_train(tmp_path, monkeypatch):
+    """PYQ-281's scopes requirement: a read-only key must not be able to
+    trigger a fit and spend the operator's training compute budget."""
+    app.dependency_overrides.pop(deps.require_api_key, None)
+    raw_key = _configured_keystore(tmp_path, monkeypatch, scopes=("read",))
+
+    r = client.post("/train", json={"symbols": ["AAPL"]}, headers={"x-api-key": raw_key})
+
+    assert r.status_code == 403
+
+
+def test_require_scope_accepts_a_train_scoped_key_on_train(tmp_path, monkeypatch):
+    app.dependency_overrides.pop(deps.require_api_key, None)
+    raw_key = _configured_keystore(tmp_path, monkeypatch, scopes=("read", "train"))
+    app.dependency_overrides[deps.get_settings] = lambda: object()
+    app.dependency_overrides[deps.get_bundle_cache] = lambda: _FakeBundleCache()
+    monkeypatch.setattr("pyquant.api.routes.train.tft.train", lambda *a, **k: _fake_train_result())
+
+    r = client.post("/train", json={"symbols": ["AAPL"]}, headers={"x-api-key": raw_key})
+
+    assert r.status_code == 202
 
 
 # --- PYQ-160: /docs, /redoc, /openapi.json must honor the same auth contract -------
 
 
-def test_openapi_json_requires_auth(monkeypatch):
+def test_openapi_json_requires_auth(tmp_path, monkeypatch):
     app.dependency_overrides.pop(deps.require_api_key, None)
-    monkeypatch.setenv("PYQUANT_API_KEYS", "correct-key")
+    raw_key = _configured_keystore(tmp_path, monkeypatch, name="correct-key")
 
     r_missing = client.get("/openapi.json")
     assert r_missing.status_code == 401
 
-    r_ok = client.get("/openapi.json", headers={"x-api-key": "correct-key"})
+    r_ok = client.get("/openapi.json", headers={"x-api-key": raw_key})
     assert r_ok.status_code == 200
     assert "paths" in r_ok.json()
 
 
-def test_docs_and_redoc_require_auth(monkeypatch):
+def test_docs_and_redoc_require_auth(tmp_path, monkeypatch):
     app.dependency_overrides.pop(deps.require_api_key, None)
-    monkeypatch.setenv("PYQUANT_API_KEYS", "correct-key")
+    raw_key = _configured_keystore(tmp_path, monkeypatch, name="correct-key")
 
     assert client.get("/docs").status_code == 401
     assert client.get("/redoc").status_code == 401
-    assert client.get("/docs", headers={"x-api-key": "correct-key"}).status_code == 200
-    assert client.get("/redoc", headers={"x-api-key": "correct-key"}).status_code == 200
+    assert client.get("/docs", headers={"x-api-key": raw_key}).status_code == 200
+    assert client.get("/redoc", headers={"x-api-key": raw_key}).status_code == 200
 
 
 # --- PYQ-261's explicit acceptance criterion: API and CLI --format json agree -----

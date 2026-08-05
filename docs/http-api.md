@@ -13,7 +13,7 @@ this page is how to run what was built.
 
 ```bash
 uv sync --extra api
-export PYQUANT_API_KEYS=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+uv run pyquant keys create --name operator --scopes read,train
 uv run uvicorn pyquant.api.app:app
 ```
 
@@ -26,17 +26,37 @@ can answer for it.
 
 ## Authentication
 
-Every endpoint except `/healthz` requires an `X-API-Key` header matching one of the
-comma-separated keys in the `PYQUANT_API_KEYS` environment variable. Comparison is
-constant-time, so response timing cannot leak a valid key one byte at a time.
+Every endpoint except `/healthz` requires an `X-API-Key` header matching an active key
+issued from the key store (`pyquant/api/keystore.py`, PYQ-281). Unlike the flat shared-secret
+list this replaced, a key now resolves to an **identity**: `require_api_key` returns who
+authenticated the request (id, name, scopes), not just "some valid key did." Comparison is
+against a stored hash with `hmac.compare_digest`, so response timing cannot leak a valid key
+one byte at a time, and the raw key itself is never stored — only its hash.
 
-Keys come from the environment rather than from {py:class}`~pyquant.config.Settings`
-deliberately: a `Settings` field can end up in a `meta.json`, a log line or a cache
-fingerprint, and this project's secrets rule is that key values never do.
+Issue and manage keys with the CLI (the project's existing "admin surface" pattern, alongside
+`cache`/`doctor`/`snapshot`):
 
-**An unconfigured service fails loudly with `500`, it does not fall open.** A public
-forecasting endpoint with no key check would spend the operator's FRED, Finnhub and Yahoo
-quota on every caller. For local development only:
+```bash
+uv run pyquant keys create --name operator --scopes read,train  # raw key shown once
+uv run pyquant keys list                                        # id, name, scopes, timestamps
+uv run pyquant keys revoke <id>                                 # immediate; a revoked key 401s
+```
+
+Keys carry **scopes**. `read` covers every GET/`scan` endpoint; `train` additionally gates
+`POST /train` and `POST /backtest` — a read-only key (the default for a forecast consumer)
+gets a `403` from either, since consuming forecasts should not be able to spend the
+operator's training compute budget. A missing scope is `403`, not `401`: the key is valid,
+it just isn't authorized for this endpoint.
+
+Keys live in a SQLite store (path from `PYQUANT_API_KEYS_DB`, or an anchored
+`data/api_keys.db` default) rather than in {py:class}`~pyquant.config.Settings` or an env
+var deliberately: a `Settings` field can end up in a `meta.json`, a log line or a cache
+fingerprint, and this project's secrets rule is that key values never do — only a hash is
+ever persisted.
+
+**An unconfigured service (no active key at all) fails loudly with `500`, it does not fall
+open.** A public forecasting endpoint with no key check would spend the operator's FRED,
+Finnhub and Yahoo quota on every caller. For local development only:
 
 ```bash
 PYQUANT_API_ALLOW_UNAUTHENTICATED=1 uv run uvicorn pyquant.api.app:app
@@ -45,7 +65,8 @@ PYQUANT_API_ALLOW_UNAUTHENTICATED=1 uv run uvicorn pyquant.api.app:app
 **The process refuses to start at all if unconfigured** (a `lifespan` hook makes the same
 check once at boot, not just per-request) — a misconfigured deployment crash-loops
 immediately instead of starting, passing a liveness check, and 500ing on the first real
-request. The per-request check in `require_api_key` stays as defense in depth on top of it.
+request. The per-request check in `require_api_key` stays as defense in depth on top of it
+(e.g. against the last active key being revoked mid-run).
 
 ## Endpoints
 
@@ -82,12 +103,13 @@ endpoint except `/healthz`" is exact, not aspirational.
 
 | Code | When |
 |---|---|
-| `401` | Missing or invalid `X-API-Key`. Body: `{"detail": "Missing or invalid API key"}`. |
+| `401` | Missing, invalid, or revoked `X-API-Key`. Body: `{"detail": "Missing or invalid API key"}`. |
+| `403` | A valid key that lacks the scope the endpoint requires — e.g. a `read`-only key calling `POST /train` or `POST /backtest`. Body: `{"detail": "API key '<name>' lacks required scope 'train'"}`. |
 | `404` | No trained bundle for that symbol, or no job with that id. Body: `{"detail": "No trained model for SYMBOL. Run \`pyquant train\` first."}` or `{"detail": "No job '<id>'"}`. Deliberately does **not** include the bundle's absolute filesystem path — the full detail (which does) is logged server-side only. |
 | `409` | {py:class}`~pyquant.models.tft.FeatureSchemaMismatch` — the bundle was trained on features that can no longer be assembled. A conflict, not a server error: the model is fine, the world moved. Also returned by `POST /train` when a job for the same bundle name is already queued or running (bugs.md#pyq-161). |
 | `422` | An empty `symbols` list on `POST /train` (`{"detail": "symbols must not be empty"}`), a body that fails pydantic validation — e.g. an invalid symbol shape returns FastAPI's structured form: `{"detail": [{"type": "value_error", "loc": ["body", "symbols"], "msg": "Value error, Invalid symbol/bundle name '../x': must match ...", ...}]}` — or a request field outside its bound (more than 50 symbols, `windows`/`epochs` out of range, an unrecognised `period`; see "Request limits" below). Note the two `422` shapes differ (plain string vs. a list of error objects) depending on which check rejected the request. |
 | `429` | The requested bundle's prediction lock (`/explain`, and `/scan` per-symbol) is still held by another in-flight request after `PREDICTION_LOCK_TIMEOUT_SECONDS` (30s). Retry — this is a queue-length signal, not a client error. `GET /forecast` no longer takes this path at all (features.md#pyq-282): it reads a store, never the live bundle. |
-| `500` | `PYQUANT_API_KEYS` is unset and unauthenticated access was not explicitly enabled. |
+| `500` | No active API key exists (`pyquant keys create` was never run, or every issued key is revoked) and unauthenticated access was not explicitly enabled. |
 | `503` | `GET /forecast/{symbol}` only: the symbol is trained but `pyquant precompute` has never written it a store entry, or its stored entry is older than the last session the nightly job should already have covered (features.md#pyq-282). Not a client error — retry after running/waiting for the nightly job. |
 
 ### Request limits
@@ -353,11 +375,13 @@ to graduate rather than defects to file:
   another worker's cached copy. Same trigger.
 - **Bundles live on the local filesystem.** No object storage, so instances do not share
   trained models.
-- **No rate limiting, and no request identity to attach one to.** `require_api_key`
-  authenticates but resolves to nothing — every valid key is interchangeable, so there's no
-  subject to meter, revoke individually, or attribute vendor-quota cost to
-  (features.md#pyq-281 is the design for closing this; a new dependency, deliberately not
-  built inside a hardening pass).
+- **No rate limiting or vendor-quota metering, though there is now a subject to meter.**
+  `require_api_key` resolves to an identity (id, name, scopes) and keys can be issued,
+  scoped, and revoked individually (PYQ-281) — the part that was missing before. What's
+  still not built: a request-rate counter per key, and a vendor-quota meter (cold-fetches/day,
+  the actual cost driver per investigations.md#pyq-319) that could reject a request before
+  it spends FRED/Finnhub/Yahoo quota rather than after. An authenticated caller can still
+  exhaust the operator's vendor quota; revoking their key is the only lever today.
 - **Every sync route still shares one 40-slot thread pool.** `/train` and `/backtest` were
   moved onto a dedicated executor (bugs.md#pyq-163, Resolved); `/forecast`, `/explain` and
   `/scan` have not been, and still compete with each other there the way everything did
@@ -385,6 +409,6 @@ more than one.
   discovering what's trained; the precomputed store (features.md#pyq-282, above) makes a
   history endpoint a query over accumulating rows rather than a live-pipeline problem, but
   today's store still keeps only each symbol's single latest write, not a history.
-- **No dedicated executor for background jobs** (bugs.md#pyq-163) and **no identity-bearing
-  API keys / rate limiting** (features.md#pyq-281) — see "What v1 deliberately does not do"
-  above for both.
+- **No dedicated executor for background jobs** (bugs.md#pyq-163) and **no rate limiting or
+  vendor-quota metering** (features.md#pyq-281 built identity/scopes/revocation; metering
+  itself is still open) — see "What v1 deliberately does not do" above.

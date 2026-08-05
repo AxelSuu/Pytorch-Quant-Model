@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import warnings
 from dataclasses import dataclass
@@ -16,14 +15,25 @@ from rich.panel import Panel
 from rich.table import Table
 
 from pyquant.analysis import serialize
-from pyquant.analysis.forecast import Forecast, generate_forecast
+from pyquant.analysis.forecast import generate_forecast
 from pyquant.analysis.interpret import attention_to_series, explain_forecast
 from pyquant.analysis.metrics import (
     directional_accuracy_confidence_interval,
     skill_confidence_interval,
 )
 from pyquant.analysis.signals import evaluate_signals
+from pyquant.api import keystore
 from pyquant.cli import charts
+from pyquant.cli.render import (
+    _add_metric_rows,
+    _band_label,
+    _color_pct,
+    _emit_json,
+    _fmt_bytes,
+    _forecast_table,
+    _per_horizon_table,
+    _per_window_table,
+)
 from pyquant.config import DataConfig, Settings, load_settings
 from pyquant.data import cache as data_cache
 from pyquant.data import forecast_store
@@ -68,11 +78,6 @@ def _fail(exc: Exception) -> None:
     """Report an expected failure as a clean one-liner and exit non-zero."""
     console.print(f"[red]Error:[/red] {exc}")
     raise typer.Exit(1)
-
-
-def _emit_json(data) -> None:
-    """Print plain JSON to stdout -- no Rich, so no ANSI escape codes leak in."""
-    print(json.dumps(data, indent=2, default=str))
 
 
 @app.callback()
@@ -161,140 +166,6 @@ def _validate_as_of(as_of: str | None) -> None:
         date.fromisoformat(as_of)
     except ValueError:
         raise ValueError(f"--as-of must be an ISO date (YYYY-MM-DD), got {as_of!r}") from None
-
-
-def _band_label(quantiles: list[float]) -> str:
-    """Name the calibration band from the configured quantiles, e.g. "p10-p90".
-
-    `calibration_coverage` measures the *outermost* band, so hardcoding
-    "p10-p90" mislabelled any non-default `quantiles` -- including the project's
-    own configs/wide_quantile_aggressive.yaml (PYQ-122).
-    """
-    return f"p{int(quantiles[0] * 100)}-p{int(quantiles[-1] * 100)}"
-
-
-def _add_metric_rows(table: Table, ev, quantiles: list[float], suffix: str = "") -> None:
-    """Add the shared evaluation rows, sample size included.
-
-    The sample size is not optional context: "directional accuracy 100.0%" off 5
-    points and off 500 are different claims, and the table used to render them
-    identically (PYQ-117).
-    """
-    table.add_row(f"Model MAE{suffix}", f"{ev.model_mae:.4f}")
-    table.add_row(f"Baseline MAE{suffix} (persistence)", f"{ev.baseline_mae:.4f}")
-    # "(pooled MAE ratio)" names the estimator explicitly (PYQ-141): this is
-    # computed from pooled model/baseline MAE, a *ratio of means*, which is a
-    # different statistic from the mean of the per-window skill column
-    # `_per_window_table` prints below it and can disagree with it without
-    # limit -- see that table's caption in `backtest()`.
-    table.add_row("Skill vs. baseline (pooled MAE ratio)", f"{ev.skill_vs_baseline:+.1%}")
-    # Baselines beyond persistence (PYQ-275): persistence is uniquely
-    # favourable to the null on a near-random-walk level series, so headline
-    # skill against it alone is weak evidence. Name the *strongest* one
-    # (lowest MAE, hardest to beat) explicitly, rather than only ever
-    # reporting skill against the weakest comparator available.
-    other_baselines = {k: v for k, v in ev.baseline_maes.items() if k != "persistence"}
-    if other_baselines:
-        for name, mae in sorted(other_baselines.items()):
-            table.add_row(f"Baseline MAE{suffix} ({name})", f"{mae:.4f}")
-        strongest_name, strongest_mae = ev.strongest_baseline
-        table.add_row(
-            f"Skill vs. strongest baseline ({strongest_name}, pooled MAE ratio)",
-            f"{ev.skill_vs_strongest_baseline:+.1%}",
-        )
-    table.add_row(f"Directional accuracy{suffix}", f"{ev.directional_accuracy:.1%}")
-    table.add_row(
-        f"Calibration coverage{suffix} ({_band_label(quantiles)})",
-        f"{ev.calibration_coverage:.1%}",
-    )
-    if ev.quantile_exceedance:
-        for quantile, rate in ev.quantile_exceedance.items():
-            table.add_row(f"Empirical p{quantile:.0%}{suffix}", f"{rate:.1%}")
-    if ev.pinball_losses:
-        table.add_row(
-            f"Mean pinball loss{suffix}",
-            f"{sum(ev.pinball_losses.values()) / len(ev.pinball_losses):.4f}",
-        )
-    # CRPS scores the whole predictive distribution; Winkler charges for band
-    # width as well as coverage, which is the pathology coverage alone hides --
-    # a band can hit nominal by being enormous (PYQ-252). Both: lower is better.
-    # `is not None` rather than a bare truthy check (PYQ-156): both fields are
-    # plain floats, always populated, and a legitimate 0.0 must still print.
-    if ev.crps is not None:
-        table.add_row(f"CRPS{suffix} (lower better)", f"{ev.crps:.4f}")
-    if ev.winkler_score is not None:
-        table.add_row(f"Winkler interval score{suffix} (lower better)", f"{ev.winkler_score:.4f}")
-    table.add_row(
-        "Evaluated on",
-        f"{ev.n_samples} overlapping windows ({ev.n_points} predictions; "
-        f"effective n≈{ev.effective_n_samples})",
-    )
-
-
-def _per_window_table(result, quantiles: list[float]) -> Table:
-    """Per-window metrics behind the aggregate.
-
-    A mean directional accuracy of 60% built from windows at 100/20 says something
-    very different from two windows at 60%, and only the mean was ever shown
-    (PYQ-226). The spread is the whole reason to run more than one window.
-    """
-    table = Table(title="Per-window results", title_style="dim")
-    table.add_column("Window", justify="right")
-    table.add_column("Model MAE", justify="right")
-    table.add_column("Baseline MAE", justify="right")
-    # "(per-window)" is deliberate (PYQ-141): this column is a mean-of-ratios
-    # once read down, a different estimator from the pooled-MAE-ratio headline
-    # above it, and the two can disagree without limit -- see the caption
-    # printed after this table in `backtest()`.
-    table.add_column("Skill (per-window)", justify="right")
-    table.add_column("Directional", justify="right")
-    table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
-    for i, ev in enumerate(result.per_window, start=1):
-        table.add_row(
-            str(i),
-            f"{ev.model_mae:.4f}",
-            f"{ev.baseline_mae:.4f}",
-            f"{ev.skill_vs_baseline:+.1%}",
-            f"{ev.directional_accuracy:.1%}",
-            f"{ev.calibration_coverage:.1%}",
-        )
-    return table
-
-
-def _per_horizon_table(
-    evaluation, quantiles: list[float], title: str = "Per-horizon breakdown"
-) -> Table:
-    """The per-decoder-step profile every other metric averages away (PYQ-267).
-
-    Persistence is hardest to beat at h=1 and progressively less so as h grows,
-    so a model that is genuinely learning something should show skill
-    *increasing* with horizon while one that only tracks the last close shows
-    the opposite -- indistinguishable in a single mean-over-horizon number.
-    """
-    table = Table(title=title, title_style="dim")
-    table.add_column("Step", justify="right")
-    table.add_column("Model MAE", justify="right")
-    table.add_column("Baseline MAE", justify="right")
-    table.add_column("Skill", justify="right")
-    table.add_column("Directional", justify="right")
-    table.add_column(f"Coverage {_band_label(quantiles)}", justify="right")
-    for step in evaluation.per_horizon:
-        table.add_row(
-            f"h={step.step}",
-            f"{step.model_mae:.4f}",
-            f"{step.baseline_mae:.4f}",
-            f"{step.skill_vs_baseline:+.1%}",
-            f"{step.directional_accuracy:.1%}",
-            f"{step.calibration_coverage:.1%}",
-        )
-    return table
-
-
-def _color_pct(pct: float) -> str:
-    """Render a percentage as Rich markup, green/▲ when non-negative and red/▼ below."""
-    arrow = "▲" if pct >= 0 else "▼"
-    color = "green" if pct >= 0 else "red"
-    return f"[{color}]{arrow} {abs(pct):.2f}%[/{color}]"
 
 
 @app.command()
@@ -802,27 +673,6 @@ def sweep(
             )
 
 
-def _forecast_table(fc: Forecast) -> Table:
-    """Build the per-step quantile table, one row per forecast day."""
-    table = Table(title=f"{fc.symbol} — {fc.horizon}-day forecast")
-    table.add_column("Day", justify="right")
-    # Name the actual date each step is for; "Day 1" alone gave no way to notice
-    # that the horizon was pointing at the wrong window (PYQ-115).
-    table.add_column("Date", justify="right")
-    for q in fc.quantiles:
-        table.add_column(f"p{int(q * 100)}", justify="right")
-    table.add_column("vs now", justify="right")
-    dates = fc.forecast_dates
-    for d in range(fc.horizon):
-        row = [str(d + 1), str(dates[d].date())]
-        for q in fc.quantiles:
-            row.append(f"${fc.quantile_series(q)[d]:.2f}")
-        pct = (fc.median[d] - fc.current_price) / fc.current_price * 100
-        row.append(_color_pct(pct))
-        table.add_row(*row)
-    return table
-
-
 @app.command()
 def forecast(
     symbol: str = typer.Argument(..., help="Ticker symbol"),
@@ -1104,18 +954,6 @@ cache_app = typer.Typer(help="Inspect and prune the local data-panel cache.", no
 app.add_typer(cache_app, name="cache")
 
 
-def _fmt_bytes(n: int) -> str:
-    """Format a byte count as B/KB/MB/GB, whole bytes and one decimal above that."""
-    size = float(n)
-    # GB is the last unit, so it is the explicit fall-through rather than a special
-    # case inside the loop with an unreachable return after it (PYQ-126).
-    for unit in ("B", "KB", "MB"):
-        if size < 1024:
-            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-        size /= 1024
-    return f"{size:.1f} GB"
-
-
 @cache_app.command("list")
 def cache_list():
     """Show cache size, entry count, and saved pins."""
@@ -1232,6 +1070,91 @@ def doctor():
             "configuration.[/red] Restore the source/key it names, or retrain it."
         )
         raise typer.Exit(1)
+
+
+keys_app = typer.Typer(
+    help="Issue, list, and revoke API keys for pyquant/api/ (PYQ-281).", no_args_is_help=True
+)
+app.add_typer(keys_app, name="keys")
+
+
+@keys_app.command("create")
+def keys_create(
+    name: str = typer.Option(..., "--name", help="A label identifying who/what this key is for"),
+    scopes: str = typer.Option(
+        "read", "--scopes", help="Comma-separated scopes, e.g. 'read' or 'read,train'"
+    ),
+):
+    """Issue a new API key. The raw value is shown exactly once -- save it now."""
+    try:
+        raw_key, record = keystore.create_key(keystore.resolve_db_path(), name, scopes.split(","))
+    except keystore.InvalidScope as exc:
+        _fail(exc)
+    if _output.json:
+        _emit_json(
+            {
+                "id": record.id,
+                "name": record.name,
+                "scopes": sorted(record.scopes),
+                "key": raw_key,
+            }
+        )
+        return
+    console.print(f"[green]Key created for '{name}'.[/green] This is shown once -- save it now:")
+    console.print(f"  [bold]{raw_key}[/bold]")
+    console.print(f"id={record.id}  scopes={','.join(sorted(record.scopes))}")
+
+
+@keys_app.command("list")
+def keys_list():
+    """List issued keys (id, name, scopes, prefix, timestamps) -- never the raw value."""
+    records = keystore.list_keys(keystore.resolve_db_path())
+    if _output.json:
+        _emit_json(
+            [
+                {
+                    "id": r.id,
+                    "name": r.name,
+                    "prefix": r.prefix,
+                    "scopes": sorted(r.scopes),
+                    "created_at": r.created_at,
+                    "revoked_at": r.revoked_at,
+                    "last_used_at": r.last_used_at,
+                }
+                for r in records
+            ]
+        )
+        return
+    if not records:
+        console.print("[dim]No API keys issued yet. Run `pyquant keys create --name X`.[/dim]")
+        return
+    table = Table(title="API keys")
+    for column in ("ID", "Name", "Prefix", "Scopes", "Created", "Revoked", "Last used"):
+        table.add_column(column)
+    for r in records:
+        table.add_row(
+            r.id,
+            r.name,
+            r.prefix,
+            ",".join(sorted(r.scopes)),
+            r.created_at[:10],
+            "[red]" + r.revoked_at[:10] + "[/red]" if r.revoked_at else "[dim]—[/dim]",
+            r.last_used_at[:10] if r.last_used_at else "[dim]never[/dim]",
+        )
+    console.print(table)
+
+
+@keys_app.command("revoke")
+def keys_revoke(key_id: str = typer.Argument(..., help="The key id, from `pyquant keys list`")):
+    """Revoke a key. A revoked key is rejected by every subsequent request."""
+    removed = keystore.revoke_key(keystore.resolve_db_path(), key_id)
+    if _output.json:
+        _emit_json({"id": key_id, "revoked": removed})
+        return
+    if removed:
+        console.print(f"[green]Revoked key '{key_id}'.[/green]")
+    else:
+        console.print(f"[yellow]No active key '{key_id}' to revoke.[/yellow]")
 
 
 if __name__ == "__main__":

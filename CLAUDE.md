@@ -30,7 +30,7 @@ this file describes *how* to work; `NORTH_STAR.md` says *what's worth working on
 uv sync --extra dev                        # install
 uv run pytest -q                           # full suite (network-free, ~169 tests)
 uv run ruff check .                        # lint — must stay clean
-uv run ruff format --check .               # formatting — a separate CI gate from lint
+uv run ruff format --check .               # format gate — must stay clean (CI runs this too)
 gh issue list --label status:ready         # open, ready-to-pick-up tickets
 
 uv run pyquant train AAPL                  # train → checkpoints/AAPL/
@@ -40,9 +40,9 @@ uv run pyquant backtest AAPL --windows 5   # walk-forward
 uv run pyquant --format json forecast AAPL # machine-readable
 ```
 
-`ruff check` and `ruff format --check` are two separate CI jobs (`.github/workflows/ci.yml`)
-— run both before proposing a commit. `ruff check --fix` does not fix formatting; a
-`ruff check`-clean tree can still fail the `Format` step, run `ruff format .` separately.
+`ruff check` and `ruff format --check` both run in CI, as separate gates. Run both before
+proposing a commit — `ruff check .` does not catch formatting drift; `PR #205` caught this
+the hard way.
 
 ---
 

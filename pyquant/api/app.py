@@ -25,14 +25,14 @@ logger = logging.getLogger(__name__)
 async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
     """Fail fast at startup if auth is unconfigured, rather than at first request.
 
-    `require_api_key` already fails loudly (500) per-request when
-    `PYQUANT_API_KEYS` is unset -- correct, but it means a misconfigured
-    deployment still starts, passes a liveness check, and accepts traffic
-    before the first caller discovers it's broken. Checking once here means
-    the process refuses to start at all (a crash-loop an orchestrator surfaces
-    immediately), which is a faster and louder signal than "every request has
-    been 500ing since deploy." Same check `require_api_key` makes, so the two
-    cannot disagree about what "configured" means.
+    `require_api_key` already fails loudly (500) per-request when the key store
+    (`pyquant/api/keystore.py`) has no active key -- correct, but it means a
+    misconfigured deployment still starts, passes a liveness check, and accepts
+    traffic before the first caller discovers it's broken. Checking once here
+    means the process refuses to start at all (a crash-loop an orchestrator
+    surfaces immediately), which is a faster and louder signal than "every
+    request has been 500ing since deploy." Same check `require_api_key` makes,
+    so the two cannot disagree about what "configured" means.
     """
     if not api_auth_is_configured():
         raise RuntimeError(_UNCONFIGURED_KEYS_MESSAGE)
