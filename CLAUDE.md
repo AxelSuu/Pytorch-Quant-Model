@@ -260,7 +260,8 @@ them. Treat this list as normative regardless.
    anything.
 3. Write the failing test.
 4. Fix it.
-5. Run `ruff check .`, `ruff format --check .`, `pytest -q`.
+5. Run `ruff check .`, `ruff format --check .`, `pytest -q`. (`scripts/backlog.py check` is
+   archived along with `backlog/*.md` — see "GitHub Issues" above — and no longer applies.)
 6. Update the ticket: `Status:` line, the scan-table row, and a resolution note to the
    standard above.
 7. If the fix changed a model input or a reported metric, say so explicitly in the note

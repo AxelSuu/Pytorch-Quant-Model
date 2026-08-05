@@ -33,6 +33,12 @@ htmlcov/
 # storage; pinned datasets live under here too but are meant to be local-only.
 .cache/
 
+# Nightly-precomputed forecast store (pyquant.data.forecast_store,
+# features.md#pyq-282) -- rebuildable by `pyquant precompute`, not reproducible
+# storage. Unlike data/options_history/ (a permanent accumulated dataset),
+# this is wholly derived from a trained bundle plus live data.
+data/forecast_store.db
+
 # Rendered documentation (PYQ-232); the sources are checked in, the build is not.
 docs/_build/
 docs/api/_generated/

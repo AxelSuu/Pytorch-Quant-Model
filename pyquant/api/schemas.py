@@ -74,7 +74,16 @@ class BundleSummary(BaseModel):
 
 
 class ForecastResponse(BaseModel):
-    """Mirrors analysis.serialize.forecast_to_dict(); GET /forecast/{symbol}."""
+    """Mirrors analysis.serialize.forecast_to_dict(); GET /forecast/{symbol}.
+
+    ``as_of``/``computed_at`` (features.md#pyq-282) are store metadata, not
+    part of ``forecast_to_dict``'s own payload -- ``as_of`` duplicates
+    ``last_date`` by design (the trading day the panel was built through),
+    named separately so a caller can read "is this fresh" without knowing
+    that fact about ``last_date``. Optional so this model still validates the
+    CLI's ``--format json forecast`` payload, which has neither field (it
+    always computes live and was never stored).
+    """
 
     symbol: str
     last_date: str
@@ -86,6 +95,8 @@ class ForecastResponse(BaseModel):
     n_quantile_crossings: int
     median: list[float] | None = None
     expected_return_pct: float | None = None
+    as_of: str | None = None
+    computed_at: str | None = None
 
 
 class FeatureImportance(BaseModel):

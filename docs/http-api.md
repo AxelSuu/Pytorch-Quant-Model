@@ -75,7 +75,7 @@ request. The per-request check in `require_api_key` stays as defense in depth on
 | `GET` | `/healthz` | — | `{"status": "ok"}`. 200 whenever the process is up. |
 | `GET` | `/symbols` | ✔ | Every trained bundle under `checkpoint_dir` (symbol, `trained_at`, `bundle_skill`), most recently trained first. |
 | `GET` | `/metrics/{symbol}` | ✔ | A bundle's recorded evaluation (skill vs. persistence, calibration, directional accuracy) — reads `meta.json`, generates no forecast. |
-| `GET` | `/forecast/{symbol}` | ✔ | p10/p50/p90 quantile forecast. |
+| `GET` | `/forecast/{symbol}` | ✔ | p10/p50/p90 quantile forecast, read from the nightly precompute store. |
 | `POST` | `/scan` | ✔ | One comparison row per requested symbol. |
 | `GET` | `/explain/{symbol}` | ✔ | Feature importances and temporal attention. |
 | `POST` | `/train` | ✔ | `202` with a `job_id` to poll. |
@@ -87,10 +87,11 @@ Symbols are upper-cased on the way in, so `/forecast/aapl` and `/forecast/AAPL` 
 same bundle.
 
 `GET /forecast/{symbol}/history` (past forecasts vs. realized outcomes) is deliberately not
-built yet (features.md#pyq-283): forecasts are regenerated live on every `GET /forecast`
-request rather than stored, so a history endpoint today would mean re-running historical
-panels on every call — the thing it exists to avoid. Sequenced after features.md#pyq-282's
-forecast store lands.
+built yet (features.md#pyq-283), but is no longer blocked the way it used to be: forecasts
+are now precomputed and stored (features.md#pyq-282, below) rather than regenerated live on
+every `GET /forecast`, so a history endpoint is a query over accumulating store rows, not a
+re-run-every-historical-panel problem. Still a separate ticket — nothing here retains more
+than each symbol's single latest write.
 
 `/docs`, `/redoc` and `/openapi.json` also require `X-API-Key` (bugs.md#pyq-160) — unlike
 FastAPI's defaults, which mount independently of any router's `dependencies=` and would
@@ -107,8 +108,9 @@ endpoint except `/healthz`" is exact, not aspirational.
 | `404` | No trained bundle for that symbol, or no job with that id. Body: `{"detail": "No trained model for SYMBOL. Run \`pyquant train\` first."}` or `{"detail": "No job '<id>'"}`. Deliberately does **not** include the bundle's absolute filesystem path — the full detail (which does) is logged server-side only. |
 | `409` | {py:class}`~pyquant.models.tft.FeatureSchemaMismatch` — the bundle was trained on features that can no longer be assembled. A conflict, not a server error: the model is fine, the world moved. Also returned by `POST /train` when a job for the same bundle name is already queued or running (bugs.md#pyq-161). |
 | `422` | An empty `symbols` list on `POST /train` (`{"detail": "symbols must not be empty"}`), a body that fails pydantic validation — e.g. an invalid symbol shape returns FastAPI's structured form: `{"detail": [{"type": "value_error", "loc": ["body", "symbols"], "msg": "Value error, Invalid symbol/bundle name '../x': must match ...", ...}]}` — or a request field outside its bound (more than 50 symbols, `windows`/`epochs` out of range, an unrecognised `period`; see "Request limits" below). Note the two `422` shapes differ (plain string vs. a list of error objects) depending on which check rejected the request. |
-| `429` | The requested bundle's prediction lock (`/forecast`, `/explain`) is still held by another in-flight request after `PREDICTION_LOCK_TIMEOUT_SECONDS` (30s). Retry — this is a queue-length signal, not a client error. |
+| `429` | The requested bundle's prediction lock (`/explain`, and `/scan` per-symbol) is still held by another in-flight request after `PREDICTION_LOCK_TIMEOUT_SECONDS` (30s). Retry — this is a queue-length signal, not a client error. `GET /forecast` no longer takes this path at all (features.md#pyq-282): it reads a store, never the live bundle. |
 | `500` | No active API key exists (`pyquant keys create` was never run, or every issued key is revoked) and unauthenticated access was not explicitly enabled. |
+| `503` | `GET /forecast/{symbol}` only: the symbol is trained but `pyquant precompute` has never written it a store entry, or its stored entry is older than the last session the nightly job should already have covered (features.md#pyq-282). Not a client error — retry after running/waiting for the nightly job. |
 
 ### Request limits
 
@@ -133,10 +135,31 @@ All four constants live in {py:mod}`pyquant.api.schemas` (`MAX_SYMBOLS_PER_REQUE
 curl -H "X-API-Key: $KEY" http://localhost:8000/forecast/AAPL
 ```
 
-The response body is {py:class}`~pyquant.api.schemas.ForecastResponse`, constructed
-directly from `serialize.forecast_to_dict` — the same function behind
-`pyquant --format json forecast`. `forecast_dates` and `n_quantile_crossings` are present
-for the same reasons they are in the [CLI's JSON output](cli.md#json-output).
+**This reads a precomputed store rather than running the pipeline live**
+(features.md#pyq-282) — a millisecond response on a warm store instead of the ~65s cold
+call `investigations.md#pyq-319` measured (~98% of which was vendor fetch/panel build, not
+the model). A forecast is daily-bar data and is therefore only actually fresh once per
+trading session; there is no accuracy cost to serving last night's computed result instead
+of re-running the panel on every request.
+
+Run `pyquant precompute` (`--symbols` to name specific tickers, or nothing for every
+trained bundle) to populate the store — on a nightly schedule (a cron-triggered CLI
+invocation after market close is the cheapest starting point; no scheduler is bundled). It
+prints a per-symbol status table (or `--format json` rows) and exits non-zero only if every
+symbol failed, the same "one flaky symbol must not sink the run" discipline as `scan`.
+
+The response body is {py:class}`~pyquant.api.schemas.ForecastResponse`, the same fields
+`serialize.forecast_to_dict` produces for `pyquant --format json forecast` (`forecast_dates`
+and `n_quantile_crossings` are present for the reasons given in the [CLI's JSON
+output](cli.md#json-output)), plus two store-metadata fields the live CLI path has no
+reason to carry: `as_of` (the trading day the stored forecast was built through — the same
+value as `last_date`, named separately so a caller can read it without knowing that) and
+`computed_at` (when `pyquant precompute` wrote it). The response also carries an `ETag`
+header (`"{symbol}-{computed_at}"`) that changes only when the store is rewritten.
+
+A stale or missing store entry is a `503`, not a silently-old `200` — see the status code
+table above. `GET /forecast` never touches the bundle cache or the per-bundle prediction
+lock now (both still apply to `/explain` and `/scan`): a store read needs neither.
 
 ```bash
 curl -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
@@ -200,8 +223,10 @@ through `queued` → `running` → `succeeded` or `failed`; `result` is populate
 and `error` on failure.
 
 When a job succeeds, the bundle it retrained is **evicted from the bundle cache**, so the
-next `/forecast` or `/explain` reloads it from disk. Without that step a cached copy from
-before the run would keep serving the old weights.
+next `/explain` (or a manually re-run `pyquant precompute`) reloads it from disk rather than
+keep serving a cached copy of the old weights. `/forecast` itself no longer reads the
+bundle cache at all (features.md#pyq-282) — retraining does not by itself refresh what
+`/forecast` serves; run `pyquant precompute` for the symbol afterward.
 
 A shell polling loop:
 
@@ -379,12 +404,11 @@ more than one.
 - **`/backtest` does not expose `--signals`, `--seeds` or `--cost-bps`.** CLI-only for this
   pass — each would need its own reasoning about job-result shape rather than being folded
   in silently (see the Backtesting section above).
-- **No way to discover what's trained.** No `GET /symbols`, `GET /metrics/{symbol}`, or
-  `GET /forecast/{symbol}/history` yet (features.md#pyq-283) — a caller who doesn't already
-  know a trained symbol has to try it and read the `404`.
-- **Every `GET /forecast` runs the live pipeline**, even though a forecast is only fresh
-  once per trading day and a cold call is ~65s (investigations.md#pyq-319). A nightly
-  precompute (features.md#pyq-282) would make this a millisecond read; not built yet.
+- **No `GET /forecast/{symbol}/history`** (past forecasts vs. realized outcomes) yet
+  (features.md#pyq-283) — `GET /symbols` and `GET /metrics/{symbol}` already cover
+  discovering what's trained; the precomputed store (features.md#pyq-282, above) makes a
+  history endpoint a query over accumulating rows rather than a live-pipeline problem, but
+  today's store still keeps only each symbol's single latest write, not a history.
 - **No dedicated executor for background jobs** (bugs.md#pyq-163) and **no rate limiting or
   vendor-quota metering** (features.md#pyq-281 built identity/scopes/revocation; metering
   itself is still open) — see "What v1 deliberately does not do" above.

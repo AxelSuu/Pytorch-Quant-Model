@@ -262,6 +262,17 @@ class Settings(BaseSettings):
     def _anchor_options_history_dir(cls, v: Path) -> Path:
         return _anchor(v)
 
+    # Nightly-precomputed forecast store (features.md#pyq-282): `pyquant precompute`
+    # writes here, `GET /forecast/{symbol}` reads from it instead of running the
+    # ~65s live pipeline (investigations.md#pyq-319) on every request. A single
+    # SQLite file -- `sqlite3` is stdlib, not a new dependency (non-negotiable #5).
+    forecast_store_db: Path = Field(default=Path("data/forecast_store.db"), validate_default=True)
+
+    @field_validator("forecast_store_db")
+    @classmethod
+    def _anchor_forecast_store_db(cls, v: Path) -> Path:
+        return _anchor(v)
+
     # Nested config sections
     tft: TFTConfig = Field(default_factory=TFTConfig)
     training: TrainingConfig = Field(default_factory=TrainingConfig)

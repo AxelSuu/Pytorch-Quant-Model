@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response
 from fastapi import Path as PathParam
 
 from pyquant.analysis import serialize
@@ -18,6 +18,7 @@ from pyquant.api.deps import (
 )
 from pyquant.api.schemas import SYMBOL_PATTERN, ForecastResponse, ScanRequest, ScanRow
 from pyquant.config import Settings
+from pyquant.data import forecast_store
 from pyquant.models import tft
 
 router = APIRouter(dependencies=[Depends(require_api_key)])
@@ -50,13 +51,47 @@ def _get_forecast(symbol: str, settings: Settings, bundle_cache: BundleCache):
 
 @router.get("/forecast/{symbol}", response_model=ForecastResponse)
 def get_forecast(
+    response: Response,
     symbol: str = PathParam(..., pattern=SYMBOL_PATTERN),
     settings: Settings = Depends(get_settings),
-    bundle_cache: BundleCache = Depends(get_bundle_cache),
 ) -> ForecastResponse:
-    """p10/p50/p90 quantile forecast for symbol, from its trained bundle."""
-    fc = _get_forecast(symbol, settings, bundle_cache)
-    return ForecastResponse(**serialize.forecast_to_dict(fc))
+    """p10/p50/p90 quantile forecast for symbol.
+
+    Read from the nightly precompute store (features.md#pyq-282) rather than
+    run live -- a millisecond response on a warm store instead of the ~65s
+    live pipeline (investigations.md#pyq-319).
+
+    ``pyquant precompute`` (cli/app.py) writes the store; run it on a nightly
+    schedule (a cron-triggered CLI invocation is the cheapest starting point,
+    per the ticket's own scoping) after market close.
+    """
+    symbol = symbol.upper()
+    stored = forecast_store.read_forecast(settings, symbol)
+    if stored is None:
+        try:
+            tft.load_meta(symbol, settings)
+        except FileNotFoundError as exc:
+            # See the identical comment on the old live path: the underlying
+            # message names an absolute checkpoint path, logged server-side only.
+            logger.info("Forecast requested for untrained bundle: %s", exc)
+            raise HTTPException(
+                status_code=404,
+                detail=f"No trained model for {symbol}. Run `pyquant train` first.",
+            ) from exc
+        raise HTTPException(
+            status_code=503,
+            detail=f"{symbol} is trained but has no precomputed forecast yet. "
+            "Run `pyquant precompute` (or wait for the nightly job).",
+        )
+    if forecast_store.is_stale(stored.as_of):
+        raise HTTPException(
+            status_code=503,
+            detail=f"Precomputed forecast for {symbol} is stale (as_of {stored.as_of}); "
+            "the nightly `pyquant precompute` job may not have run. Not serving "
+            "arbitrarily old data -- run it manually to refresh.",
+        )
+    response.headers["ETag"] = f'"{symbol}-{stored.computed_at}"'
+    return ForecastResponse(**stored.payload, as_of=stored.as_of, computed_at=stored.computed_at)
 
 
 @router.post("/scan", response_model=list[ScanRow])

@@ -7,7 +7,7 @@ pytorch-forecasting through ``data/dataset.py``.
 
 import pandas as pd
 
-from pyquant.data.trading_calendar import exchange_holidays, next_sessions
+from pyquant.data.trading_calendar import exchange_holidays, latest_session_before, next_sessions
 
 
 def test_nyse_holidays_for_2026_match_the_published_calendar():
@@ -80,3 +80,29 @@ def test_next_sessions_is_total_past_the_fixed_margin_that_used_to_cap_it():
     assert len(dates) == 380
     assert dates.is_monotonic_increasing
     assert dates.is_unique
+
+
+# --- latest_session_before (features.md#pyq-282) ------------------------------
+
+
+def test_latest_session_before_a_monday_is_the_preceding_friday():
+    assert latest_session_before(pd.Timestamp("2026-01-05")) == pd.Timestamp("2026-01-02")
+
+
+def test_latest_session_before_a_saturday_is_still_friday():
+    """No session opens over the weekend, so Saturday and Sunday both look back
+    to the same Friday close -- this is what lets a Friday-computed forecast
+    stay non-stale all weekend (forecast_store.is_stale)."""
+    assert latest_session_before(pd.Timestamp("2026-01-03")) == pd.Timestamp("2026-01-02")
+    assert latest_session_before(pd.Timestamp("2026-01-04")) == pd.Timestamp("2026-01-02")
+
+
+def test_latest_session_before_skips_a_run_of_closed_days():
+    """Christmas 2026 is a Friday; the session before Monday 28th is Thursday 24th
+    (mirrors test_next_sessions_skips_a_run_of_closed_days looking the other way)."""
+    assert latest_session_before(pd.Timestamp("2026-12-28")) == pd.Timestamp("2026-12-24")
+
+
+def test_latest_session_before_skips_new_years_day():
+    """2026-01-01 is a Thursday holiday; the session before Friday 2nd is Wed 31st."""
+    assert latest_session_before(pd.Timestamp("2026-01-02")) == pd.Timestamp("2025-12-31")

@@ -108,6 +108,128 @@ def test_scan_survives_one_symbol_raising_non_filenotfound(monkeypatch):
     assert "error" in result.stdout.lower()  # the flaky one shown as an error row
 
 
+# --- precompute (features.md#pyq-282) ----------------------------------------
+
+
+def test_precompute_writes_forecasts_for_every_trained_bundle(monkeypatch, tmp_path):
+    from pyquant.data import forecast_store
+
+    settings = _settings_in(tmp_path)
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+    monkeypatch.setattr(
+        app_mod.tft,
+        "list_bundles",
+        lambda s: [{"symbol": "AAPL"}, {"symbol": "MSFT"}],
+    )
+    monkeypatch.setattr(app_mod.tft, "load", lambda symbol, s: object())
+    monkeypatch.setattr(
+        app_mod, "generate_forecast", lambda symbol, s, bundle=None: _fake_forecast(symbol=symbol)
+    )
+
+    result = runner.invoke(app_mod.app, ["precompute"])
+
+    assert result.exit_code == 0
+    assert "AAPL" in result.stdout
+    assert "MSFT" in result.stdout
+    for symbol in ("AAPL", "MSFT"):
+        stored = forecast_store.read_forecast(settings, symbol)
+        assert stored is not None
+        assert stored.payload["symbol"] == symbol
+
+
+def test_precompute_accepts_an_explicit_symbols_list(monkeypatch, tmp_path):
+    """--symbols bypasses tft.list_bundles entirely -- must not even be called."""
+    from pyquant.data import forecast_store
+
+    settings = _settings_in(tmp_path)
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+
+    def unexpected_list_bundles(*a, **k):
+        raise AssertionError("list_bundles should not be called when --symbols is given")
+
+    monkeypatch.setattr(app_mod.tft, "list_bundles", unexpected_list_bundles)
+    monkeypatch.setattr(app_mod.tft, "load", lambda symbol, s: object())
+    monkeypatch.setattr(
+        app_mod, "generate_forecast", lambda symbol, s, bundle=None: _fake_forecast(symbol=symbol)
+    )
+
+    result = runner.invoke(app_mod.app, ["precompute", "--symbols", "aapl"])
+
+    assert result.exit_code == 0
+    assert forecast_store.read_forecast(settings, "AAPL") is not None
+
+
+def test_precompute_survives_one_symbol_raising(monkeypatch, tmp_path):
+    """One flaky/untrained symbol must not sink the whole nightly run (PYQ-113's
+    discipline, same as `scan`)."""
+    from pyquant.data import forecast_store
+
+    settings = _settings_in(tmp_path)
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+    monkeypatch.setattr(
+        app_mod.tft, "list_bundles", lambda s: [{"symbol": "GOOD"}, {"symbol": "BAD"}]
+    )
+
+    def flaky_load(symbol, s):
+        if symbol == "BAD":
+            raise FileNotFoundError("no trained model")
+        return object()
+
+    monkeypatch.setattr(app_mod.tft, "load", flaky_load)
+    monkeypatch.setattr(
+        app_mod, "generate_forecast", lambda symbol, s, bundle=None: _fake_forecast(symbol=symbol)
+    )
+
+    result = runner.invoke(app_mod.app, ["precompute"])
+
+    assert result.exit_code == 0
+    assert forecast_store.read_forecast(settings, "GOOD") is not None
+    assert forecast_store.read_forecast(settings, "BAD") is None
+    assert "error" in result.stdout.lower()
+
+
+def test_precompute_exits_nonzero_when_every_symbol_fails(monkeypatch, tmp_path):
+    settings = _settings_in(tmp_path)
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+    monkeypatch.setattr(app_mod.tft, "list_bundles", lambda s: [{"symbol": "BAD"}])
+
+    def always_raise(symbol, s):
+        raise FileNotFoundError("no trained model")
+
+    monkeypatch.setattr(app_mod.tft, "load", always_raise)
+
+    result = runner.invoke(app_mod.app, ["precompute"])
+
+    assert result.exit_code == 1
+
+
+def test_precompute_with_nothing_trained_exits_cleanly(monkeypatch, tmp_path):
+    settings = _settings_in(tmp_path)
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+    monkeypatch.setattr(app_mod.tft, "list_bundles", lambda s: [])
+
+    result = runner.invoke(app_mod.app, ["precompute"])
+
+    assert result.exit_code == 0
+    assert "no trained bundles" in result.stdout.lower()
+
+
+def test_precompute_json_output(monkeypatch, tmp_path):
+    settings = _settings_in(tmp_path)
+    monkeypatch.setattr(app_mod, "load_settings", lambda *a, **k: settings)
+    monkeypatch.setattr(app_mod.tft, "list_bundles", lambda s: [{"symbol": "AAPL"}])
+    monkeypatch.setattr(app_mod.tft, "load", lambda symbol, s: object())
+    monkeypatch.setattr(
+        app_mod, "generate_forecast", lambda symbol, s, bundle=None: _fake_forecast(symbol=symbol)
+    )
+
+    result = runner.invoke(app_mod.app, ["--format", "json", "precompute"])
+
+    assert result.exit_code == 0
+    rows = json.loads(result.stdout)
+    assert rows == [{"symbol": "AAPL", "status": "ok", "as_of": "2024-01-26"}]
+
+
 def test_train_command_reports_evaluation_metrics(monkeypatch):
     fake_result = TrainResult(
         symbols=["AAPL"],
@@ -999,6 +1121,7 @@ def _settings_in(tmp_path):
 
     s = Settings()
     s.checkpoint_dir = tmp_path / "checkpoints"
+    s.forecast_store_db = tmp_path / "forecast_store.db"
     return s
 
 

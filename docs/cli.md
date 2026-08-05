@@ -225,6 +225,26 @@ schedule is the only way this project can ever build a historical options-implie
 Once enough days accumulate, `build_panel()` picks them up automatically as
 `OptionsPutCallRatio`, `OptionsATMIV` and `OptionsIVSkew`.
 
+## precompute
+
+```
+pyquant precompute
+pyquant precompute --symbols AAPL,MSFT
+```
+
+Computes each trained symbol's forecast (or just the given `--symbols`) and writes it to a
+local store, tagged with `as_of` (the trading day it was built through) and `computed_at`.
+[`GET /forecast/{symbol}`](http-api.md#forecasting) reads from this store instead of
+running the pipeline live — this is what makes that a millisecond response instead of the
+~65s a cold call otherwise costs (`investigations.md#pyq-319`).
+
+Meant to run on a nightly schedule (a cron-triggered invocation after market close is the
+cheapest starting point; no scheduler is bundled). One symbol failing does not sink the
+run — a not-yet-trained or otherwise-flaky symbol is reported as its own `error` row, the
+same discipline as `scan`. Exits non-zero only if every symbol failed.
+
+`pyquant forecast` is unaffected and still always runs live; this does not replace it.
+
 ## doctor
 
 ```
