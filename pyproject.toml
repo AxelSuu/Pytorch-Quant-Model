@@ -142,7 +142,7 @@ convention = "google"
 "pyquant/analysis/calibrate.py" = ["D102"]  # to_dict, from_dict
 "pyquant/analysis/forecast.py" = ["D102"]   # horizon, median
 "pyquant/config.py" = ["D102"]              # settings_customise_sources
-"pyquant/models/tft.py" = ["D101"]          # TrainResult, BacktestResult
+"pyquant/models/bundle.py" = ["D101"]       # TrainResult, BacktestResult (PYQ-269: moved from tft.py)
 
 # Type-checking is available for local use but intentionally NOT gated in CI
 # (PYQ-310): a one-off survey found zero real issues at this setting — the only
