@@ -1474,3 +1474,68 @@ def test_full_cli_journey_across_every_command_and_both_output_formats(
                 assert key in payload, f"cache list JSON missing {key!r}: {payload}"
         else:
             assert "Cache dir" in result.stdout
+
+
+def test_keys_create_shows_the_raw_key_exactly_once(tmp_path, monkeypatch):
+    """PYQ-281's acceptance criterion: `pyquant keys create` issues a key whose
+    raw value is shown exactly once. Confirmed here by checking it's present in
+    `create`'s own output and, separately, that `keys list` never prints it."""
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+
+    created = runner.invoke(app_mod.app, ["keys", "create", "--name", "ci-bot"])
+    assert created.exit_code == 0, created.output
+    assert "pq_live_" in created.stdout
+
+    raw_key = next(line.strip() for line in created.stdout.splitlines() if "pq_live_" in line)
+
+    listed = runner.invoke(app_mod.app, ["keys", "list"])
+    assert listed.exit_code == 0, listed.output
+    assert raw_key not in listed.stdout
+    assert "ci-bot" in listed.stdout
+
+
+def test_keys_create_json_output_includes_the_raw_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+    result = runner.invoke(
+        app_mod.app,
+        ["--format", "json", "keys", "create", "--name", "ci-bot", "--scopes", "read,train"],
+    )
+    assert result.exit_code == 0, result.output
+    data = json.loads(result.stdout)
+    assert data["key"].startswith("pq_live_")
+    assert sorted(data["scopes"]) == ["read", "train"]
+
+
+def test_keys_create_rejects_an_unknown_scope(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+    result = runner.invoke(app_mod.app, ["keys", "create", "--name", "ci-bot", "--scopes", "admin"])
+    assert result.exit_code != 0
+    assert "scope" in result.output.lower()
+
+
+def test_keys_revoke_rejects_the_key_on_a_second_authenticate(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+    from pyquant.api import keystore
+
+    db_path = keystore.resolve_db_path()
+    raw_key, record = keystore.create_key(db_path, "ci-bot", ["read"])
+    assert keystore.authenticate(db_path, raw_key) is not None
+
+    result = runner.invoke(app_mod.app, ["keys", "revoke", record.id])
+    assert result.exit_code == 0, result.output
+    assert "Revoked" in result.stdout
+    assert keystore.authenticate(db_path, raw_key) is None
+
+
+def test_keys_revoke_reports_a_missing_id_without_erroring(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+    result = runner.invoke(app_mod.app, ["keys", "revoke", "does-not-exist"])
+    assert result.exit_code == 0, result.output
+    assert "No active key" in result.stdout
+
+
+def test_keys_list_with_no_keys_yet_is_not_an_error(tmp_path, monkeypatch):
+    monkeypatch.setenv("PYQUANT_API_KEYS_DB", str(tmp_path / "api_keys.db"))
+    result = runner.invoke(app_mod.app, ["keys", "list"])
+    assert result.exit_code == 0, result.output
+    assert "No API keys" in result.stdout

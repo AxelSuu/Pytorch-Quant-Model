@@ -216,17 +216,6 @@ def add_technical_indicators(
     return df
 
 
-def _normalize_index(df: pd.DataFrame) -> pd.DataFrame:
-    """Make the index a tz-naive, normalized DatetimeIndex named 'Date'."""
-    idx = pd.to_datetime(df.index)
-    if getattr(idx, "tz", None) is not None:
-        idx = idx.tz_localize(None)
-    df = df.copy()
-    df.index = idx.normalize()
-    df.index.name = "Date"
-    return df
-
-
 def _period_start(period: str, anchor: str | None = None) -> str:
     """First calendar date covered by a yfinance-style period, as YYYY-MM-DD.
 
