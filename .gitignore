@@ -15,6 +15,11 @@ checkpoints/*
 # Secrets
 .env
 
+# API key store (PYQ-281): only key hashes, never raw values, but still a
+# local runtime artifact rather than something to check in -- same disposition
+# as checkpoints/ and .cache/ below.
+data/api_keys.db
+
 # Tooling caches
 .ruff_cache/
 .pytest_cache/

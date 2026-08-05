@@ -30,6 +30,7 @@ this file describes *how* to work; `NORTH_STAR.md` says *what's worth working on
 uv sync --extra dev                        # install
 uv run pytest -q                           # full suite (network-free, ~169 tests)
 uv run ruff check .                        # lint — must stay clean
+uv run ruff format --check .               # format gate — must stay clean (CI runs this too)
 gh issue list --label status:ready         # open, ready-to-pick-up tickets
 
 uv run pyquant train AAPL                  # train → checkpoints/AAPL/
@@ -39,7 +40,9 @@ uv run pyquant backtest AAPL --windows 5   # walk-forward
 uv run pyquant --format json forecast AAPL # machine-readable
 ```
 
-`ruff check` runs in CI. Run it before proposing a commit.
+`ruff check` and `ruff format --check` both run in CI, as separate gates. Run both before
+proposing a commit — `ruff check .` does not catch formatting drift; `PR #205` caught this
+the hard way.
 
 ---
 
@@ -257,7 +260,7 @@ them. Treat this list as normative regardless.
    anything.
 3. Write the failing test.
 4. Fix it.
-5. Run `ruff check .`, `pytest -q`, `scripts/backlog.py check`.
+5. Run `ruff check .`, `ruff format --check .`, `pytest -q`.
 6. Update the ticket: `Status:` line, the scan-table row, and a resolution note to the
    standard above.
 7. If the fix changed a model input or a reported metric, say so explicitly in the note

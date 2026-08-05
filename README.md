@@ -155,7 +155,7 @@ uv run pyquant --format json forecast AAPL | jq '.forecast_dates, .predictions'
 
 ```bash
 uv sync --extra api
-export PYQUANT_API_KEYS=$(python -c "import secrets; print(secrets.token_urlsafe(32))")
+uv run pyquant keys create --name operator --scopes read,train  # raw key shown once
 uv run uvicorn pyquant.api.app:app          # OpenAPI docs at /docs
 ```
 

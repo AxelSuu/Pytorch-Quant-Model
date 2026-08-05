@@ -15,13 +15,16 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, Depends, HTTPException
 
 from pyquant.analysis import serialize
-from pyquant.api.deps import BundleCache, get_bundle_cache, get_settings, require_api_key
+from pyquant.api.deps import BundleCache, get_bundle_cache, get_settings, require_scope
 from pyquant.api.jobs import JobRegistry, get_job_executor, get_job_registry
 from pyquant.api.schemas import TrainJobResponse, TrainJobStatusResponse, TrainRequest
 from pyquant.config import Settings
 from pyquant.models import tft
 
-router = APIRouter(dependencies=[Depends(require_api_key)])
+# PYQ-281: /train can trigger a full Lightning fit, so it needs the "train" scope,
+# not just any valid key -- a read-only key (the default for a forecast consumer)
+# must not be able to spend the operator's training compute budget.
+router = APIRouter(dependencies=[Depends(require_scope("train"))])
 logger = logging.getLogger(__name__)
 
 
