@@ -170,12 +170,18 @@ def test_healthz_handler_is_async():
 
 
 def _settings_for_store(tmp_path):
-    return Settings(checkpoint_dir=tmp_path / "checkpoints", forecast_store_db=tmp_path / "store.db")
+    return Settings(
+        checkpoint_dir=tmp_path / "checkpoints", forecast_store_db=tmp_path / "store.db"
+    )
 
 
-def _write_stored_forecast(settings, symbol="AAPL", as_of="2026-01-02", computed_at="2026-01-03T01:00:00+00:00"):
+def _write_stored_forecast(
+    settings, symbol="AAPL", as_of="2026-01-02", computed_at="2026-01-03T01:00:00+00:00"
+):
     payload = serialize.forecast_to_dict(_fake_forecast(symbol=symbol))
-    forecast_store.write_forecast(settings, symbol, as_of=as_of, computed_at=computed_at, payload=payload)
+    forecast_store.write_forecast(
+        settings, symbol, as_of=as_of, computed_at=computed_at, payload=payload
+    )
     return payload
 
 
@@ -1245,13 +1251,19 @@ def test_forecast_response_matches_the_cli_format_json_field_for_field(tmp_path,
     app.dependency_overrides[deps.get_settings] = lambda: settings
     monkeypatch.setattr("pyquant.api.routes.forecast.forecast_store.is_stale", lambda as_of: False)
     forecast_store.write_forecast(
-        settings, "AAPL", as_of="2026-01-02", computed_at="2026-01-03T01:00:00+00:00", payload=cli_payload
+        settings,
+        "AAPL",
+        as_of="2026-01-02",
+        computed_at="2026-01-03T01:00:00+00:00",
+        payload=cli_payload,
     )
     api_payload = client.get("/forecast/AAPL").json()
 
     assert api_payload["as_of"] == "2026-01-02"
     assert api_payload["computed_at"] == "2026-01-03T01:00:00+00:00"
-    api_forecast_fields = {k: v for k, v in api_payload.items() if k not in ("as_of", "computed_at")}
+    api_forecast_fields = {
+        k: v for k, v in api_payload.items() if k not in ("as_of", "computed_at")
+    }
     assert api_forecast_fields == cli_payload
 
 

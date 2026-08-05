@@ -9,7 +9,11 @@ from pyquant.data.trading_calendar import latest_session_before
 def test_write_then_read_round_trips(settings):
     payload = {"symbol": "AAPL", "last_date": "2026-01-02", "current_price": 100.0}
     forecast_store.write_forecast(
-        settings, "aapl", as_of="2026-01-02", computed_at="2026-01-03T01:00:00+00:00", payload=payload
+        settings,
+        "aapl",
+        as_of="2026-01-02",
+        computed_at="2026-01-03T01:00:00+00:00",
+        payload=payload,
     )
 
     stored = forecast_store.read_forecast(settings, "AAPL")
@@ -27,10 +31,18 @@ def test_read_returns_none_for_a_symbol_never_written(settings):
 
 def test_write_upserts_rather_than_duplicating(settings):
     forecast_store.write_forecast(
-        settings, "AAPL", as_of="2026-01-02", computed_at="2026-01-03T01:00:00+00:00", payload={"v": 1}
+        settings,
+        "AAPL",
+        as_of="2026-01-02",
+        computed_at="2026-01-03T01:00:00+00:00",
+        payload={"v": 1},
     )
     forecast_store.write_forecast(
-        settings, "AAPL", as_of="2026-01-05", computed_at="2026-01-06T01:00:00+00:00", payload={"v": 2}
+        settings,
+        "AAPL",
+        as_of="2026-01-05",
+        computed_at="2026-01-06T01:00:00+00:00",
+        payload={"v": 2},
     )
 
     stored = forecast_store.read_forecast(settings, "AAPL")
