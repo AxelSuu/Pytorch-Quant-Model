@@ -29,6 +29,7 @@ except Exception as exc:  # noqa: BLE001 - see comment: any failure here means "
     # turn that exact case back into a collection error instead of a skip.
     pytest.skip(f"fastapi.testclient not usable: {exc}", allow_module_level=True)
 
+from pyquant.analysis import serialize  # noqa: E402
 from pyquant.analysis.forecast import Forecast  # noqa: E402
 from pyquant.analysis.interpret import Interpretation  # noqa: E402
 from pyquant.analysis.metrics import EvaluationMetrics  # noqa: E402
@@ -37,6 +38,8 @@ from pyquant.api import jobs as jobs_mod  # noqa: E402
 from pyquant.api.app import app  # noqa: E402
 from pyquant.api.jobs import JobRegistry  # noqa: E402
 from pyquant.cli import app as cli_app_mod  # noqa: E402
+from pyquant.config import Settings  # noqa: E402
+from pyquant.data import forecast_store  # noqa: E402
 from pyquant.models.tft import BacktestResult, TrainResult  # noqa: E402
 
 TestClient = fastapi_testclient.TestClient
@@ -69,6 +72,16 @@ def _fake_forecast(symbol="AAPL", predictions=None):
         quantiles=[0.1, 0.5, 0.9],
         predictions=predictions,
         history=pd.Series(np.linspace(90, 100, 20), index=dates),
+    )
+
+
+def _fake_interpretation(symbol="AAPL"):
+    return Interpretation(
+        symbol=symbol,
+        feature_importance={"RSI_14": 0.6},
+        attention=np.array([0.2, 0.3, 0.5]),
+        panel_index=pd.bdate_range("2024-01-01", periods=5),
+        bundle_skill=-0.1,
     )
 
 
@@ -156,11 +169,26 @@ def test_healthz_handler_is_async():
     assert inspect.iscoroutinefunction(healthz)
 
 
-def test_forecast_returns_the_serialized_forecast(monkeypatch):
-    _override_settings_and_cache()
-    monkeypatch.setattr(
-        "pyquant.api.routes.forecast.generate_forecast", lambda *a, **k: _fake_forecast()
-    )
+def _settings_for_store(tmp_path):
+    return Settings(checkpoint_dir=tmp_path / "checkpoints", forecast_store_db=tmp_path / "store.db")
+
+
+def _write_stored_forecast(settings, symbol="AAPL", as_of="2026-01-02", computed_at="2026-01-03T01:00:00+00:00"):
+    payload = serialize.forecast_to_dict(_fake_forecast(symbol=symbol))
+    forecast_store.write_forecast(settings, symbol, as_of=as_of, computed_at=computed_at, payload=payload)
+    return payload
+
+
+# --- PYQ-282: GET /forecast/{symbol} reads a nightly-precomputed store ------------
+# (rather than running the live pipeline on every request -- see forecast_store.py
+# and cli/app.py's `precompute` command)
+
+
+def test_forecast_returns_the_stored_forecast(tmp_path, monkeypatch):
+    settings = _settings_for_store(tmp_path)
+    app.dependency_overrides[deps.get_settings] = lambda: settings
+    monkeypatch.setattr("pyquant.api.routes.forecast.forecast_store.is_stale", lambda as_of: False)
+    _write_stored_forecast(settings)
 
     r = client.get("/forecast/AAPL")
 
@@ -169,27 +197,64 @@ def test_forecast_returns_the_serialized_forecast(monkeypatch):
     assert data["symbol"] == "AAPL"
     assert data["horizon"] == 5
     assert data["median"][-1] == 105.0
+    assert data["as_of"] == "2026-01-02"
+    assert data["computed_at"] == "2026-01-03T01:00:00+00:00"
+    assert r.headers["etag"] == '"AAPL-2026-01-03T01:00:00+00:00"'
 
 
-def test_forecast_404_for_an_untrained_symbol():
-    _override_settings_and_cache(_FakeBundleCache(raises=FileNotFoundError("no bundle")))
+def test_forecast_404_for_an_untrained_symbol(tmp_path):
+    """No store entry, and no trained bundle either -- not trained at all."""
+    settings = _settings_for_store(tmp_path)
+    app.dependency_overrides[deps.get_settings] = lambda: settings
     r = client.get("/forecast/NEVERTRAINED")
     assert r.status_code == 404
 
 
-def test_forecast_404_does_not_leak_the_absolute_checkpoint_path():
+def test_forecast_404_does_not_leak_the_absolute_checkpoint_path(tmp_path, monkeypatch):
     """The underlying FileNotFoundError names an absolute filesystem path
     (tft.py's `_load`) -- a remote caller only needs "not trained", not the
     server's directory layout."""
+    settings = _settings_for_store(tmp_path)
+    app.dependency_overrides[deps.get_settings] = lambda: settings
     leaky = FileNotFoundError(
         "No trained model for NEVERTRAINED at /home/svc/checkpoints/NEVERTRAINED/model.ckpt. "
         "Run `pyquant train` first."
     )
-    _override_settings_and_cache(_FakeBundleCache(raises=leaky))
+    monkeypatch.setattr(
+        "pyquant.api.routes.forecast.tft.load_meta",
+        lambda *a, **k: (_ for _ in ()).throw(leaky),
+    )
     r = client.get("/forecast/NEVERTRAINED")
     assert r.status_code == 404
     assert "/home/svc" not in r.json()["detail"]
     assert "NEVERTRAINED" in r.json()["detail"]
+
+
+def test_forecast_503_for_a_trained_symbol_with_no_precomputed_forecast_yet(tmp_path):
+    """Trained (a real bundle dir exists), but the nightly job has never run for
+    it -- distinct from "not trained" (404): the fix is `pyquant precompute`,
+    not `pyquant train`."""
+    settings = _settings_for_store(tmp_path)
+    app.dependency_overrides[deps.get_settings] = lambda: settings
+    _write_bundle_meta(settings.checkpoint_dir, "AAPL")
+
+    r = client.get("/forecast/AAPL")
+
+    assert r.status_code == 503
+    assert "precompute" in r.json()["detail"]
+
+
+def test_forecast_503_when_the_stored_forecast_is_stale(tmp_path, monkeypatch):
+    settings = _settings_for_store(tmp_path)
+    app.dependency_overrides[deps.get_settings] = lambda: settings
+    monkeypatch.setattr("pyquant.api.routes.forecast.forecast_store.is_stale", lambda as_of: True)
+    _write_stored_forecast(settings, as_of="2000-01-01")
+
+    r = client.get("/forecast/AAPL")
+
+    assert r.status_code == 503
+    assert "stale" in r.json()["detail"]
+    assert "2000-01-01" in r.json()["detail"]
 
 
 def test_explain_404_does_not_leak_the_absolute_checkpoint_path():
@@ -201,19 +266,6 @@ def test_explain_404_does_not_leak_the_absolute_checkpoint_path():
     r = client.get("/explain/NEVERTRAINED")
     assert r.status_code == 404
     assert "/home/svc" not in r.json()["detail"]
-
-
-def test_forecast_409_on_a_feature_schema_mismatch(monkeypatch):
-    from pyquant.models.tft import FeatureSchemaMismatch
-
-    _override_settings_and_cache()
-
-    def raise_mismatch(*a, **k):
-        raise FeatureSchemaMismatch("missing feature X")
-
-    monkeypatch.setattr("pyquant.api.routes.forecast.generate_forecast", raise_mismatch)
-    r = client.get("/forecast/AAPL")
-    assert r.status_code == 409
 
 
 def test_explain_returns_bundle_skill(monkeypatch):
@@ -255,25 +307,30 @@ def test_scan_reports_one_flaky_symbol_without_failing_the_rest(monkeypatch):
     assert rows["BAD"]["status"] == "error"
 
 
-def test_forecast_serializes_concurrent_requests_against_the_same_bundle(monkeypatch):
+def test_explain_serializes_concurrent_requests_against_the_same_bundle(monkeypatch):
     """docs/api-design.md #4: pytorch-forecasting's predict() is not safe to call
-    concurrently on one model instance -- two /forecast requests for the same
-    symbol must not overlap in time."""
+    concurrently on one model instance -- two requests against the same bundle
+    must not overlap in time.
+
+    Moved here from /forecast (features.md#pyq-282): that route now reads a
+    precomputed store and no longer touches the bundle cache/lock at all --
+    /explain still does, so it's the through-the-route exerciser of this
+    invariant now."""
     _override_settings_and_cache()
     call_spans: list[tuple[float, float]] = []
     spans_lock = threading.Lock()
 
-    def slow_generate_forecast(*a, **k):
+    def slow_explain_forecast(*a, **k):
         start = time.monotonic()
         time.sleep(0.05)
         end = time.monotonic()
         with spans_lock:
             call_spans.append((start, end))
-        return _fake_forecast()
+        return _fake_interpretation()
 
-    monkeypatch.setattr("pyquant.api.routes.forecast.generate_forecast", slow_generate_forecast)
+    monkeypatch.setattr("pyquant.api.routes.explain.explain_forecast", slow_explain_forecast)
 
-    threads = [threading.Thread(target=lambda: client.get("/forecast/AAPL")) for _ in range(2)]
+    threads = [threading.Thread(target=lambda: client.get("/explain/AAPL")) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
@@ -311,13 +368,15 @@ def test_acquire_prediction_lock_releases_on_success():
         pass
 
 
-def test_forecast_returns_429_when_the_bundle_is_busy(monkeypatch):
+def test_explain_returns_429_when_the_bundle_is_busy(monkeypatch):
+    """Moved here from /forecast (features.md#pyq-282) -- see
+    test_explain_serializes_concurrent_requests_against_the_same_bundle above."""
     _override_settings_and_cache()
     monkeypatch.setattr(deps, "PREDICTION_LOCK_TIMEOUT_SECONDS", 0.05)
     lock = deps.get_prediction_lock("AAPL")
     lock.acquire()
     try:
-        r = client.get("/forecast/AAPL")
+        r = client.get("/explain/AAPL")
         assert r.status_code == 429
     finally:
         lock.release()
@@ -520,12 +579,18 @@ def test_backtest_job_is_dispatched_via_the_dedicated_job_executor(monkeypatch):
 
 def test_a_slow_training_job_does_not_delay_a_concurrent_sync_read_endpoint(monkeypatch):
     """The ticket's own acceptance test, against a route that actually shares
-    the pool: GET /forecast/{symbol} is a sync `def` route, dispatched via
+    the pool: GET /explain/{symbol} is a sync `def` route, dispatched via
     FastAPI's run_in_threadpool (unlike /healthz, which is async and was
     already isolated by bugs.md#pyq-165 -- it would pass this test even on
     the pre-fix code, so it is not a meaningful regression guard for this
-    ticket). Block the training job on an Event and confirm a concurrent
-    forecast call still returns promptly rather than queuing behind it."""
+    ticket). Block the training job on an Event and confirm a concurrent read
+    call still returns promptly rather than queuing behind it.
+
+    Was GET /forecast/{symbol} until features.md#pyq-282: that route now reads
+    a precomputed store synchronously in-process (no vendor I/O, no
+    threadpool-shared blocking call inside it), so it stopped being a
+    meaningful exerciser of "does this queue behind a slow job" -- /explain
+    still runs the live pipeline and shares the same pool /forecast used to."""
     _override_settings_and_cache()
     registry = JobRegistry()
     app.dependency_overrides[jobs_mod.get_job_registry] = lambda: registry
@@ -538,7 +603,7 @@ def test_a_slow_training_job_does_not_delay_a_concurrent_sync_read_endpoint(monk
 
     monkeypatch.setattr("pyquant.api.routes.train.tft.train", blocking_train)
     monkeypatch.setattr(
-        "pyquant.api.routes.forecast.generate_forecast", lambda *a, **k: _fake_forecast()
+        "pyquant.api.routes.explain.explain_forecast", lambda *a, **k: _fake_interpretation()
     )
 
     try:
@@ -547,10 +612,10 @@ def test_a_slow_training_job_does_not_delay_a_concurrent_sync_read_endpoint(monk
         job_id = r.json()["job_id"]
 
         start = time.monotonic()
-        forecast_resp = client.get("/forecast/AAPL")
+        explain_resp = client.get("/explain/AAPL")
         elapsed = time.monotonic() - start
 
-        assert forecast_resp.status_code == 200
+        assert explain_resp.status_code == 200
         assert elapsed < 2.0, (
             f"a concurrent sync route took {elapsed:.2f}s -- queued behind the job?"
         )
@@ -1098,9 +1163,9 @@ def test_require_api_key_allows_the_explicit_dev_opt_out(monkeypatch):
     monkeypatch.setenv("PYQUANT_API_ALLOW_UNAUTHENTICATED", "1")
     _override_settings_and_cache()
     monkeypatch.setattr(
-        "pyquant.api.routes.forecast.generate_forecast", lambda *a, **k: _fake_forecast()
+        "pyquant.api.routes.explain.explain_forecast", lambda *a, **k: _fake_interpretation()
     )
-    r = client.get("/forecast/AAPL")
+    r = client.get("/explain/AAPL")
     assert r.status_code == 200
 
 
@@ -1118,9 +1183,9 @@ def test_require_api_key_accepts_a_correct_key(monkeypatch):
     monkeypatch.setenv("PYQUANT_API_KEYS", "correct-key,another-key")
     _override_settings_and_cache()
     monkeypatch.setattr(
-        "pyquant.api.routes.forecast.generate_forecast", lambda *a, **k: _fake_forecast()
+        "pyquant.api.routes.explain.explain_forecast", lambda *a, **k: _fake_interpretation()
     )
-    r = client.get("/forecast/AAPL", headers={"x-api-key": "correct-key"})
+    r = client.get("/explain/AAPL", headers={"x-api-key": "correct-key"})
     assert r.status_code == 200
 
 
@@ -1152,9 +1217,16 @@ def test_docs_and_redoc_require_auth(monkeypatch):
 # --- PYQ-261's explicit acceptance criterion: API and CLI --format json agree -----
 
 
-def test_forecast_response_matches_the_cli_format_json_field_for_field(monkeypatch):
+def test_forecast_response_matches_the_cli_format_json_field_for_field(tmp_path, monkeypatch):
     """Both front-ends must call forecast_to_dict(); this proves it, rather than
-    trusting that the pydantic model's fields happen to have been typed the same."""
+    trusting that the pydantic model's fields happen to have been typed the same.
+
+    features.md#pyq-282 invalidates the previous exact-equality version of this
+    test: `GET /forecast` now also carries `as_of`/`computed_at` store metadata
+    that `pyquant --format json forecast` (always live, never stored) has no
+    reason to have. Every `forecast_to_dict` field must still match exactly --
+    that's the part of the PYQ-261 acceptance criterion that still holds --
+    the two new fields are asserted separately."""
     fc = _fake_forecast()
 
     monkeypatch.setattr(cli_app_mod, "generate_forecast", lambda *a, **k: fc)
@@ -1169,11 +1241,18 @@ def test_forecast_response_matches_the_cli_format_json_field_for_field(monkeypat
     assert cli_result.exit_code == 0
     cli_payload = json.loads(cli_result.stdout)
 
-    _override_settings_and_cache()
-    monkeypatch.setattr("pyquant.api.routes.forecast.generate_forecast", lambda *a, **k: fc)
+    settings = _settings_for_store(tmp_path)
+    app.dependency_overrides[deps.get_settings] = lambda: settings
+    monkeypatch.setattr("pyquant.api.routes.forecast.forecast_store.is_stale", lambda as_of: False)
+    forecast_store.write_forecast(
+        settings, "AAPL", as_of="2026-01-02", computed_at="2026-01-03T01:00:00+00:00", payload=cli_payload
+    )
     api_payload = client.get("/forecast/AAPL").json()
 
-    assert api_payload == cli_payload
+    assert api_payload["as_of"] == "2026-01-02"
+    assert api_payload["computed_at"] == "2026-01-03T01:00:00+00:00"
+    api_forecast_fields = {k: v for k, v in api_payload.items() if k not in ("as_of", "computed_at")}
+    assert api_forecast_fields == cli_payload
 
 
 # --- PYQ-283: GET /symbols, GET /metrics/{symbol} ---------------------------------

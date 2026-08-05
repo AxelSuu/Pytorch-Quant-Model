@@ -6,7 +6,7 @@ import json
 import logging
 import warnings
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import get_args
 
@@ -26,6 +26,7 @@ from pyquant.analysis.signals import evaluate_signals
 from pyquant.cli import charts
 from pyquant.config import DataConfig, Settings, load_settings
 from pyquant.data import cache as data_cache
+from pyquant.data import forecast_store
 from pyquant.data.options import OptionsSnapshot, append_snapshot, fetch_options_snapshot
 from pyquant.experiments.sweep import Arm, run_sweep
 from pyquant.models import tft
@@ -1012,6 +1013,71 @@ def scan(
                 _signal_markup[r["signal"]],
             )
     console.print(table)
+
+
+@app.command()
+def precompute(
+    symbols: str = typer.Option(
+        None,
+        "--symbols",
+        help="Comma-separated tickers to precompute; defaults to every trained bundle.",
+    ),
+):
+    """Compute and store forecasts for trained symbols (features.md#pyq-282).
+
+    Meant to run on a nightly schedule (e.g. cron) after market close, so
+    `GET /forecast/{symbol}` can read a stored result -- a millisecond
+    response -- instead of paying the ~65s live vendor-fetch/panel-build cost
+    on every request (investigations.md#pyq-319). `pyquant forecast` remains
+    the live, on-demand path this does not replace.
+    """
+    settings = load_settings()
+    if symbols:
+        tickers = [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    else:
+        tickers = [meta["symbol"] for meta in tft.list_bundles(settings) if meta.get("symbol")]
+
+    if not tickers:
+        console.print("[yellow]No trained bundles to precompute.[/yellow]")
+        return
+
+    computed_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rows: list[dict] = []
+    for ticker in tickers:
+        try:
+            bundle = tft.load(ticker, settings)
+            fc = generate_forecast(ticker, settings, bundle=bundle)
+            payload = serialize.forecast_to_dict(fc)
+            forecast_store.write_forecast(
+                settings,
+                ticker,
+                as_of=payload["last_date"],
+                computed_at=computed_at,
+                payload=payload,
+            )
+            rows.append({"symbol": ticker, "status": "ok", "as_of": payload["last_date"]})
+        except Exception as exc:
+            # One flaky/untrained symbol must not sink the whole nightly run
+            # (PYQ-113's discipline, same as `scan`).
+            logger.warning("Could not precompute %s: %s", ticker, exc)
+            rows.append({"symbol": ticker, "status": "error", "error": str(exc)})
+
+    if _output.json:
+        _emit_json(rows)
+    else:
+        table = Table(title="Precompute")
+        table.add_column("Symbol")
+        table.add_column("Status")
+        table.add_column("As of / error")
+        for r in rows:
+            if r["status"] == "ok":
+                table.add_row(r["symbol"], "[green]ok[/green]", r["as_of"])
+            else:
+                table.add_row(r["symbol"], "[red]error[/red]", r["error"])
+        console.print(table)
+
+    if all(r["status"] == "error" for r in rows):
+        raise typer.Exit(1)
 
 
 @app.command()

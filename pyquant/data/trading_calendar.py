@@ -108,6 +108,27 @@ def next_sessions(after: pd.Timestamp, count: int) -> pd.DatetimeIndex:
         margin *= 2
 
 
+def latest_session_before(ts: pd.Timestamp) -> pd.Timestamp:
+    """The most recent trading session strictly before ``ts``'s calendar date.
+
+    Symmetric to ``next_sessions``, looking backward. Used by
+    ``pyquant.data.forecast_store.is_stale`` (features.md#pyq-282): a nightly
+    precompute job runs after a session's close, so its ``as_of`` is only
+    expected to reach a given session starting the *next* calendar day --
+    comparing a stored ``as_of`` against the latest session before *today*,
+    not today's own (possibly still-open) session.
+    """
+    end = pd.Timestamp(ts).normalize() - pd.Timedelta(days=1)
+    margin = 15
+    while True:
+        span = pd.bdate_range(end - pd.Timedelta(days=margin), end)
+        holidays = exchange_holidays(span[0], span[-1])
+        sessions = span.difference(holidays)
+        if len(sessions) >= 1:
+            return sessions[-1]
+        margin *= 2
+
+
 # --- Known limitations -------------------------------------------------------
 # - NYSE/NASDAQ only. A non-US ticker gets the US calendar, which is wrong; the
 #   panel is US-equity-shaped throughout (pyquant.data.sentiment makes the same

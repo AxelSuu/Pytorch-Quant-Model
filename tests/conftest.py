@@ -62,4 +62,7 @@ def settings(tmp_path):
     # leak state between tests that happen to share a symbol + settings.
     s.data.cache_enabled = False
     s.data.cache_dir = tmp_path / "cache"
+    # Isolated to a tmp dir for the same reason as cache_dir above: tests must
+    # never read/write the real repo's data/forecast_store.db.
+    s.forecast_store_db = tmp_path / "forecast_store.db"
     return s
