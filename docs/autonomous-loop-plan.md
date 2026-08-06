@@ -160,6 +160,13 @@ merged it himself; all 3 required CI checks passed. The mechanics work end to en
 3. **Dev phase:** implement on a `claude/`-prefixed branch (leave the GitHub App's
    branch restriction on). Run the existing test suite locally before pushing.
 4. **Push + PR:** open a PR referencing the Issue(s), relabel them `status:in-progress`.
+   **Closing-keyword convention (added 2026-08-06, `#208`):** GitHub only auto-closes the
+   issue number immediately following a closing keyword — a comma-separated list after a
+   single `Resolves`/`Closes`/`Fixes` does not auto-close the rest of the list. Every
+   dev-batch PR body must repeat the keyword per issue instead: `Resolves #203. Resolves
+   #199. Resolves #157.`, not `Resolves #203, #199, #157.` PR #189 and PR #205 both hit
+   this — only the first referenced issue auto-closed on merge, and the rest had to be
+   closed by hand in a later pass.
 5. **CI:** existing GitHub Actions (pytest, sphinx build, nightly smoke test, vendor
    tests) run unchanged.
 6. **If CI fails:** the next dev-routine run reads the failure and either fixes it or
