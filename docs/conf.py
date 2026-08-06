@@ -129,7 +129,7 @@ _CANONICAL_TARGETS = {
 
 def _resolve_canonical(app, env, node, contnode):
     """Retry an unresolved Python reference under its documented public name."""
-    from sphinx.ext.intersphinx import resolve_reference_in_inventory
+    from sphinx.ext.intersphinx import inventory_exists, resolve_reference_in_inventory
 
     target = node.get("reftarget")
     canonical = _CANONICAL_TARGETS.get(target)
@@ -138,6 +138,13 @@ def _resolve_canonical(app, env, node, contnode):
     node = node.deepcopy()
     node["reftarget"] = canonical
     for inventory in intersphinx_mapping:
+        # resolve_reference_in_inventory requires inventory_exists(env, inventory)
+        # (its own docstring says so, and newer Sphinx asserts it) -- an inventory
+        # that failed to fetch (upstream outage, intersphinx_timeout) must be
+        # skipped here, the same way an unresolved reference already is, rather
+        # than raising and aborting the whole build (#210).
+        if not inventory_exists(env, inventory):
+            continue
         resolved = resolve_reference_in_inventory(env, inventory, node, contnode)
         if resolved is not None:
             return resolved
