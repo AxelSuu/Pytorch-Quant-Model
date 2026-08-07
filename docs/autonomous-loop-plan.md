@@ -167,6 +167,14 @@ merged it himself; all 3 required CI checks passed. The mechanics work end to en
    routine for this: the current GitHub-trigger event surface only covers Pull request and
    Release events, not a direct "check failed" event, so faster reaction comes from
    cadence, not a third routine.)
+   **Filing a new issue from a scratch file (added 2026-08-07, `#212`):** when an issue's
+   body is written to a scratchpad file first, pass it with `gh issue create --body-file
+   <path>` (or the REST API's equivalent of reading the file's contents into the `body`
+   field) — never `gh issue create --body "@<path>"`. `@file` expansion is specific to
+   flags documented per-command (`--body-file`, `-F key=@file`); `--body` has no such
+   expansion, so `--body "@<path>"` posts the literal path string as the issue body. #210
+   was filed this way and ended up with a body consisting of nothing but the unexpanded
+   path, discovered only because PR #209 happened to discuss #210 at length elsewhere.
 7. **If CI passes:** PR sits ready for Axel's review. The loop never merges to `main`
    itself.
 
